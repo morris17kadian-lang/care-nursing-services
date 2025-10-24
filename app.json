@@ -1,0 +1,34 @@
+{
+  "expo": {
+    "name": "CARE Mobile",
+    "slug": "care-mobile-app",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "light",
+    "splash": {
+      "backgroundColor": "#0a7fb8",
+      "resizeMode": "contain"
+    },
+    "assetBundlePatterns": [
+      "**/*"
+    ],
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.care.nursing"
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0a7fb8"
+      },
+      "package": "com.care.nursing"
+    },
+    "web": {
+      "bundler": "metro"
+    },
+    "extra": {
+      "eas": {
+        "projectId": "36c20da6-6d6d-4287-b885-d03988aa187d"
+      }
+    }
+  }
+}
