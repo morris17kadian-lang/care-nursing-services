@@ -14,13 +14,15 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.care.nursing"
+      "bundleIdentifier": "com.care.nursing",
+      "buildNumber": "1"
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#0a7fb8"
       },
-      "package": "com.care.nursing"
+      "package": "com.care.nursing",
+      "versionCode": 1
     },
     "web": {
       "bundler": "metro"
