@@ -1,5 +1,5 @@
 import TouchableWeb from "../components/TouchableWeb";
-import React, { useState } from 'react';
+import React, { useState, useContext, useRef, useEffect } from 'react';
 import {
   View,
   Text,
@@ -9,14 +9,28 @@ import {
   Alert,
   Platform,
   FlatList,
+  Pressable,
+  Keyboard,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import DateTimePicker from '@react-native-community/datetimepicker';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { COLORS, GRADIENTS, SPACING, SERVICES } from '../constants';
+import { COLORS, GRADIENTS, SPACING } from '../constants';
+import { useServices } from '../context/ServicesContext';
 import { getAddressSuggestions } from '../utils/addressData';
+import { useAppointments } from '../context/AppointmentContext';
+import { useAuth } from '../context/AuthContext';
+import InvoiceService from '../services/InvoiceService';
+import RecurringAppointmentService from '../services/RecurringAppointmentService';
 
 export default function BookScreen() {
+  const { services } = useServices();
+  const { bookAppointment } = useAppointments();
+  const { user } = useAuth();
+  const insets = useSafeAreaInsets();
+  const addressInputRef = useRef(null);
+  
   const [formData, setFormData] = useState({
     name: '',
     email: '',
@@ -26,27 +40,39 @@ export default function BookScreen() {
     date: '',
     time: '',
     notes: '',
-    paymentMethod: '',
     subscriptionPlan: '',
   });
   const [addressSuggestions, setAddressSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
-  const [showPaymentDropdown, setShowPaymentDropdown] = useState(false);
   const [showSubscriptionDropdown, setShowSubscriptionDropdown] = useState(false);
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
+  const [selectedDate, setSelectedDate] = useState(new Date());
+  const [selectedTime, setSelectedTime] = useState(new Date());
+  const [isRecurring, setIsRecurring] = useState(false);
+  const [recurringFrequency, setRecurringFrequency] = useState('2weeks');
+  const [recurringDuration, setRecurringDuration] = useState(1);
+  const [invoiceFrequency, setInvoiceFrequency] = useState('monthly');
+  const [autoEmailInvoices, setAutoEmailInvoices] = useState(false);
 
-  const paymentOptions = [
-    { id: 'card', icon: 'credit-card', label: 'Credit/Debit Card' },
-    { id: 'bank', icon: 'bank', label: 'Bank Transfer' },
-    { id: 'insurance', icon: 'shield-account', label: 'Insurance' },
-    { id: 'medicare', icon: 'medical-bag', label: 'Medicare' },
-    { id: 'private', icon: 'cash', label: 'Private Pay' },
-  ];
+  // Autofill form data from user profile
+  useEffect(() => {
+    if (user) {
+      setFormData(prev => ({
+        ...prev,
+        name: user.name || user.username || '',
+        email: user.email || '',
+        phone: user.phone || '',
+        address: user.address || '',
+      }));
+    }
+  }, [user]);
 
   const subscriptionPlans = [
     { id: 'none', label: 'One-time Service', price: 'Pay per visit', popular: false },
-    { id: 'basic', label: 'Basic Care', price: '$99/month', popular: false },
-    { id: 'premium', label: 'Premium Care', price: '$199/month', popular: true },
-    { id: 'elite', label: 'Elite Care', price: '$349/month', popular: false },
+    { id: 'basic', label: 'Basic Care', price: 'J$15,000/month', popular: false },
+    { id: 'premium', label: 'Premium Care', price: 'J$30,000/month', popular: true },
+    { id: 'elite', label: 'Elite Care', price: 'J$52,500/month', popular: false },
   ];
 
   const handleAddressChange = (text) => {
@@ -67,27 +93,114 @@ export default function BookScreen() {
     setAddressSuggestions([]);
   };
 
+  const handleAddressFocus = () => {
+    if (formData.address.length >= 2) {
+      const suggestions = getAddressSuggestions(formData.address);
+      setAddressSuggestions(suggestions);
+      setShowSuggestions(suggestions.length > 0);
+    }
+  };
+
+  const handleAddressBlur = () => {
+    // Delay hiding suggestions to allow for selection
+    setTimeout(() => {
+      setShowSuggestions(false);
+    }, 300);
+  };
+
   const handleOutsidePress = () => {
-    setShowPaymentDropdown(false);
     setShowSubscriptionDropdown(false);
   };
 
-  const handleSubmit = () => {
-    // Validate form
-    if (!formData.name || !formData.phone || !formData.address || !formData.service || !formData.paymentMethod) {
-      Alert.alert('Required Fields', 'Please fill in all required fields (Name, Phone, Address, Service, Payment Method)');
+      const handleSubmit = async () => {
+    // Validate form - use the values already formatted in formData
+    if (!formData.name || !formData.email || !formData.phone || !formData.address || !formData.service || !formData.date || !formData.time) {
+      Alert.alert('Error', 'Please fill in all required fields including date and time');
       return;
     }
 
-    // In a real app, this would send the request to the admin dashboard
-    // The request will appear in the admin portal under "Pending Appointments"
-    
-    // Show success message
-    Alert.alert(
-      'Request Submitted Successfully!',
-      'Your appointment request has been sent to our admin team. You will receive a confirmation call within 2 hours to schedule your appointment.',
-      [{ text: 'OK', onPress: () => resetForm() }]
-    );
+    try {
+      const appointmentData = {
+        name: formData.name,
+        email: formData.email,
+        phone: formData.phone,
+        address: formData.address,
+        service: formData.service,
+        preferredDate: formData.date,
+        preferredTime: formData.time,
+        date: formData.date,
+        time: formData.time,
+        notes: formData.notes,
+        subscriptionPlan: formData.subscriptionPlan,
+        isRecurring: isRecurring,
+        recurringFrequency: isRecurring ? recurringFrequency : null,
+        recurringDuration: isRecurring ? recurringDuration : null,
+        patientId: user?.id || formData.email,
+        patientName: formData.name,
+      };
+
+      console.log('Booking appointment with data:', appointmentData);
+
+      // Handle recurring appointments
+      if (isRecurring) {
+        try {
+          const result = await RecurringAppointmentService.createRecurringAppointments(
+            appointmentData,
+            recurringFrequency,
+            recurringDuration
+          );
+          
+          console.log(`✅ Created ${result.totalInstances} recurring appointment instances`);
+          console.log(`📅 Series ID: ${result.seriesId}`);
+          
+          // Set up automatic invoice scheduling for recurring appointments
+          if (autoEmailInvoices) {
+            try {
+              const clientData = {
+                id: Date.now(),
+                name: formData.name,
+                email: formData.email,
+                serviceType: formData.service,
+                phone: formData.phone,
+                address: formData.address
+              };
+              
+              await InvoiceService.setupRecurringInvoiceSchedule(clientData, invoiceFrequency);
+              console.log('✅ Automatic invoice scheduling set up for recurring client');
+            } catch (error) {
+              console.error('Error setting up invoice scheduling:', error);
+              // Don't fail the booking if invoice setup fails
+            }
+          }
+          
+          Alert.alert(
+            'Success',
+            `Your recurring appointment has been booked successfully!\n\n` +
+            `📅 ${result.totalInstances} appointments scheduled (${recurringFrequency})\n` +
+            `🔔 Reminder notifications will be sent 24 hours before each appointment\n\n` +
+            (autoEmailInvoices ? `💰 Automatic invoices will be emailed ${invoiceFrequency}\n\n` : '') +
+            `You will receive confirmation shortly.`,
+            [{ text: 'OK', onPress: () => resetForm() }]
+          );
+        } catch (error) {
+          console.error('Error creating recurring appointments:', error);
+          Alert.alert('Error', 'Failed to create recurring appointments. Please try again.');
+          return;
+        }
+      } else {
+        // Single appointment booking (existing logic)
+        await bookAppointment(appointmentData);
+        
+        Alert.alert(
+          'Success',
+          'Your appointment has been booked successfully! You will receive a confirmation shortly.',
+          [{ text: 'OK', onPress: () => resetForm() }]
+        );
+      }
+    } catch (error) {
+      console.error('Error booking appointment:', error);
+      Alert.alert('Error', 'Failed to book appointment. Please try again.');
+    }
   };
 
   const resetForm = () => {
@@ -100,22 +213,95 @@ export default function BookScreen() {
       date: '',
       time: '',
       notes: '',
-      paymentMethod: '',
       subscriptionPlan: '',
     });
+    setSelectedDate(new Date());
+    setSelectedTime(new Date());
+    setIsRecurring(false);
+    setRecurringFrequency('2weeks');
+    setRecurringDuration(1);
+    setInvoiceFrequency('monthly');
+    setAutoEmailInvoices(false);
+  };
+
+  const onDateChange = (event, date) => {
+    // On Android, the picker is dismissed automatically when user selects or cancels
+    if (Platform.OS === 'android') {
+      setShowDatePicker(false);
+      if (event.type === 'set' && date) {
+        // User selected a date
+        setSelectedDate(date);
+        const formattedDate = date.toLocaleDateString('en-US', {
+          month: 'short',
+          day: '2-digit',
+          year: 'numeric'
+        });
+        setFormData({ ...formData, date: formattedDate });
+      }
+      // If event.type === 'dismissed', user cancelled - do nothing
+    } else {
+      // On iOS, just update the selected date
+      if (date) {
+        setSelectedDate(date);
+      }
+    }
+  };
+
+  const onTimeChange = (event, time) => {
+    // On Android, the picker is dismissed automatically when user selects or cancels
+    if (Platform.OS === 'android') {
+      setShowTimePicker(false);
+      if (event.type === 'set' && time) {
+        // User selected a time
+        setSelectedTime(time);
+        const formattedTime = time.toLocaleTimeString('en-US', { 
+          hour: 'numeric', 
+          minute: '2-digit',
+          hour12: true 
+        });
+        setFormData({ ...formData, time: formattedTime });
+      }
+      // If event.type === 'dismissed', user cancelled - do nothing
+    } else {
+      // On iOS, just update the selected time
+      if (time) {
+        setSelectedTime(time);
+      }
+    }
+  };
+
+  const confirmDateSelection = () => {
+    // Format date as "MMM DD, YYYY" (e.g., "Nov 02, 2025")
+    const formattedDate = selectedDate.toLocaleDateString('en-US', {
+      month: 'short',
+      day: '2-digit',
+      year: 'numeric'
+    });
+    setFormData({ ...formData, date: formattedDate });
+    setShowDatePicker(false);
+  };
+
+  const confirmTimeSelection = () => {
+    const formattedTime = selectedTime.toLocaleTimeString('en-US', { 
+      hour: 'numeric', 
+      minute: '2-digit',
+      hour12: true 
+    });
+    setFormData({ ...formData, time: formattedTime });
+    setShowTimePicker(false);
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={['bottom']}>
       {/* Header */}
       <LinearGradient
         colors={GRADIENTS.header}
         start={{ x: 0, y: 0 }}
         end={{ x: 0, y: 1 }}
-        style={styles.header}
+        style={[styles.header, { paddingTop: insets.top + 20 }]}
       >
         <View style={styles.headerRow}>
-          <Text style={styles.headerTitle}>Book Appointment</Text>
+          <Text style={styles.welcomeText}>Book Appointment</Text>
         </View>
       </LinearGradient>
 
@@ -130,32 +316,34 @@ export default function BookScreen() {
             <Text style={styles.label}>
               Full Name <Text style={styles.required}>*</Text>
             </Text>
-            <View style={styles.inputContainer}>
+            <View style={[styles.inputContainer, styles.autofilledInput]}>
               <MaterialCommunityIcons name="account" size={20} color={COLORS.primary} />
               <TextInput
                 style={styles.input}
                 placeholder="Enter your full name"
                 placeholderTextColor={COLORS.textMuted}
                 value={formData.name}
-                onChangeText={(text) => setFormData({ ...formData, name: text })}
+                editable={false}
               />
+              <MaterialCommunityIcons name="lock" size={16} color={COLORS.textMuted} />
             </View>
           </View>
 
           {/* Email Input */}
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Email Address</Text>
-            <View style={styles.inputContainer}>
+            <View style={[styles.inputContainer, styles.autofilledInput]}>
               <MaterialCommunityIcons name="email" size={20} color={COLORS.primary} />
               <TextInput
                 style={styles.input}
                 placeholder="your.email@example.com"
                 placeholderTextColor={COLORS.textMuted}
                 value={formData.email}
-                onChangeText={(text) => setFormData({ ...formData, email: text })}
+                editable={false}
                 keyboardType="email-address"
                 autoCapitalize="none"
               />
+              <MaterialCommunityIcons name="lock" size={16} color={COLORS.textMuted} />
             </View>
           </View>
 
@@ -164,70 +352,41 @@ export default function BookScreen() {
             <Text style={styles.label}>
               Phone Number <Text style={styles.required}>*</Text>
             </Text>
-            <View style={styles.inputContainer}>
+            <View style={[styles.inputContainer, styles.autofilledInput]}>
               <MaterialCommunityIcons name="phone" size={20} color={COLORS.primary} />
               <TextInput
                 style={styles.input}
                 placeholder="876-XXX-XXXX"
                 placeholderTextColor={COLORS.textMuted}
                 value={formData.phone}
-                onChangeText={(text) => setFormData({ ...formData, phone: text })}
+                editable={false}
                 keyboardType="phone-pad"
               />
+              <MaterialCommunityIcons name="lock" size={16} color={COLORS.textMuted} />
             </View>
           </View>
 
-          {/* Address Input with Autocomplete */}
+          {/* Address Input with Enhanced Autocomplete */}
           <View style={styles.inputGroup}>
             <Text style={styles.label}>
               Service Address <Text style={styles.required}>*</Text>
             </Text>
+            <Text style={styles.subtitle}>Address from your profile</Text>
             <View style={styles.addressWrapper}>
-              <View style={styles.inputContainer}>
+              <View style={[styles.inputContainer, styles.autofilledInput]}>
                 <MaterialCommunityIcons name="map-marker" size={20} color={COLORS.primary} />
                 <TextInput
+                  ref={addressInputRef}
                   style={styles.input}
-                  placeholder="Enter your address or area"
+                  placeholder="e.g., Half Way Tree, New Kingston, Portmore..."
                   placeholderTextColor={COLORS.textMuted}
                   value={formData.address}
-                  onChangeText={handleAddressChange}
-                  onFocus={() => {
-                    if (formData.address.length >= 2) {
-                      setShowSuggestions(true);
-                    }
-                  }}
+                  editable={false}
+                  autoCorrect={false}
+                  autoCapitalize="words"
                 />
-                {formData.address.length > 0 && (
-                  <TouchableWeb
-                    onPress={() => {
-                      setFormData({ ...formData, address: '' });
-                      setShowSuggestions(false);
-                    }}
-                    style={styles.clearButton}
-                  >
-                    <MaterialCommunityIcons name="close-circle" size={20} color={COLORS.textMuted} />
-                  </TouchableWeb>
-                )}
+                <MaterialCommunityIcons name="lock" size={16} color={COLORS.textMuted} />
               </View>
-              
-              {showSuggestions && addressSuggestions.length > 0 && (
-                <View style={styles.suggestionsContainer}>
-                  <FlatList
-                    data={addressSuggestions}
-                    keyExtractor={(item, index) => index.toString()}
-                    nestedScrollEnabled
-                    renderItem={({ item }) => (
-                      <TouchableWeb
-                        style={styles.suggestionItem}
-                        onPress={() => selectAddress(item)}
-                      >
-                        <MaterialCommunityIcons name="map-marker-outline" size={16} color={COLORS.primary} />
-                        <Text style={styles.suggestionText}>{item}</Text>
-                      </TouchableWeb>
-                    )}
-                  />
-                </View>
-              )}
             </View>
           </View>
 
@@ -241,30 +400,50 @@ export default function BookScreen() {
               showsHorizontalScrollIndicator={false}
               style={styles.serviceScroll}
             >
-              {SERVICES.map((service) => (
+              {services.map((service) => (
                 <TouchableWeb
                   key={service.id}
                   style={[
                     styles.serviceChip,
-                    formData.service === service.title && styles.serviceChipSelected,
+                    formData.service === service.title && { overflow: 'hidden' }
                   ]}
                   onPress={() => setFormData({ ...formData, service: service.title })}
                   activeOpacity={0.7}
                 >
-                  <MaterialCommunityIcons
-                    name={service.icon}
-                    size={16}
-                    color={formData.service === service.title ? COLORS.white : COLORS.primary}
-                  />
-                  <Text
-                    style={[
-                      styles.serviceChipText,
-                      formData.service === service.title && styles.serviceChipTextSelected,
-                    ]}
-                    numberOfLines={1}
-                  >
-                    {service.title}
-                  </Text>
+                  {formData.service === service.title ? (
+                    <LinearGradient
+                      colors={GRADIENTS.header}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 0, y: 1 }}
+                      style={styles.serviceChipGradient}
+                    >
+                      <MaterialCommunityIcons
+                        name={service.icon}
+                        size={16}
+                        color={COLORS.white}
+                      />
+                      <Text
+                        style={styles.serviceChipTextSelected}
+                        numberOfLines={1}
+                      >
+                        {service.title}
+                      </Text>
+                    </LinearGradient>
+                  ) : (
+                    <View style={styles.inactiveServiceChip}>
+                      <MaterialCommunityIcons
+                        name={service.icon}
+                        size={16}
+                        color={COLORS.primary}
+                      />
+                      <Text
+                        style={styles.serviceChipText}
+                        numberOfLines={1}
+                      >
+                        {service.title}
+                      </Text>
+                    </View>
+                  )}
                 </TouchableWeb>
               ))}
             </ScrollView>
@@ -273,171 +452,330 @@ export default function BookScreen() {
           {/* Date Input */}
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Preferred Date</Text>
-            <View style={styles.inputContainer}>
+            <TouchableWeb 
+              style={styles.inputContainer}
+              onPress={() => setShowDatePicker(true)}
+            >
               <MaterialCommunityIcons name="calendar" size={20} color={COLORS.primary} />
-              <TextInput
-                style={styles.input}
-                placeholder="DD/MM/YYYY"
-                placeholderTextColor={COLORS.textMuted}
-                value={formData.date}
-                onChangeText={(text) => setFormData({ ...formData, date: text })}
-              />
-            </View>
+              <Text style={[styles.input, { color: formData.date ? COLORS.text : COLORS.textMuted }]}>
+                {formData.date || 'Select Date'}
+              </Text>
+            </TouchableWeb>
           </View>
 
           {/* Time Input */}
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Preferred Time</Text>
-            <View style={styles.inputContainer}>
+            <TouchableWeb 
+              style={styles.inputContainer}
+              onPress={() => setShowTimePicker(true)}
+            >
               <MaterialCommunityIcons name="clock" size={20} color={COLORS.primary} />
-              <TextInput
-                style={styles.input}
-                placeholder="HH:MM AM/PM"
-                placeholderTextColor={COLORS.textMuted}
-                value={formData.time}
-                onChangeText={(text) => setFormData({ ...formData, time: text })}
-              />
-            </View>
-          </View>
-
-          {/* Payment Method Dropdown */}
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>
-              Payment Method <Text style={styles.required}>*</Text>
-            </Text>
-            <TouchableWeb
-              style={styles.dropdownButton}
-              onPress={() => setShowPaymentDropdown(!showPaymentDropdown)}
-              activeOpacity={0.7}
-            >
-              <View style={styles.dropdownContent}>
-                <MaterialCommunityIcons 
-                  name={formData.paymentMethod ? paymentOptions.find(p => p.id === formData.paymentMethod)?.icon : 'credit-card'} 
-                  size={20} 
-                  color={COLORS.primary} 
-                />
-                <Text style={[styles.dropdownText, !formData.paymentMethod && styles.placeholderText]}>
-                  {formData.paymentMethod 
-                    ? paymentOptions.find(p => p.id === formData.paymentMethod)?.label 
-                    : 'Select payment method'}
-                </Text>
-                <MaterialCommunityIcons 
-                  name={showPaymentDropdown ? 'chevron-up' : 'chevron-down'} 
-                  size={20} 
-                  color={COLORS.textLight} 
-                />
-              </View>
+              <Text style={[styles.input, { color: formData.time ? COLORS.text : COLORS.textMuted }]}>
+                {formData.time || 'Select Time'}
+              </Text>
             </TouchableWeb>
-            
-            {showPaymentDropdown && (
-              <View style={styles.dropdownMenu}>
-                {paymentOptions.map((option) => (
-                  <TouchableWeb
-                    key={option.id}
-                    style={[
-                      styles.dropdownItem,
-                      formData.paymentMethod === option.id && styles.dropdownItemSelected
-                    ]}
-                    onPress={() => {
-                      setFormData({ ...formData, paymentMethod: option.id });
-                      setShowPaymentDropdown(false);
-                    }}
-                    activeOpacity={0.7}
-                  >
-                    <MaterialCommunityIcons name={option.icon} size={20} color={COLORS.primary} />
-                    <Text style={styles.dropdownItemText}>{option.label}</Text>
-                    {formData.paymentMethod === option.id && (
-                      <MaterialCommunityIcons name="check" size={16} color={COLORS.primary} />
-                    )}
-                  </TouchableWeb>
-                ))}
-              </View>
-            )}
-          </View>
-
-          {/* Subscription Plan Dropdown */}
-          <View style={styles.inputGroup}>
-            <Text style={styles.label}>Subscription Plan</Text>
-            <Text style={styles.subtitle}>Optional - Save with monthly plans</Text>
-            <TouchableWeb
-              style={styles.dropdownButton}
-              onPress={() => setShowSubscriptionDropdown(!showSubscriptionDropdown)}
-              activeOpacity={0.7}
-            >
-              <View style={styles.dropdownContent}>
-                <MaterialCommunityIcons name="crown" size={20} color={COLORS.primary} />
-                <View style={styles.planInfo}>
-                  <Text style={[styles.dropdownText, !formData.subscriptionPlan && styles.placeholderText]}>
-                    {formData.subscriptionPlan 
-                      ? subscriptionPlans.find(p => p.id === formData.subscriptionPlan)?.label 
-                      : 'Select plan (optional)'}
-                  </Text>
-                  {formData.subscriptionPlan && formData.subscriptionPlan !== 'none' && (
-                    <Text style={styles.planPrice}>
-                      {subscriptionPlans.find(p => p.id === formData.subscriptionPlan)?.price}
-                    </Text>
-                  )}
-                </View>
-                <MaterialCommunityIcons 
-                  name={showSubscriptionDropdown ? 'chevron-up' : 'chevron-down'} 
-                  size={20} 
-                  color={COLORS.textLight} 
-                />
-              </View>
-            </TouchableWeb>
-            
-            {showSubscriptionDropdown && (
-              <View style={styles.dropdownMenu}>
-                {subscriptionPlans.map((plan) => (
-                  <TouchableWeb
-                    key={plan.id}
-                    style={[
-                      styles.dropdownItem,
-                      formData.subscriptionPlan === plan.id && styles.dropdownItemSelected,
-                      plan.popular && styles.popularItem
-                    ]}
-                    onPress={() => {
-                      setFormData({ ...formData, subscriptionPlan: plan.id });
-                      setShowSubscriptionDropdown(false);
-                    }}
-                    activeOpacity={0.7}
-                  >
-                    <View style={styles.planDetails}>
-                      <View style={styles.planHeader}>
-                        <Text style={styles.planName}>{plan.label}</Text>
-                        {plan.popular && (
-                          <View style={styles.popularBadge}>
-                            <Text style={styles.popularText}>POPULAR</Text>
-                          </View>
-                        )}
-                      </View>
-                      <Text style={styles.planPriceText}>{plan.price}</Text>
-                    </View>
-                    {formData.subscriptionPlan === plan.id && (
-                      <MaterialCommunityIcons name="check" size={16} color={COLORS.primary} />
-                    )}
-                  </TouchableWeb>
-                ))}
-              </View>
-            )}
           </View>
 
           {/* Notes Input - Compact */}
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Additional Notes</Text>
-            <View style={styles.inputContainer}>
-              <MaterialCommunityIcons name="text" size={20} color={COLORS.primary} />
-              <TextInput
-                style={[styles.input, styles.notesInput]}
-                placeholder="Any special requirements or concerns..."
-                placeholderTextColor={COLORS.textMuted}
-                value={formData.notes}
-                onChangeText={(text) => setFormData({ ...formData, notes: text })}
-                multiline
-                numberOfLines={2}
-              />
+            <View style={styles.notesContainer}>
+              <View style={styles.inputContainer}>
+                <MaterialCommunityIcons name="text" size={20} color={COLORS.primary} />
+                <TextInput
+                  style={[styles.input, styles.notesInput]}
+                  placeholder="Any special requirements or concerns..."
+                  placeholderTextColor={COLORS.textMuted}
+                  value={formData.notes}
+                  onChangeText={(text) => setFormData({ ...formData, notes: text })}
+                  multiline
+                  numberOfLines={2}
+                />
+              </View>
+              <View style={styles.notesActions}>
+                <TouchableWeb
+                  style={styles.notesActionButton}
+                  onPress={() => {
+                    // Save notes - you can add additional save logic here if needed
+                    Alert.alert('Success', 'Notes saved!');
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <MaterialCommunityIcons name="check" size={24} color={COLORS.success} />
+                </TouchableWeb>
+                <TouchableWeb
+                  style={styles.notesActionButton}
+                  onPress={() => {
+                    setFormData({ ...formData, notes: '' });
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <MaterialCommunityIcons name="close" size={24} color={COLORS.error} />
+                </TouchableWeb>
+              </View>
             </View>
           </View>
+
+          {/* Recurring Appointment Section */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Recurring Appointment</Text>
+            
+            <TouchableWeb
+              style={styles.recurringToggle}
+              onPress={() => setIsRecurring(!isRecurring)}
+              activeOpacity={0.7}
+            >
+              <View style={styles.recurringToggleContent}>
+                <View style={styles.recurringToggleLeft}>
+                  <MaterialCommunityIcons 
+                    name="calendar-refresh" 
+                    size={20} 
+                    color={isRecurring ? COLORS.primary : COLORS.textMuted} 
+                  />
+                  <Text style={[styles.recurringToggleText, { color: isRecurring ? COLORS.primary : COLORS.text }]}>
+                    Make this a recurring appointment
+                  </Text>
+                </View>
+                <View style={[styles.toggleSwitch, { backgroundColor: isRecurring ? COLORS.primary : COLORS.border }]}>
+                  <View style={[styles.toggleKnob, { marginLeft: isRecurring ? 27 : 3 }]} />
+                </View>
+              </View>
+            </TouchableWeb>
+
+            {isRecurring && (
+              <View style={styles.recurringOptions}>
+                {/* Frequency Selection */}
+                <View style={styles.recurringRow}>
+                  <Text style={styles.recurringLabel}>Frequency</Text>
+                  <View style={styles.frequencyButtons}>
+                    <TouchableWeb
+                      style={[
+                        styles.frequencyButton,
+                        recurringFrequency === '2weeks' && { overflow: 'hidden' }
+                      ]}
+                      onPress={() => setRecurringFrequency('2weeks')}
+                      activeOpacity={0.7}
+                    >
+                      {recurringFrequency === '2weeks' ? (
+                        <LinearGradient
+                          colors={GRADIENTS.header}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 0, y: 1 }}
+                          style={styles.frequencyButtonGradient}
+                        >
+                          <Text style={styles.frequencyButtonTextActive}>
+                            Every 2 Weeks
+                          </Text>
+                        </LinearGradient>
+                      ) : (
+                        <View style={styles.inactiveFrequencyButton}>
+                          <Text style={styles.frequencyButtonText}>
+                            Every 2 Weeks
+                          </Text>
+                        </View>
+                      )}
+                    </TouchableWeb>
+                    <TouchableWeb
+                      style={[
+                        styles.frequencyButton,
+                        recurringFrequency === 'monthly' && { overflow: 'hidden' }
+                      ]}
+                      onPress={() => setRecurringFrequency('monthly')}
+                      activeOpacity={0.7}
+                    >
+                      {recurringFrequency === 'monthly' ? (
+                        <LinearGradient
+                          colors={GRADIENTS.header}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 0, y: 1 }}
+                          style={styles.frequencyButtonGradient}
+                        >
+                          <Text style={styles.frequencyButtonTextActive}>
+                            Monthly
+                          </Text>
+                        </LinearGradient>
+                      ) : (
+                        <View style={styles.inactiveFrequencyButton}>
+                          <Text style={styles.frequencyButtonText}>
+                            Monthly
+                          </Text>
+                        </View>
+                      )}
+                    </TouchableWeb>
+                  </View>
+                </View>
+
+                {/* Duration Selection */}
+                <View style={styles.recurringRow}>
+                  <Text style={styles.recurringLabel}>Duration</Text>
+                  <View style={styles.durationContainer}>
+                    <TouchableWeb
+                      style={styles.durationButton}
+                      onPress={() => setRecurringDuration(Math.max(1, recurringDuration - 1))}
+                      activeOpacity={0.7}
+                    >
+                      <MaterialCommunityIcons name="minus" size={20} color={COLORS.primary} />
+                    </TouchableWeb>
+                    <View style={styles.durationDisplay}>
+                      <Text style={styles.durationText}>{recurringDuration}</Text>
+                      <Text style={styles.durationUnit}>
+                        {recurringFrequency === '2weeks' ? 'periods' : 'months'}
+                      </Text>
+                    </View>
+                    <TouchableWeb
+                      style={styles.durationButton}
+                      onPress={() => setRecurringDuration(recurringDuration + 1)}
+                      activeOpacity={0.7}
+                    >
+                      <MaterialCommunityIcons name="plus" size={20} color={COLORS.primary} />
+                    </TouchableWeb>
+                  </View>
+                </View>
+
+                {/* Summary */}
+                <View style={styles.recurringSummary}>
+                  <MaterialCommunityIcons name="information" size={16} color={COLORS.info} />
+                  <Text style={styles.recurringSummaryText}>
+                    {recurringFrequency === '2weeks' 
+                      ? `Appointment will repeat every 2 weeks for ${recurringDuration} periods (${recurringDuration * 2} weeks total)`
+                      : `Appointment will repeat monthly for ${recurringDuration} month${recurringDuration > 1 ? 's' : ''}`
+                    }
+                  </Text>
+                </View>
+              </View>
+            )}
+          </View>
+
+          {/* Invoice Settings for Recurring Appointments */}
+          {isRecurring && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Invoice Settings</Text>
+              
+              {/* Auto-Email Invoices Toggle */}
+              <TouchableWeb
+                style={styles.recurringToggle}
+                onPress={() => setAutoEmailInvoices(!autoEmailInvoices)}
+                activeOpacity={0.7}
+              >
+                <View style={styles.recurringToggleContent}>
+                  <View style={styles.recurringToggleLeft}>
+                    <MaterialCommunityIcons 
+                      name="email-fast" 
+                      size={20} 
+                      color={autoEmailInvoices ? COLORS.primary : COLORS.textMuted} 
+                    />
+                    <Text style={[styles.recurringToggleText, { color: autoEmailInvoices ? COLORS.primary : COLORS.text }]}>
+                      Automatically email invoices
+                    </Text>
+                  </View>
+                  <View style={[styles.toggleSwitch, { backgroundColor: autoEmailInvoices ? COLORS.primary : COLORS.border }]}>
+                    <View style={[styles.toggleKnob, { marginLeft: autoEmailInvoices ? 27 : 3 }]} />
+                  </View>
+                </View>
+              </TouchableWeb>
+
+              {/* Invoice Frequency Selection */}
+              {autoEmailInvoices && (
+                <View style={styles.recurringOptions}>
+                  <View style={styles.recurringRow}>
+                    <Text style={styles.recurringLabel}>Invoice Frequency</Text>
+                    <View style={styles.frequencyButtons}>
+                      <TouchableWeb
+                        style={[
+                          styles.frequencyButton,
+                          invoiceFrequency === 'weekly' && { overflow: 'hidden' }
+                        ]}
+                        onPress={() => setInvoiceFrequency('weekly')}
+                        activeOpacity={0.7}
+                      >
+                        {invoiceFrequency === 'weekly' ? (
+                          <LinearGradient
+                            colors={GRADIENTS.header}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 0, y: 1 }}
+                            style={styles.frequencyButtonGradient}
+                          >
+                            <Text style={styles.frequencyButtonTextActive}>
+                              Weekly
+                            </Text>
+                          </LinearGradient>
+                        ) : (
+                          <View style={styles.inactiveFrequencyButton}>
+                            <Text style={styles.frequencyButtonText}>
+                              Weekly
+                            </Text>
+                          </View>
+                        )}
+                      </TouchableWeb>
+                      <TouchableWeb
+                        style={[
+                          styles.frequencyButton,
+                          invoiceFrequency === 'monthly' && { overflow: 'hidden' }
+                        ]}
+                        onPress={() => setInvoiceFrequency('monthly')}
+                        activeOpacity={0.7}
+                      >
+                        {invoiceFrequency === 'monthly' ? (
+                          <LinearGradient
+                            colors={GRADIENTS.header}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 0, y: 1 }}
+                            style={styles.frequencyButtonGradient}
+                          >
+                            <Text style={styles.frequencyButtonTextActive}>
+                              Monthly
+                            </Text>
+                          </LinearGradient>
+                        ) : (
+                          <View style={styles.inactiveFrequencyButton}>
+                            <Text style={styles.frequencyButtonText}>
+                              Monthly
+                            </Text>
+                          </View>
+                        )}
+                      </TouchableWeb>
+                      <TouchableWeb
+                        style={[
+                          styles.frequencyButton,
+                          invoiceFrequency === 'quarterly' && { overflow: 'hidden' }
+                        ]}
+                        onPress={() => setInvoiceFrequency('quarterly')}
+                        activeOpacity={0.7}
+                      >
+                        {invoiceFrequency === 'quarterly' ? (
+                          <LinearGradient
+                            colors={GRADIENTS.header}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 0, y: 1 }}
+                            style={styles.frequencyButtonGradient}
+                          >
+                            <Text style={styles.frequencyButtonTextActive}>
+                              Quarterly
+                            </Text>
+                          </LinearGradient>
+                        ) : (
+                          <View style={styles.inactiveFrequencyButton}>
+                            <Text style={styles.frequencyButtonText}>
+                              Quarterly
+                            </Text>
+                          </View>
+                        )}
+                      </TouchableWeb>
+                    </View>
+                  </View>
+
+                  {/* Invoice Summary */}
+                  <View style={styles.recurringSummary}>
+                    <MaterialCommunityIcons name="information" size={16} color={COLORS.info} />
+                    <Text style={styles.recurringSummaryText}>
+                      Invoices will be automatically generated and emailed {invoiceFrequency.toLowerCase()} to {formData.email || 'your email address'}
+                    </Text>
+                  </View>
+                </View>
+              )}
+            </View>
+          )}
 
           {/* Submit Button */}
           <TouchableWeb
@@ -446,9 +784,9 @@ export default function BookScreen() {
             activeOpacity={0.8}
           >
             <LinearGradient
-              colors={[COLORS.accent, COLORS.accentLight]}
+              colors={GRADIENTS.header}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.submitGradient}
             >
               <MaterialCommunityIcons name="check-circle" size={20} color={COLORS.white} />
@@ -466,6 +804,102 @@ export default function BookScreen() {
           </View>
         </View>
       </ScrollView>
+
+      {/* Date Picker */}
+      {showDatePicker && Platform.OS === 'ios' && (
+        <View style={styles.pickerOverlay}>
+          <View style={styles.pickerContainer}>
+            <View style={styles.pickerHeader}>
+              <Text style={styles.pickerTitle}>Select Date</Text>
+              <TouchableWeb
+                onPress={() => setShowDatePicker(false)}
+                style={styles.pickerCloseButton}
+              >
+                <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
+              </TouchableWeb>
+            </View>
+            <DateTimePicker
+              value={selectedDate}
+              mode="date"
+              display="spinner"
+              onChange={onDateChange}
+              minimumDate={new Date()}
+              textColor={COLORS.text}
+            />
+            <TouchableWeb
+              style={styles.pickerConfirmButton}
+              onPress={confirmDateSelection}
+            >
+              <LinearGradient
+                colors={GRADIENTS.header}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 0, y: 1 }}
+                style={styles.pickerConfirmGradient}
+              >
+                <Text style={styles.pickerConfirmText}>Done</Text>
+              </LinearGradient>
+            </TouchableWeb>
+          </View>
+        </View>
+      )}
+
+      {/* Android Date Picker - shows as native dialog */}
+      {showDatePicker && Platform.OS === 'android' && (
+        <DateTimePicker
+          value={selectedDate}
+          mode="date"
+          display="default"
+          onChange={onDateChange}
+          minimumDate={new Date()}
+        />
+      )}
+
+      {/* Time Picker */}
+      {showTimePicker && Platform.OS === 'ios' && (
+        <View style={styles.pickerOverlay}>
+          <View style={styles.pickerContainer}>
+            <View style={styles.pickerHeader}>
+              <Text style={styles.pickerTitle}>Select Time</Text>
+              <TouchableWeb
+                onPress={() => setShowTimePicker(false)}
+                style={styles.pickerCloseButton}
+              >
+                <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
+              </TouchableWeb>
+            </View>
+            <DateTimePicker
+              value={selectedTime}
+              mode="time"
+              display="spinner"
+              onChange={onTimeChange}
+              textColor={COLORS.text}
+            />
+            <TouchableWeb
+              style={styles.pickerConfirmButton}
+              onPress={confirmTimeSelection}
+            >
+              <LinearGradient
+                colors={GRADIENTS.header}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 0, y: 1 }}
+                style={styles.pickerConfirmGradient}
+              >
+                <Text style={styles.pickerConfirmText}>Done</Text>
+              </LinearGradient>
+            </TouchableWeb>
+          </View>
+        </View>
+      )}
+
+      {/* Android Time Picker - shows as native dialog */}
+      {showTimePicker && Platform.OS === 'android' && (
+        <DateTimePicker
+          value={selectedTime}
+          mode="time"
+          display="default"
+          onChange={onTimeChange}
+        />
+      )}
     </SafeAreaView>
   );
 }
@@ -477,7 +911,6 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: 20,
-    paddingTop: 60,
     paddingBottom: 20,
     borderBottomLeftRadius: 24,
     borderBottomRightRadius: 24,
@@ -487,10 +920,13 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  headerTitle: {
-    fontSize: 22,
+  welcomeText: {
+    fontSize: 18,
     fontFamily: 'Poppins_700Bold',
     color: COLORS.white,
+    opacity: 0.98,
+    textAlign: 'center',
+    alignSelf: 'center',
   },
   headerSubtitle: {
     fontSize: 14,
@@ -503,14 +939,8 @@ const styles = StyleSheet.create({
     padding: SPACING.lg,
   },
   formCard: {
-    backgroundColor: COLORS.card,
-    borderRadius: 24,
-    padding: SPACING.lg,
-    shadowColor: COLORS.shadow,
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.1,
-    shadowRadius: 12,
-    elevation: 5,
+    backgroundColor: 'transparent',
+    padding: 0,
   },
   inputGroup: {
     marginBottom: SPACING.lg,
@@ -527,17 +957,23 @@ const styles = StyleSheet.create({
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: COLORS.background,
-    borderRadius: 12,
+    paddingVertical: SPACING.sm,
     paddingHorizontal: SPACING.md,
-    paddingVertical: Platform.OS === 'ios' ? SPACING.md : 0,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-    gap: SPACING.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+    gap: SPACING.md,
+    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+    borderRadius: 8,
+    borderBottomWidth: 0,
+  },
+  autofilledInput: {
+    backgroundColor: 'rgba(255, 255, 255, 0.7)',
+    borderRadius: 8,
+    borderBottomWidth: 0,
   },
   addressWrapper: {
     position: 'relative',
-    zIndex: 1,
+    zIndex: 10,
   },
   clearButton: {
     padding: 4,
@@ -547,18 +983,31 @@ const styles = StyleSheet.create({
     top: 52,
     left: 0,
     right: 0,
-    backgroundColor: COLORS.white,
+    backgroundColor: '#FFFFFF',
     borderRadius: 12,
     borderWidth: 1,
     borderColor: COLORS.border,
-    maxHeight: 200,
+    maxHeight: 220,
     shadowColor: COLORS.dark,
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.15,
     shadowRadius: 12,
     elevation: 8,
-    zIndex: 1000,
+    zIndex: 10000,
     overflow: 'hidden',
+  },
+  suggestionsHeader: {
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.primary,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+    backgroundColor: COLORS.lightGray,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  suggestionsList: {
+    maxHeight: 200,
   },
   suggestionItem: {
     flexDirection: 'row',
@@ -567,12 +1016,40 @@ const styles = StyleSheet.create({
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
     gap: SPACING.sm,
+    backgroundColor: '#FFFFFF',
+  },
+  lastSuggestionItem: {
+    borderBottomWidth: 0,
   },
   suggestionText: {
     flex: 1,
     fontSize: 14,
     fontFamily: 'Poppins_400Regular',
     color: COLORS.text,
+  },
+  noSuggestionsContainer: {
+    position: 'absolute',
+    top: 52,
+    left: 0,
+    right: 0,
+    backgroundColor: '#FFFFFF',
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: SPACING.md,
+    shadowColor: COLORS.dark,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 4,
+    zIndex: 999,
+  },
+  noSuggestionsText: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textMuted,
+    textAlign: 'center',
+    lineHeight: 18,
   },
   input: {
     flex: 1,
@@ -597,20 +1074,33 @@ const styles = StyleSheet.create({
     marginTop: SPACING.sm,
   },
   serviceChip: {
+    marginRight: SPACING.sm,
+  },
+  serviceChipGradient: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: COLORS.background,
-    borderWidth: 1.5,
-    borderColor: COLORS.primary,
-    borderRadius: 999,
-    paddingHorizontal: SPACING.md,
-    paddingVertical: SPACING.sm,
-    marginRight: SPACING.sm,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
     gap: 6,
+    minHeight: 36,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
   },
-  serviceChipSelected: {
-    backgroundColor: COLORS.primary,
-    borderColor: COLORS.primary,
+  inactiveServiceChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    gap: 6,
+    minHeight: 36,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
   },
   serviceChipText: {
     fontSize: 12,
@@ -618,6 +1108,8 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
   },
   serviceChipTextSelected: {
+    fontSize: 12,
+    fontFamily: 'Poppins_500Medium',
     color: COLORS.white,
   },
   submitButton: {
@@ -664,9 +1156,24 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.sm,
     marginTop: 2,
   },
+  notesContainer: {
+    gap: SPACING.sm,
+  },
   notesInput: {
     minHeight: 60,
     textAlignVertical: 'top',
+  },
+  notesActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: SPACING.sm,
+  },
+  notesActionButton: {
+    padding: SPACING.xs,
+    borderRadius: 8,
+    backgroundColor: COLORS.background,
+    borderWidth: 1,
+    borderColor: COLORS.border,
   },
   // Dropdown Styles
   dropdownButton: {
@@ -762,5 +1269,245 @@ const styles = StyleSheet.create({
     fontSize: 9,
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.white,
+  },
+  pickerOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1000,
+  },
+  pickerContainer: {
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    padding: SPACING.lg,
+    margin: SPACING.lg,
+    shadowColor: COLORS.black,
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+    maxHeight: '80%',
+  },
+  pickerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: SPACING.md,
+    paddingBottom: SPACING.md,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  pickerTitle: {
+    fontSize: 16,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+  },
+  pickerCloseButton: {
+    padding: SPACING.sm,
+  },
+  pickerConfirmButton: {
+    borderRadius: 10,
+    marginTop: SPACING.md,
+    overflow: 'hidden',
+  },
+  pickerConfirmGradient: {
+    paddingVertical: SPACING.md,
+    alignItems: 'center',
+  },
+  pickerConfirmText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.white,
+  },
+  recurringToggle: {
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    paddingVertical: SPACING.md,
+    paddingHorizontal: SPACING.lg,
+    marginBottom: SPACING.md,
+    shadowColor: COLORS.black,
+    shadowOffset: {
+      width: 0,
+      height: 1,
+    },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  recurringToggleContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    minHeight: 24,
+  },
+  recurringToggleLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.xs,
+    flex: 0,
+    paddingRight: SPACING.md,
+  },
+  recurringToggleText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_500Medium',
+  },
+  toggleSwitch: {
+    width: 50,
+    height: 26,
+    borderRadius: 13,
+    justifyContent: 'center',
+    position: 'relative',
+    flexShrink: 0,
+  },
+  toggleKnob: {
+    width: 20,
+    height: 20,
+    borderRadius: 10,
+    backgroundColor: COLORS.white,
+    shadowColor: COLORS.black,
+    shadowOffset: {
+      width: 0,
+      height: 1,
+    },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  recurringOptions: {
+    backgroundColor: COLORS.lightGray,
+    borderRadius: 12,
+    padding: SPACING.md,
+    gap: SPACING.md,
+  },
+  recurringRow: {
+    gap: SPACING.sm,
+  },
+  recurringLabel: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+    marginBottom: SPACING.xs,
+  },
+  frequencyButtons: {
+    flexDirection: 'row',
+    gap: SPACING.sm,
+  },
+  frequencyButton: {
+    flex: 1,
+    marginHorizontal: 1,
+  },
+  frequencyButtonActive: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  frequencyButtonText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.text,
+    textAlign: 'center',
+  },
+  frequencyButtonTextActive: {
+    color: COLORS.white,
+    fontSize: 14,
+    fontFamily: 'Poppins_500Medium',
+    textAlign: 'center',
+  },
+  frequencyButtonGradient: {
+    paddingHorizontal: 10,
+    paddingVertical: 2,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 36,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  inactiveFrequencyButton: {
+    paddingHorizontal: 10,
+    paddingVertical: 2,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 36,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  durationContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.md,
+  },
+  durationButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.white,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  durationDisplay: {
+    alignItems: 'center',
+    backgroundColor: COLORS.white,
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: SPACING.sm,
+    borderRadius: 8,
+    minWidth: 80,
+  },
+  durationText: {
+    fontSize: 20,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.primary,
+  },
+  durationUnit: {
+    fontSize: 10,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textMuted,
+    textAlign: 'center',
+  },
+  recurringSummary: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: SPACING.sm,
+    backgroundColor: COLORS.white,
+    padding: SPACING.sm,
+    borderRadius: 8,
+    borderLeftWidth: 3,
+    borderLeftColor: COLORS.info,
+  },
+  recurringSummaryText: {
+    flex: 1,
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.text,
+    lineHeight: 16,
+  },
+  section: {
+    marginBottom: SPACING.lg,
+  },
+  sectionTitle: {
+    fontSize: 16,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+    marginBottom: SPACING.md,
+  },
+  sectionDivider: {
+    height: 1,
+    backgroundColor: COLORS.border,
+    marginVertical: SPACING.lg,
   },
 });

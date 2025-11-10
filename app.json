@@ -15,18 +15,28 @@
     "ios": {
       "supportsTablet": true,
       "bundleIdentifier": "com.care.nursing",
-      "buildNumber": "1"
+      "buildNumber": "1",
+      "infoPlist": {
+        "ITSAppUsesNonExemptEncryption": false
+      }
     },
     "android": {
       "adaptiveIcon": {
         "backgroundColor": "#0a7fb8"
       },
       "package": "com.care.nursing",
-      "versionCode": 1
+      "versionCode": 1,
+      "permissions": [
+        "RECEIVE_BOOT_COMPLETED"
+      ]
     },
-    "web": {
-      "bundler": "metro"
+    "notification": {
+      "icon": "./assets/notification-icon.png",
+      "color": "#0a7fb8",
+      "androidMode": "default",
+      "androidCollapsedTitle": "#{unread_notifications} new notifications"
     },
+    "platforms": ["ios", "android"],
     "extra": {
       "eas": {
         "projectId": "36c20da6-6d6d-4287-b885-d03988aa187d"

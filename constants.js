@@ -38,7 +38,7 @@ export const GRADIENTS = {
   accent: ['#22d0cd', '#3ee9e6'],
   header: ['#4169E1', '#1E90FF', '#00BFFF', '#00CED1'],
   card: ['#ffffff', '#f8fcff'],
-  splash: ['#FFFFFF', '#00FFFF'], // Inverted: white to cyan gradient for splash/login/signup
+  splash: ['#FFFFFF', '#FFFFFF'], // Pure white background for splash
 };
 
 export const SPACING = {
@@ -90,7 +90,7 @@ export const SERVICES = [
     description: 'Professional wound care and sterile dressing changes for all types of wounds',
     icon: 'bandage',
     category: 'Clinical',
-    price: '$45',
+    price: 'J$6,750',
     duration: '30 mins'
   },
   {
@@ -99,7 +99,7 @@ export const SERVICES = [
     description: 'Safe and accurate medication management with proper documentation',
     icon: 'pill',
     category: 'Clinical',
-    price: '$35',
+    price: 'J$5,275',
     duration: '20 mins'
   },
   {
@@ -108,7 +108,7 @@ export const SERVICES = [
     description: 'Expert nasogastric tube insertion and management with patient comfort',
     icon: 'stomach',
     category: 'Clinical',
-    price: '$85',
+    price: 'J$12,800',
     duration: '45 mins'
   },
   {
@@ -117,7 +117,7 @@ export const SERVICES = [
     description: 'Professional catheter insertion and care with dignity and comfort',
     icon: 'water-outline',
     category: 'Clinical',
-    price: '$75',
+    price: 'J$11,300',
     duration: '40 mins'
   },
   {
@@ -126,7 +126,7 @@ export const SERVICES = [
     description: 'Skilled intravenous access and IV therapy management',
     icon: 'needle',
     category: 'Clinical',
-    price: '$65',
+    price: 'J$9,800',
     duration: '35 mins'
   },
   {
@@ -135,7 +135,7 @@ export const SERVICES = [
     description: 'Specialized tracheostomy maintenance and suctioning services',
     icon: 'lungs',
     category: 'Clinical',
-    price: '$95',
+    price: 'J$14,300',
     duration: '50 mins'
   },
   {
@@ -144,7 +144,7 @@ export const SERVICES = [
     description: 'Professional physical rehabilitation and mobility improvement services',
     icon: 'walk',
     category: 'Therapy',
-    price: '$80',
+    price: 'J$12,050',
     duration: '60 mins'
   },
   {
@@ -153,7 +153,7 @@ export const SERVICES = [
     description: 'Comprehensive nursing care in the comfort of your home',
     icon: 'home-heart',
     category: 'Home Care',
-    price: '$120/hr',
+    price: 'J$18,100/hr',
     duration: 'Hourly'
   },
   {
@@ -162,7 +162,7 @@ export const SERVICES = [
     description: 'Compassionate bedside care and patient advocacy at the hospital',
     icon: 'hospital-building',
     category: 'Support',
-    price: '$100/hr',
+    price: 'J$15,075/hr',
     duration: 'Hourly'
   },
   {
@@ -171,7 +171,7 @@ export const SERVICES = [
     description: 'Professional phlebotomy and blood sample collection services',
     icon: 'water-check',
     category: 'Clinical',
-    price: '$40',
+    price: 'J$6,025',
     duration: '15 mins'
   },
   {
@@ -180,7 +180,7 @@ export const SERVICES = [
     description: 'Regular monitoring of blood pressure, temperature, and other vital signs',
     icon: 'heart-pulse',
     category: 'Monitoring',
-    price: '$30',
+    price: 'J$4,525',
     duration: '15 mins'
   },
   {
@@ -189,7 +189,7 @@ export const SERVICES = [
     description: 'Advanced wound assessment, cleaning, and specialized treatment',
     icon: 'medical-bag',
     category: 'Clinical',
-    price: '$70',
+    price: 'J$10,550',
     duration: '45 mins'
   },
   {
@@ -198,7 +198,7 @@ export const SERVICES = [
     description: 'Professional administration of injections and immunizations',
     icon: 'needle-off',
     category: 'Clinical',
-    price: '$35',
+    price: 'J$5,275',
     duration: '15 mins'
   },
   {
@@ -207,7 +207,7 @@ export const SERVICES = [
     description: 'Comprehensive health evaluations and wellness checks',
     icon: 'clipboard-pulse',
     category: 'Monitoring',
-    price: '$90',
+    price: 'J$13,575',
     duration: '60 mins'
   },
   {
@@ -216,7 +216,7 @@ export const SERVICES = [
     description: 'Specialized care and assistance for senior patients',
     icon: 'human-cane',
     category: 'Home Care',
-    price: '$110/hr',
+    price: 'J$16,575/hr',
     duration: 'Hourly'
   },
   {
@@ -225,7 +225,7 @@ export const SERVICES = [
     description: 'Expert post-operative monitoring and recovery support',
     icon: 'hospital-box',
     category: 'Support',
-    price: '$150',
+    price: 'J$22,575',
     duration: '90 mins'
   },
   {
@@ -234,7 +234,7 @@ export const SERVICES = [
     description: 'Blood sugar monitoring, insulin administration, and diabetic management',
     icon: 'diabetes',
     category: 'Monitoring',
-    price: '$55',
+    price: 'J$8,300',
     duration: '30 mins'
   },
   {
@@ -243,14 +243,14 @@ export const SERVICES = [
     description: 'Compassionate comfort care and pain management services',
     icon: 'hand-heart',
     category: 'Support',
-    price: '$130/hr',
+    price: 'J$19,575/hr',
     duration: 'Hourly'
   },
 ];
 
 export const CONTACT_INFO = {
   phone: '876-288-7304',
-  email: 'nursingservicesandmorecare@gmail.com',
+  email: 'care@nursingcareja.com',
   instagram: '@carenursingservices',
   whatsapp: '876-288-7304',
   emergency: '876-288-7304',
@@ -259,4 +259,60 @@ export const CONTACT_INFO = {
     saturday: 'Sat: 10:00-14:00',
     emergency: '24/7 Emergency',
   },
+};
+
+// Invoice Configuration
+export const INVOICE_CONFIG = {
+  companyInfo: {
+    name: 'CARE',
+    fullName: 'NURSING SERVICES AND MORE',
+    address: 'Kingston, Jamaica',
+    phone: '876-288-7304',
+    email: 'care@nursingcareja.com',
+    taxId: '', // Add if applicable
+  },
+  template: {
+    header: {
+      colors: ['#4169E1', '#1E90FF', '#00BFFF', '#00CED1'], // Matches your gradient
+      logo: 'CARE', // Will use your existing logo
+    },
+    terms: {
+      paymentDue: 3, // days
+      paymentText: 'Please send payment within 3 days of receiving this invoice.',
+    },
+    numberPrefix: 'INV-',
+  },
+};
+
+// Invoice Line Item Structure
+export const INVOICE_ITEM_TEMPLATE = {
+  description: '',
+  quantity: 1,
+  price: 0,
+  total: 0,
+};
+
+// Sample invoice data structure
+export const SAMPLE_INVOICE = {
+  invoiceNumber: 'INV-2024-001',
+  date: '2024-11-01',
+  dueDate: '2024-11-04',
+  billTo: {
+    name: '',
+    address: '',
+    phone: '',
+    email: '',
+  },
+  items: [
+    // Will be populated with services from SERVICES array
+  ],
+  subtotal: 0,
+  tax: 0,
+  total: 0,
+  paymentInfo: {
+    method: '', // Cash, Card, Bank Transfer, etc.
+    bankDetails: '', // If bank transfer
+  },
+  status: 'pending', // pending, paid, overdue
+  notes: '',
 };

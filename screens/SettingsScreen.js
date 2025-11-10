@@ -5,19 +5,19 @@ import {
   Text,
   StyleSheet,
   ScrollView,
-  SafeAreaView,
   Switch,
   Alert,
   Linking,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
+import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS, SPACING, TYPOGRAPHY, GRADIENTS, CONTACT_INFO } from '../constants';
 import { useAuth } from '../context/AuthContext';
 
 export default function SettingsScreen({ navigation }) {
   const { user, logout } = useAuth();
-  const [notifications, setNotifications] = React.useState(true);
+  const insets = useSafeAreaInsets();
   const [emailUpdates, setEmailUpdates] = React.useState(false);
 
   const handleLogout = () => {
@@ -47,6 +47,10 @@ export default function SettingsScreen({ navigation }) {
     navigation.navigate('ChangePassword');
   };
 
+  const handleNotificationSettings = () => {
+    navigation.navigate('NotificationSettings');
+  };
+
   const handleHelp = () => {
     navigation.navigate('Help');
   };
@@ -73,17 +77,6 @@ export default function SettingsScreen({ navigation }) {
     navigation.navigate('About');
   };
 
-  const handleNotificationToggle = (value) => {
-    setNotifications(value);
-    Alert.alert(
-      value ? 'Enabled' : 'Disabled',
-      value 
-        ? 'You will receive push notifications for appointments and updates.'
-        : 'Push notifications have been turned off. You may miss important updates.',
-      [{ text: 'OK' }]
-    );
-  };
-
   const handleEmailToggle = (value) => {
     setEmailUpdates(value);
     if (value) {
@@ -104,7 +97,7 @@ export default function SettingsScreen({ navigation }) {
     >
       <View style={styles.iconContainer}>
         <LinearGradient colors={GRADIENTS.primary} style={styles.iconGradient}>
-          <MaterialCommunityIcons name={icon} size={24} color={COLORS.white} />
+          <MaterialCommunityIcons name={icon} size={18} color={COLORS.white} />
         </LinearGradient>
       </View>
       <View style={styles.settingContent}>
@@ -128,14 +121,18 @@ export default function SettingsScreen({ navigation }) {
         colors={GRADIENTS.header}
         start={{ x: 0, y: 0 }}
         end={{ x: 0, y: 1 }}
-        style={styles.header}
+        style={[styles.header, { paddingTop: insets.top + 20 }]}
       >
         <View style={styles.headerRow}>
           <Text style={styles.welcomeText}>Settings</Text>
         </View>
       </LinearGradient>
 
-      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView 
+        style={styles.content} 
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 20 }]}
+        showsVerticalScrollIndicator={false}
+      >
         {/* Account Section */}
         <SectionHeader title="ACCOUNT" />
         <View style={styles.section}>
@@ -159,22 +156,50 @@ export default function SettingsScreen({ navigation }) {
           />
         </View>
 
+        {/* Admin Management Hub - Only visible for super admin (ADMIN001) */}
+        {user?.isSuperAdmin && (
+          <>
+            <SectionHeader title="ADMIN MANAGEMENT" />
+            <View style={styles.section}>
+              <SettingItem
+                icon="shield-crown"
+                title="Admin Management Hub"
+                subtitle="Manage admins, prices, staff & analytics"
+                onPress={() => navigation.navigate('AdminManagementHub')}
+              />
+            </View>
+          </>
+        )}
+
+        {/* Inventory Management - Available for all admins */}
+        {user?.role === 'admin' && (
+          <>
+            <SectionHeader title="INVENTORY" />
+            <View style={styles.section}>
+              <SettingItem
+                icon="package-variant"
+                title="Inventory Management"
+                subtitle="Manage store products & stock levels"
+                onPress={() => navigation.navigate('InventoryManagement')}
+              />
+              <SettingItem
+                icon="package-variant-closed"
+                title="Store Orders"
+                subtitle="View and manage customer orders"
+                onPress={() => navigation.navigate('AdminStoreOrders')}
+              />
+            </View>
+          </>
+        )}
+
         {/* Notifications Section */}
         <SectionHeader title="NOTIFICATIONS" />
         <View style={styles.section}>
           <SettingItem
-            icon="bell"
-            title="Push Notifications"
-            subtitle="Receive appointment reminders"
-            showChevron={false}
-            rightContent={
-              <Switch
-                value={notifications}
-                onValueChange={handleNotificationToggle}
-                trackColor={{ false: COLORS.border, true: COLORS.accent }}
-                thumbColor={COLORS.white}
-              />
-            }
+            icon="bell-cog"
+            title="Notification Settings"
+            subtitle="Manage push notifications and preferences"
+            onPress={handleNotificationSettings}
           />
           <SettingItem
             icon="email"
@@ -222,18 +247,18 @@ export default function SettingsScreen({ navigation }) {
           activeOpacity={0.8}
         >
           <LinearGradient
-            colors={['#ff4757', '#ff6b81']}
+            colors={['#FF4757', '#FF6348']}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 1 }}
             style={styles.logoutGradient}
           >
-            <MaterialCommunityIcons name="logout" size={20} color={COLORS.white} />
+            <MaterialCommunityIcons name="logout" size={16} color={COLORS.white} />
             <Text style={styles.logoutText}>Sign Out</Text>
           </LinearGradient>
         </TouchableWeb>
 
         <View style={styles.footer}>
-          <Text style={styles.footerText}>CARE Nursing Services</Text>
+          <Text style={styles.footerText}>CARE Nursing Services and More</Text>
           <Text style={styles.footerSubtext}>© 2025 All rights reserved</Text>
         </View>
       </ScrollView>
@@ -248,7 +273,6 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: 20,
-    paddingTop: 60,
     paddingBottom: 20,
     borderBottomLeftRadius: 24,
     borderBottomRightRadius: 24,
@@ -264,6 +288,7 @@ const styles = StyleSheet.create({
     color: COLORS.white,
     opacity: 0.98,
     textAlign: 'center',
+    alignSelf: 'center',
   },
   iconButton: {
     width: 44,
@@ -302,18 +327,21 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
   },
+  scrollContent: {
+    flexGrow: 1,
+  },
   sectionHeader: {
     fontSize: 12,
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.textLight,
     marginTop: SPACING.xl,
     marginBottom: SPACING.sm,
-    marginHorizontal: SPACING.lg,
+    marginHorizontal: SPACING.md,
     letterSpacing: 1,
   },
   section: {
     backgroundColor: COLORS.card,
-    marginHorizontal: SPACING.lg,
+    marginHorizontal: SPACING.md,
     borderRadius: 16,
     overflow: 'hidden',
     shadowColor: COLORS.shadow,
@@ -325,7 +353,8 @@ const styles = StyleSheet.create({
   settingItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    padding: SPACING.md,
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.md,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
@@ -333,9 +362,9 @@ const styles = StyleSheet.create({
     marginRight: SPACING.md,
   },
   iconGradient: {
-    width: 44,
-    height: 44,
-    borderRadius: 12,
+    width: 36,
+    height: 36,
+    borderRadius: 10,
     alignItems: 'center',
     justifyContent: 'center',
   },
@@ -354,12 +383,12 @@ const styles = StyleSheet.create({
     color: COLORS.textLight,
   },
   logoutButton: {
-    marginHorizontal: SPACING.lg,
+    marginHorizontal: SPACING.md,
     marginTop: SPACING.xl,
     marginBottom: SPACING.lg,
     borderRadius: 16,
     overflow: 'hidden',
-    shadowColor: '#ff4757',
+    shadowColor: '#FF4757',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.3,
     shadowRadius: 12,
@@ -369,11 +398,12 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    padding: SPACING.lg,
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.lg,
     gap: SPACING.sm,
   },
   logoutText: {
-    fontSize: 16,
+    fontSize: 14,
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.white,
   },
@@ -391,5 +421,62 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: 'Poppins_400Regular',
     color: COLORS.textLight,
+  },
+  // Admin Management Hub styles
+  managementGrid: {
+    padding: SPACING.md,
+    gap: SPACING.md,
+  },
+  managementRow: {
+    flexDirection: 'row',
+    gap: SPACING.md,
+  },
+  managementCard: {
+    flex: 1,
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: COLORS.shadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 5,
+  },
+  managementCardGradient: {
+    padding: SPACING.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 120,
+    gap: SPACING.xs,
+  },
+  managementCardTitle: {
+    fontSize: 14,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.white,
+    textAlign: 'center',
+  },
+  managementCardSubtitle: {
+    fontSize: 11,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.white,
+    opacity: 0.9,
+    textAlign: 'center',
+  },
+  managementCardFull: {
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: COLORS.shadow,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 12,
+    elevation: 5,
+  },
+  managementCardFullGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    padding: SPACING.md,
+    gap: SPACING.md,
+  },
+  managementCardFullContent: {
+    flex: 1,
   },
 });

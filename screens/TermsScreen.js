@@ -6,26 +6,28 @@ import {
   StyleSheet,
   ScrollView,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { COLORS, GRADIENTS, SPACING } from '../constants';
 
 export default function TermsScreen({ navigation }) {
+  const insets = useSafeAreaInsets();
+  
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={['bottom']}>
       <LinearGradient
         colors={GRADIENTS.header}
         start={{ x: 0, y: 0 }}
         end={{ x: 0, y: 1 }}
-        style={styles.header}
+        style={[styles.header, { paddingTop: insets.top + 20 }]}
       >
         <View style={styles.headerRow}>
           <TouchableWeb onPress={() => navigation.goBack()} style={styles.backButton}>
-            <MaterialCommunityIcons name="arrow-left" size={24} color={COLORS.white} />
+            <MaterialCommunityIcons name="arrow-left" size={26} color={COLORS.white} />
           </TouchableWeb>
           <Text style={styles.headerTitle}>Terms of Service</Text>
-          <View style={{ width: 40 }} />
+          <View style={{ width: 44 }} />
         </View>
       </LinearGradient>
 
@@ -129,7 +131,7 @@ export default function TermsScreen({ navigation }) {
             <Text style={styles.sectionTitle}>10. Contact Information{'\n'}</Text>
             <Text style={styles.bodyText}>
               For questions about these Terms of Service, please contact us:{'\n\n'}
-              Email: nursingservicesandmorecare@gmail.com{'\n'}
+              Email: care@nursingcareja.com{'\n'}
               Phone: 876-288-7304{'\n'}
               Instagram: @carenursingservices
             </Text>
@@ -153,8 +155,10 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
   },
   header: {
-    paddingHorizontal: SPACING.lg,
-    paddingVertical: SPACING.lg,
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
   },
   headerRow: {
     flexDirection: 'row',
@@ -162,17 +166,19 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   headerTitle: {
-    fontSize: 20,
-    fontFamily: 'Poppins_600SemiBold',
+    fontSize: 18,
+    fontFamily: 'Poppins_700Bold',
     color: COLORS.white,
+    flex: 1,
+    textAlign: 'center',
   },
   scrollView: {
     flex: 1,

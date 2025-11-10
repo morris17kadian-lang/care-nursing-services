@@ -12,7 +12,7 @@ import {
   Image,
   Alert,
   Animated,
-  Dimensions,
+  useWindowDimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -20,9 +20,8 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS, SPACING, GRADIENTS } from '../constants';
 import { useAuth } from '../context/AuthContext';
 
-const { height } = Dimensions.get('window');
-
 export default function SignupScreen({ navigation }) {
+  const { height } = useWindowDimensions();
   const [username, setUsername] = useState('');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');

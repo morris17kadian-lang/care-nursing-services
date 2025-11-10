@@ -8,12 +8,13 @@ import {
   Switch,
   Alert,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { COLORS, GRADIENTS, SPACING } from '../constants';
 
 export default function PrivacySecurityScreen({ navigation }) {
+  const insets = useSafeAreaInsets();
   const [settings, setSettings] = useState({
     dataCollection: true,
     shareWithPartners: false,
@@ -38,9 +39,6 @@ export default function PrivacySecurityScreen({ navigation }) {
 
   const SettingItem = ({ icon, title, subtitle, value, onToggle, iconColor = COLORS.primary }) => (
     <View style={styles.settingItem}>
-      <View style={styles.iconContainer}>
-        <MaterialCommunityIcons name={icon} size={24} color={iconColor} />
-      </View>
       <View style={styles.settingContent}>
         <Text style={styles.settingTitle}>{title}</Text>
         <Text style={styles.settingSubtitle}>{subtitle}</Text>
@@ -56,7 +54,6 @@ export default function PrivacySecurityScreen({ navigation }) {
 
   const InfoCard = ({ icon, title, description, iconColor = COLORS.info }) => (
     <View style={styles.infoCard}>
-      <MaterialCommunityIcons name={icon} size={32} color={iconColor} />
       <View style={styles.infoContent}>
         <Text style={styles.infoTitle}>{title}</Text>
         <Text style={styles.infoDescription}>{description}</Text>
@@ -70,7 +67,7 @@ export default function PrivacySecurityScreen({ navigation }) {
         colors={GRADIENTS.header}
         start={{ x: 0, y: 0 }}
         end={{ x: 0, y: 1 }}
-        style={styles.header}
+        style={[styles.header, { paddingTop: insets.top + 20 }]}
       >
         <View style={styles.headerRow}>
           <TouchableWeb 
@@ -81,6 +78,7 @@ export default function PrivacySecurityScreen({ navigation }) {
             <MaterialCommunityIcons name="arrow-left" size={26} color={COLORS.white} />
           </TouchableWeb>
           <Text style={styles.welcomeText}>Privacy & Security</Text>
+          <View style={{ width: 44 }} />
         </View>
       </LinearGradient>
 
@@ -215,7 +213,6 @@ const styles = StyleSheet.create({
   },
   header: {
     paddingHorizontal: 20,
-    paddingTop: 60,
     paddingBottom: 20,
     borderBottomLeftRadius: 24,
     borderBottomRightRadius: 24,

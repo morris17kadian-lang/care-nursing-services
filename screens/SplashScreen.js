@@ -5,7 +5,7 @@ import {
   Text, 
   StyleSheet, 
   Animated, 
-  Dimensions, 
+  useWindowDimensions,
   Image, 
   TextInput, 
   Alert,
@@ -13,7 +13,9 @@ import {
   Platform,
   ScrollView,
   ActivityIndicator,
-  Keyboard
+  Keyboard,
+  Modal,
+  FlatList
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -21,15 +23,117 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GRADIENTS, COLORS, SPACING } from '../constants';
 import { useAuth } from '../context/AuthContext';
 
-const { width, height } = Dimensions.get('window');
+// Country list with currency - All countries worldwide
+const COUNTRIES = [
+  { name: 'Afghanistan', code: 'AF', currency: 'AFN', symbol: '؋' },
+  { name: 'Albania', code: 'AL', currency: 'ALL', symbol: 'L' },
+  { name: 'Algeria', code: 'DZ', currency: 'DZD', symbol: 'د.ج' },
+  { name: 'Argentina', code: 'AR', currency: 'ARS', symbol: '$' },
+  { name: 'Armenia', code: 'AM', currency: 'AMD', symbol: '֏' },
+  { name: 'Australia', code: 'AU', currency: 'AUD', symbol: 'A$' },
+  { name: 'Austria', code: 'AT', currency: 'EUR', symbol: '€' },
+  { name: 'Azerbaijan', code: 'AZ', currency: 'AZN', symbol: '₼' },
+  { name: 'Bahrain', code: 'BH', currency: 'BHD', symbol: '.د.ب' },
+  { name: 'Bangladesh', code: 'BD', currency: 'BDT', symbol: '৳' },
+  { name: 'Belarus', code: 'BY', currency: 'BYN', symbol: 'Br' },
+  { name: 'Belgium', code: 'BE', currency: 'EUR', symbol: '€' },
+  { name: 'Bolivia', code: 'BO', currency: 'BOB', symbol: 'Bs.' },
+  { name: 'Brazil', code: 'BR', currency: 'BRL', symbol: 'R$' },
+  { name: 'Bulgaria', code: 'BG', currency: 'BGN', symbol: 'лв' },
+  { name: 'Cambodia', code: 'KH', currency: 'KHR', symbol: '៛' },
+  { name: 'Canada', code: 'CA', currency: 'CAD', symbol: 'C$' },
+  { name: 'Chile', code: 'CL', currency: 'CLP', symbol: '$' },
+  { name: 'China', code: 'CN', currency: 'CNY', symbol: '¥' },
+  { name: 'Colombia', code: 'CO', currency: 'COP', symbol: '$' },
+  { name: 'Croatia', code: 'HR', currency: 'EUR', symbol: '€' },
+  { name: 'Czech Republic', code: 'CZ', currency: 'CZK', symbol: 'Kč' },
+  { name: 'Denmark', code: 'DK', currency: 'DKK', symbol: 'kr' },
+  { name: 'Dominican Republic', code: 'DO', currency: 'DOP', symbol: '$' },
+  { name: 'Ecuador', code: 'EC', currency: 'USD', symbol: '$' },
+  { name: 'Egypt', code: 'EG', currency: 'EGP', symbol: '£' },
+  { name: 'Estonia', code: 'EE', currency: 'EUR', symbol: '€' },
+  { name: 'Ethiopia', code: 'ET', currency: 'ETB', symbol: 'Br' },
+  { name: 'Finland', code: 'FI', currency: 'EUR', symbol: '€' },
+  { name: 'France', code: 'FR', currency: 'EUR', symbol: '€' },
+  { name: 'Georgia', code: 'GE', currency: 'GEL', symbol: '₾' },
+  { name: 'Germany', code: 'DE', currency: 'EUR', symbol: '€' },
+  { name: 'Ghana', code: 'GH', currency: 'GHS', symbol: '₵' },
+  { name: 'Greece', code: 'GR', currency: 'EUR', symbol: '€' },
+  { name: 'Guatemala', code: 'GT', currency: 'GTQ', symbol: 'Q' },
+  { name: 'Hong Kong', code: 'HK', currency: 'HKD', symbol: 'HK$' },
+  { name: 'Hungary', code: 'HU', currency: 'HUF', symbol: 'Ft' },
+  { name: 'Iceland', code: 'IS', currency: 'ISK', symbol: 'kr' },
+  { name: 'India', code: 'IN', currency: 'INR', symbol: '₹' },
+  { name: 'Indonesia', code: 'ID', currency: 'IDR', symbol: 'Rp' },
+  { name: 'Iran', code: 'IR', currency: 'IRR', symbol: '﷼' },
+  { name: 'Iraq', code: 'IQ', currency: 'IQD', symbol: 'ع.د' },
+  { name: 'Ireland', code: 'IE', currency: 'EUR', symbol: '€' },
+  { name: 'Israel', code: 'IL', currency: 'ILS', symbol: '₪' },
+  { name: 'Italy', code: 'IT', currency: 'EUR', symbol: '€' },
+  { name: 'Jamaica', code: 'JM', currency: 'JMD', symbol: 'J$' },
+  { name: 'Japan', code: 'JP', currency: 'JPY', symbol: '¥' },
+  { name: 'Jordan', code: 'JO', currency: 'JOD', symbol: 'د.ا' },
+  { name: 'Kazakhstan', code: 'KZ', currency: 'KZT', symbol: '₸' },
+  { name: 'Kenya', code: 'KE', currency: 'KES', symbol: 'KSh' },
+  { name: 'Kuwait', code: 'KW', currency: 'KWD', symbol: 'د.ك' },
+  { name: 'Latvia', code: 'LV', currency: 'EUR', symbol: '€' },
+  { name: 'Lebanon', code: 'LB', currency: 'LBP', symbol: 'ل.ل' },
+  { name: 'Lithuania', code: 'LT', currency: 'EUR', symbol: '€' },
+  { name: 'Luxembourg', code: 'LU', currency: 'EUR', symbol: '€' },
+  { name: 'Malaysia', code: 'MY', currency: 'MYR', symbol: 'RM' },
+  { name: 'Mexico', code: 'MX', currency: 'MXN', symbol: '$' },
+  { name: 'Morocco', code: 'MA', currency: 'MAD', symbol: 'د.م.' },
+  { name: 'Netherlands', code: 'NL', currency: 'EUR', symbol: '€' },
+  { name: 'New Zealand', code: 'NZ', currency: 'NZD', symbol: 'NZ$' },
+  { name: 'Nigeria', code: 'NG', currency: 'NGN', symbol: '₦' },
+  { name: 'Norway', code: 'NO', currency: 'NOK', symbol: 'kr' },
+  { name: 'Oman', code: 'OM', currency: 'OMR', symbol: 'ر.ع.' },
+  { name: 'Pakistan', code: 'PK', currency: 'PKR', symbol: '₨' },
+  { name: 'Panama', code: 'PA', currency: 'PAB', symbol: 'B/.' },
+  { name: 'Peru', code: 'PE', currency: 'PEN', symbol: 'S/' },
+  { name: 'Philippines', code: 'PH', currency: 'PHP', symbol: '₱' },
+  { name: 'Poland', code: 'PL', currency: 'PLN', symbol: 'zł' },
+  { name: 'Portugal', code: 'PT', currency: 'EUR', symbol: '€' },
+  { name: 'Qatar', code: 'QA', currency: 'QAR', symbol: 'ر.ق' },
+  { name: 'Romania', code: 'RO', currency: 'RON', symbol: 'lei' },
+  { name: 'Russia', code: 'RU', currency: 'RUB', symbol: '₽' },
+  { name: 'Saudi Arabia', code: 'SA', currency: 'SAR', symbol: '﷼' },
+  { name: 'Serbia', code: 'RS', currency: 'RSD', symbol: 'дин.' },
+  { name: 'Singapore', code: 'SG', currency: 'SGD', symbol: 'S$' },
+  { name: 'Slovakia', code: 'SK', currency: 'EUR', symbol: '€' },
+  { name: 'Slovenia', code: 'SI', currency: 'EUR', symbol: '€' },
+  { name: 'South Africa', code: 'ZA', currency: 'ZAR', symbol: 'R' },
+  { name: 'South Korea', code: 'KR', currency: 'KRW', symbol: '₩' },
+  { name: 'Spain', code: 'ES', currency: 'EUR', symbol: '€' },
+  { name: 'Sri Lanka', code: 'LK', currency: 'LKR', symbol: '₨' },
+  { name: 'Sweden', code: 'SE', currency: 'SEK', symbol: 'kr' },
+  { name: 'Switzerland', code: 'CH', currency: 'CHF', symbol: 'CHF' },
+  { name: 'Taiwan', code: 'TW', currency: 'TWD', symbol: 'NT$' },
+  { name: 'Thailand', code: 'TH', currency: 'THB', symbol: '฿' },
+  { name: 'Tunisia', code: 'TN', currency: 'TND', symbol: 'د.ت' },
+  { name: 'Turkey', code: 'TR', currency: 'TRY', symbol: '₺' },
+  { name: 'Ukraine', code: 'UA', currency: 'UAH', symbol: '₴' },
+  { name: 'United Arab Emirates', code: 'AE', currency: 'AED', symbol: 'د.إ' },
+  { name: 'United Kingdom', code: 'GB', currency: 'GBP', symbol: '£' },
+  { name: 'United States', code: 'US', currency: 'USD', symbol: '$' },
+  { name: 'Uruguay', code: 'UY', currency: 'UYU', symbol: '$U' },
+  { name: 'Venezuela', code: 'VE', currency: 'VES', symbol: 'Bs.S' },
+  { name: 'Vietnam', code: 'VN', currency: 'VND', symbol: '₫' },
+  { name: 'Yemen', code: 'YE', currency: 'YER', symbol: '﷼' },
+  { name: 'Zambia', code: 'ZM', currency: 'ZMW', symbol: 'ZK' },
+  { name: 'Zimbabwe', code: 'ZW', currency: 'ZWL', symbol: 'Z$' },
+].sort((a, b) => a.name.localeCompare(b.name));
 
 export default function SplashScreen({ onFinish }) {
+  // Get screen dimensions
+  const { width, height } = useWindowDimensions();
+  
   // Authentication state
   const [showAuthForms, setShowAuthForms] = useState(false);
   const [isLogin, setIsLogin] = useState(true);
-  const [emailOrCode, setEmailOrCode] = useState('');
-  const [password, setPassword] = useState('');
   const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [signupUsername, setSignupUsername] = useState('');
   const [email, setEmail] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -37,11 +141,14 @@ export default function SplashScreen({ onFinish }) {
   const [rememberMe, setRememberMe] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const [selectedCountry, setSelectedCountry] = useState(COUNTRIES.find(country => country.code === 'JM') || COUNTRIES[0]);
+  const [showCountryModal, setShowCountryModal] = useState(false);
+  const [countrySearch, setCountrySearch] = useState('');
   const { login, signup } = useAuth();
   
   // Animation values
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-  const scaleAnim = useRef(new Animated.Value(0.2)).current;
+  const fadeAnim = useRef(new Animated.Value(0)).current; // Start invisible for entrance animation
+  const scaleAnim = useRef(new Animated.Value(0.2)).current; // Start small for entrance animation
   const translateYAnim = useRef(new Animated.Value(0)).current;
   const authFormsOpacity = useRef(new Animated.Value(0)).current;
   const authFormsTranslateY = useRef(new Animated.Value(50)).current;
@@ -60,50 +167,49 @@ export default function SplashScreen({ onFinish }) {
       () => setIsKeyboardVisible(false)
     );
     
-    // Step 1: Animate logo entrance (fade in and scale up) - Smooth, no pulsing
+    // Step 1: Logo entrance animation (fade in and scale up)
     Animated.parallel([
       Animated.timing(fadeAnim, {
         toValue: 1,
-        duration: 100, // Reduced from 800ms
+        duration: 400,
         useNativeDriver: true,
       }),
       Animated.timing(scaleAnim, {
         toValue: 1,
-        duration: 400, // Use timing instead of spring to eliminate pulsing
+        duration: 400,
         useNativeDriver: true,
       }),
     ]).start(() => {
-      // Step 2: After logo appears, wait briefly then slide up
+      // Step 2: Wait to show the logo, then move to login position
       setTimeout(() => {
         Animated.parallel([
           Animated.timing(scaleAnim, {
-            toValue: 0.6, // Scale down slightly for login page size
-            duration: 600, // Reduced from 800ms
+            toValue: 0.6, // Scale down for login page
+            duration: 600,
             useNativeDriver: true,
           }),
           Animated.timing(translateYAnim, {
-            toValue: -height * 0.45, // Move logo even higher
-            duration: 600, // Reduced from 800ms
+            toValue: -height * 0.45, // Move logo up
+            duration: 600,
             useNativeDriver: true,
           }),
         ]).start(() => {
-          // Step 4: After slide animation, show auth forms immediately
+          // Step 3: Show auth forms
           setShowAuthForms(true);
-          // Fade in the auth forms
           Animated.parallel([
             Animated.timing(authFormsOpacity, {
               toValue: 1,
-              duration: 100, // Reduced from 600ms
+              duration: 600,
               useNativeDriver: true,
             }),
             Animated.timing(authFormsTranslateY, {
               toValue: 0,
-              duration: 100, // Reduced from 600ms
+              duration: 600,
               useNativeDriver: true,
             }),
           ]).start();
         });
-      }, 800); // Reduced from 2000ms to 800ms
+      }, 1300); // Show full logo for 1.3 seconds
     });
 
     // Cleanup keyboard listeners
@@ -117,8 +223,8 @@ export default function SplashScreen({ onFinish }) {
     try {
       const savedCredentials = await AsyncStorage.getItem('savedCredentials');
       if (savedCredentials) {
-        const { emailOrCode, password, rememberMe } = JSON.parse(savedCredentials);
-        setEmailOrCode(emailOrCode);
+        const { username, password, rememberMe } = JSON.parse(savedCredentials);
+        setUsername(username);
         setPassword(password);
         setRememberMe(rememberMe);
       }
@@ -127,10 +233,10 @@ export default function SplashScreen({ onFinish }) {
     }
   };
 
-  const saveCredentials = async (emailOrCode, password) => {
+  const saveCredentials = async (username, password) => {
     try {
       const credentials = {
-        emailOrCode,
+        username,
         password,
         rememberMe: true
       };
@@ -163,14 +269,14 @@ export default function SplashScreen({ onFinish }) {
     // Clear form fields when switching modes
     if (isLoginMode) {
       // Switching to login - clear signup fields
-      setUsername('');
+      setSignupUsername('');
       setEmail('');
       setConfirmPassword('');
       // Load saved credentials if available for login
       loadSavedCredentials();
     } else {
       // Switching to signup - clear login fields and remember me
-      setEmailOrCode('');
+      setUsername('');
       setPassword('');
       setRememberMe(false);
     }
@@ -179,15 +285,15 @@ export default function SplashScreen({ onFinish }) {
   };
 
   const handleLogin = async () => {
-    if (!emailOrCode.trim() || !password.trim()) {
+    if (!username.trim() || !password.trim()) {
       Alert.alert('Error', 'Please fill in all fields');
       return;
     }
 
     setIsLoading(true);
-    console.log('Attempting login with:', { emailOrCode: emailOrCode.trim(), password: '***' });
+    console.log('Attempting login with:', { username: username.trim(), password: '***' });
     
-    const result = await login(emailOrCode.trim(), password);
+    const result = await login(username.trim(), password);
     console.log('Login result:', result);
     
     setIsLoading(false);
@@ -197,7 +303,7 @@ export default function SplashScreen({ onFinish }) {
     } else {
       // Handle remember me functionality
       if (rememberMe) {
-        await saveCredentials(emailOrCode.trim(), password);
+        await saveCredentials(username.trim(), password);
       } else {
         await clearSavedCredentials();
       }
@@ -210,8 +316,13 @@ export default function SplashScreen({ onFinish }) {
     }
   };
 
+  const filteredCountries = COUNTRIES.filter(country =>
+    country.name.toLowerCase().includes(countrySearch.toLowerCase()) ||
+    country.code.toLowerCase().includes(countrySearch.toLowerCase())
+  );
+
   const handleSignup = async () => {
-    if (!username.trim() || !email.trim() || !password.trim() || !confirmPassword.trim()) {
+    if (!signupUsername.trim() || !email.trim() || !password.trim() || !confirmPassword.trim() || !selectedCountry) {
       Alert.alert('Error', 'Please fill in all fields');
       return;
     }
@@ -232,7 +343,7 @@ export default function SplashScreen({ onFinish }) {
     }
 
     setIsLoading(true);
-    const result = await signup(username.trim(), email.trim(), password);
+    const result = await signup(signupUsername.trim(), email.trim(), password);
     setIsLoading(false);
 
     if (!result.success) {
@@ -288,7 +399,12 @@ export default function SplashScreen({ onFinish }) {
               }
             ]}
           >
-            <View style={styles.fixedAuthBox}>
+            <LinearGradient
+              colors={GRADIENTS.header}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 0, y: 1 }}
+              style={styles.fixedAuthBox}
+            >
               <ScrollView 
                 contentContainerStyle={[
                   styles.scrollContainer,
@@ -328,42 +444,59 @@ export default function SplashScreen({ onFinish }) {
           <View style={styles.formContainer}>
             {!isLogin && (
               <View style={styles.inputContainer}>
-                <MaterialCommunityIcons name="account" size={24} color="#4A90E2" />
+                <MaterialCommunityIcons name="account" size={20} color="rgba(255, 255, 255, 0.8)" />
                 <TextInput
                   style={styles.input}
                   placeholder="Username"
-                  value={username}
-                  onChangeText={setUsername}
-                  placeholderTextColor="#666"
+                  value={signupUsername}
+                  onChangeText={setSignupUsername}
+                  placeholderTextColor="rgba(255, 255, 255, 0.7)"
                 />
               </View>
             )}
 
             <View style={styles.inputContainer}>
               <MaterialCommunityIcons 
-                name={!isLogin ? "email" : "card-account-details"} 
-                size={24} 
-                color="#4A90E2" 
+                name={isLogin ? "account" : "email"} 
+                size={20} 
+                color="rgba(255, 255, 255, 0.8)" 
               />
               <TextInput
                 style={styles.input}
-                placeholder={!isLogin ? "Email" : "Email or Staff Code"}
-                value={!isLogin ? email : emailOrCode}
-                onChangeText={!isLogin ? setEmail : setEmailOrCode}
-                placeholderTextColor="#666"
+                placeholder={isLogin ? "Username" : "Email"}
+                value={isLogin ? username : email}
+                onChangeText={isLogin ? setUsername : setEmail}
+                placeholderTextColor="rgba(255, 255, 255, 0.7)"
                 autoCapitalize="none"
                 keyboardType={!isLogin ? "email-address" : "default"}
               />
             </View>
 
+            {!isLogin && (
+              <TouchableWeb
+                onPress={() => setShowCountryModal(true)}
+                style={styles.countryContainer}
+              >
+                <MaterialCommunityIcons name="map-marker" size={20} color="rgba(255, 255, 255, 0.8)" />
+                <Text style={styles.countryDisplay}>
+                  {selectedCountry.name} ({selectedCountry.symbol})
+                </Text>
+                <MaterialCommunityIcons
+                  name="chevron-down"
+                  size={18}
+                  color="rgba(255, 255, 255, 0.8)"
+                />
+              </TouchableWeb>
+            )}
+
             <View style={styles.inputContainer}>
-              <MaterialCommunityIcons name="lock" size={24} color="#4A90E2" />
+              <MaterialCommunityIcons name="lock" size={20} color="rgba(255, 255, 255, 0.8)" />
               <TextInput
                 style={styles.input}
                 placeholder="Password"
                 value={password}
                 onChangeText={setPassword}
-                placeholderTextColor="#666"
+                placeholderTextColor="rgba(255, 255, 255, 0.7)"
                 secureTextEntry={!showPassword}
               />
               <TouchableWeb
@@ -467,10 +600,77 @@ export default function SplashScreen({ onFinish }) {
           </View>
                 </View>
               </ScrollView>
-            </View>
+            </LinearGradient>
           </Animated.View>
         </KeyboardAvoidingView>
       )}
+
+      {/* Country Modal */}
+      <Modal
+        visible={showCountryModal}
+        transparent={true}
+        animationType="slide"
+        onRequestClose={() => setShowCountryModal(false)}
+      >
+        <View style={styles.modalContainer}>
+          <View style={styles.modalContent}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Select Country</Text>
+              <TouchableWeb
+                onPress={() => setShowCountryModal(false)}
+                style={styles.modalCloseButton}
+              >
+                <MaterialCommunityIcons
+                  name="close"
+                  size={24}
+                  color={COLORS.text}
+                />
+              </TouchableWeb>
+            </View>
+
+            <View style={styles.searchContainer}>
+              <MaterialCommunityIcons
+                name="magnify"
+                size={20}
+                color={COLORS.textMuted}
+                style={styles.searchIcon}
+              />
+              <TextInput
+                style={styles.searchInput}
+                placeholder="Search countries..."
+                placeholderTextColor={COLORS.textMuted}
+                value={countrySearch}
+                onChangeText={setCountrySearch}
+              />
+            </View>
+
+            <FlatList
+              data={filteredCountries}
+              keyExtractor={(item) => item.code}
+              renderItem={({ item }) => (
+                <TouchableWeb
+                  onPress={() => {
+                    setSelectedCountry(item);
+                    setShowCountryModal(false);
+                    setCountrySearch('');
+                  }}
+                  style={[
+                    styles.countryOption,
+                    selectedCountry.code === item.code && styles.countryOptionSelected,
+                  ]}
+                >
+                  <Text style={styles.countryOptionText}>
+                    {item.name}
+                  </Text>
+                  <Text style={styles.currencyOptionText}>
+                    {item.currency} ({item.symbol})
+                  </Text>
+                </TouchableWeb>
+              )}
+            />
+          </View>
+        </View>
+      </Modal>
     </LinearGradient>
   );
 }
@@ -494,6 +694,25 @@ const styles = StyleSheet.create({
     width: width * 0.7,
     height: height * 0.3,
   },
+  textLogo: {
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  logoText: {
+    fontSize: 48,
+    fontWeight: '800',
+    color: '#0066cc',
+    letterSpacing: 3,
+    fontFamily: 'Poppins_700Bold',
+  },
+  logoSubtext: {
+    fontSize: 16,
+    color: '#22d0cd',
+    fontWeight: '600',
+    marginTop: -5,
+    letterSpacing: 1,
+    fontFamily: 'Poppins_600SemiBold',
+  },
   authKeyboardView: {
     position: 'absolute',
     left: 0,
@@ -515,7 +734,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 20,
-    paddingVertical: 80,
+    paddingVertical: 70,
   },
   staticContainer: {
     padding: 30,
@@ -527,7 +746,6 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 400,
     height: '80%', // Use more of available space below logo
-    backgroundColor: 'rgba(255, 255, 255, 0.25)',
     borderRadius: 24,
     borderWidth: 2,
     borderColor: 'rgba(255, 255, 255, 0.4)',
@@ -591,19 +809,27 @@ const styles = StyleSheet.create({
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
-    borderRadius: 12,
-    paddingHorizontal: 15,
-    marginBottom: 12,
-    borderWidth: 1,
-    borderColor: 'rgba(255, 255, 255, 0.3)',
+    paddingHorizontal: 5,
+    paddingVertical: 8,
+    marginBottom: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.6)',
+  },
+  countryContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 5,
+    paddingVertical: 8,
+    marginBottom: 20,
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255, 255, 255, 0.6)',
   },
   input: {
     flex: 1,
-    paddingVertical: 12,
-    marginLeft: 10,
+    paddingVertical: 8,
+    marginLeft: 12,
     fontSize: 16,
-    color: '#333',
+    color: '#fff',
   },
   eyeIcon: {
     padding: 4,
@@ -622,7 +848,7 @@ const styles = StyleSheet.create({
   },
   rememberMeText: {
     fontSize: 14,
-    color: 'rgba(8, 8, 8, 1))',
+    color: '#fff',
     marginLeft: 8,
   },
   forgotPassword: {
@@ -631,13 +857,14 @@ const styles = StyleSheet.create({
   forgotPasswordText: {
     fontSize: 14,
     fontWeight: '500',
-    color: 'rgba(8, 8, 8, 1))',
+    color: '#fff',
   },
   termsText: {
     fontSize: 11,
-    color: 'rgba(8, 8, 8, 1)',
+    color: '#fff',
     textAlign: 'center',
     marginBottom: 15,
+    marginTop: -30,
     lineHeight: 16,
   },
   termsLink: {
@@ -699,5 +926,80 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '600',
     color: '#4A90E2',
+  },
+  countryDisplay: {
+    flex: 1,
+    marginLeft: 12,
+    fontSize: 16,
+    color: '#fff',
+  },
+  modalContainer: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'flex-end',
+  },
+  modalContent: {
+    backgroundColor: COLORS.white,
+    borderTopLeftRadius: 24,
+    borderTopRightRadius: 24,
+    maxHeight: '80%',
+    paddingTop: 0,
+  },
+  modalHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: SPACING.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  modalTitle: {
+    fontSize: 18,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  modalCloseButton: {
+    padding: SPACING.sm,
+  },
+  searchContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginHorizontal: SPACING.lg,
+    marginVertical: SPACING.md,
+    paddingHorizontal: SPACING.md,
+    backgroundColor: COLORS.background,
+    borderRadius: 12,
+  },
+  searchIcon: {
+    marginRight: SPACING.sm,
+  },
+  searchInput: {
+    flex: 1,
+    paddingVertical: SPACING.sm,
+    fontSize: 15,
+    color: COLORS.text,
+  },
+  countryOption: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingVertical: SPACING.md,
+    paddingHorizontal: SPACING.lg,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  countryOptionSelected: {
+    backgroundColor: 'rgba(76, 175, 80, 0.1)',
+  },
+  countryOptionText: {
+    fontSize: 15,
+    fontWeight: '500',
+    color: COLORS.text,
+    flex: 1,
+  },
+  currencyOptionText: {
+    fontSize: 13,
+    color: COLORS.textMuted,
+    marginLeft: SPACING.md,
   },
 });

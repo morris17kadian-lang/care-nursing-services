@@ -8,12 +8,13 @@ import {
   Linking,
   Image,
 } from 'react-native';
-import { SafeAreaView } from 'react-native-safe-area-context';
+import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { COLORS, GRADIENTS, SPACING, CONTACT_INFO } from '../constants';
 
 export default function AboutScreen({ navigation }) {
+  const insets = useSafeAreaInsets();
   const ContactItem = ({ icon, title, value, onPress }) => (
     <TouchableWeb style={styles.contactItem} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.contactIcon}>
@@ -33,32 +34,35 @@ export default function AboutScreen({ navigation }) {
         colors={GRADIENTS.accent}
         style={styles.featureIcon}
       >
-        <MaterialCommunityIcons name={icon} size={28} color={COLORS.white} />
+        <MaterialCommunityIcons name={icon} size={20} color={COLORS.white} />
       </LinearGradient>
-      <Text style={styles.featureTitle}>{title}</Text>
-      <Text style={styles.featureDescription}>{description}</Text>
+      <View style={styles.featureTextContainer}>
+        <Text style={styles.featureTitle}>{title}</Text>
+        <Text style={styles.featureDescription}>{description}</Text>
+      </View>
     </View>
   );
 
   return (
-    <SafeAreaView style={styles.container} edges={['top']}>
+    <SafeAreaView style={styles.container} edges={['bottom']}>
       <LinearGradient
         colors={GRADIENTS.header}
         start={{ x: 0, y: 0 }}
         end={{ x: 0, y: 1 }}
-        style={styles.header}
+        style={[styles.header, { paddingTop: insets.top + 20 }]}
       >
         <View style={styles.headerRow}>
           <TouchableWeb onPress={() => navigation.goBack()} style={styles.backButton}>
-            <MaterialCommunityIcons name="arrow-left" size={24} color={COLORS.white} />
+            <MaterialCommunityIcons name="arrow-left" size={26} color={COLORS.white} />
           </TouchableWeb>
           <Text style={styles.headerTitle}>About CARE</Text>
+          <View style={{ width: 44 }} />
         </View>
       </LinearGradient>
 
       <ScrollView 
         style={styles.scrollView} 
-        contentContainerStyle={styles.scrollContent}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 20 }]}
         showsVerticalScrollIndicator={false}
       >
         {/* Logo Section */}
@@ -70,8 +74,7 @@ export default function AboutScreen({ navigation }) {
               resizeMode="cover"
             />
           </View>
-          <Text style={styles.appName}>CARE Nursing Services</Text>
-          <Text style={styles.version}>Version 1.0.0</Text>
+          <Text style={styles.appName}>CARE Nursing Services and More</Text>
           <Text style={styles.tagline}>
             Professional healthcare delivered with compassion and excellence
           </Text>
@@ -92,7 +95,7 @@ export default function AboutScreen({ navigation }) {
         {/* Features */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Why Choose CARE</Text>
-          <View style={styles.featuresGrid}>
+          <View style={styles.whyChooseContainer}>
             <FeatureCard
               icon="shield-check"
               title="Licensed & Certified"
@@ -171,8 +174,9 @@ export default function AboutScreen({ navigation }) {
         {/* Copyright */}
         <View style={styles.footer}>
           <Text style={styles.copyright}>
-            © 2025 CARE Nursing Services. All rights reserved.
+            © 2025 CARE Nursing Services and More. All rights reserved.
           </Text>
+          <Text style={styles.version}>Version 1.0.0</Text>
           <Text style={styles.footerText}>
             Made with ❤️ in Jamaica
           </Text>
@@ -188,8 +192,10 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
   },
   header: {
-    paddingHorizontal: SPACING.lg,
-    paddingVertical: SPACING.lg,
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
   },
   headerRow: {
     flexDirection: 'row',
@@ -197,17 +203,19 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
   },
   backButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
     alignItems: 'center',
     justifyContent: 'center',
   },
   headerTitle: {
-    fontSize: 20,
-    fontFamily: 'Poppins_600SemiBold',
+    fontSize: 18,
+    fontFamily: 'Poppins_700Bold',
     color: COLORS.white,
+    flex: 1,
+    textAlign: 'center',
   },
   scrollView: {
     flex: 1,
@@ -240,12 +248,14 @@ const styles = StyleSheet.create({
     width: 120,
     height: 120,
     borderRadius: 60,
+    marginTop: 10,
   },
   appName: {
-    fontSize: 24,
+    fontSize: 20,
     fontFamily: 'Poppins_700Bold',
     color: COLORS.text,
     marginBottom: SPACING.xs,
+    textAlign: 'center',
   },
   version: {
     fontSize: 14,
@@ -285,34 +295,45 @@ const styles = StyleSheet.create({
     color: COLORS.textLight,
     lineHeight: 24,
   },
-  featuresGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    marginHorizontal: -SPACING.xs,
+  whyChooseContainer: {
+    gap: SPACING.sm,
   },
   featureCard: {
-    width: '50%',
-    padding: SPACING.xs,
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    padding: SPACING.md,
+    shadowColor: COLORS.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3,
+    marginBottom: SPACING.sm,
+    flexDirection: 'row',
+    alignItems: 'center',
   },
   featureIcon: {
-    width: 60,
-    height: 60,
-    borderRadius: 30,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     alignItems: 'center',
     justifyContent: 'center',
-    marginBottom: SPACING.sm,
+    marginRight: SPACING.md,
+    flexShrink: 0,
+  },
+  featureTextContainer: {
+    flex: 1,
   },
   featureTitle: {
-    fontSize: 14,
+    fontSize: 15,
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.text,
-    marginBottom: SPACING.xs,
+    marginBottom: 4,
   },
   featureDescription: {
-    fontSize: 12,
+    fontSize: 13,
     fontFamily: 'Poppins_400Regular',
     color: COLORS.textLight,
-    lineHeight: 18,
+    lineHeight: 20,
   },
   contactCard: {
     backgroundColor: COLORS.white,

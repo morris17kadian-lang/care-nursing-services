@@ -12,9 +12,11 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { ServiceCard, SectionHeader } from '../components/Cards';
-import { COLORS, GRADIENTS, SPACING, SERVICES } from '../constants';
+import { COLORS, GRADIENTS, SPACING } from '../constants';
+import { useServices } from '../context/ServicesContext';
 
 export default function ServicesScreen() {
+  const { services } = useServices();
   const [selectedService, setSelectedService] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
 
@@ -23,7 +25,7 @@ export default function ServicesScreen() {
     setModalVisible(true);
   };
 
-  const categories = [...new Set(SERVICES.map(s => s.category))];
+  const categories = [...new Set(services.map(s => s.category))];
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
@@ -47,7 +49,7 @@ export default function ServicesScreen() {
           <View key={category} style={styles.categorySection}>
             <SectionHeader title={category} />
             <View style={styles.servicesGrid}>
-              {SERVICES.filter(s => s.category === category).map((service) => (
+              {services.filter(s => s.category === category).map((service) => (
                 <ServiceCard
                   key={service.id}
                   service={service}

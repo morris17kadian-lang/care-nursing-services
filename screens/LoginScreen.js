@@ -11,7 +11,7 @@ import {
   Image,
   Alert,
   Animated,
-  Dimensions,
+  useWindowDimensions,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -20,10 +20,9 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { COLORS, SPACING, GRADIENTS } from '../constants';
 import { useAuth } from '../context/AuthContext';
 
-const { height } = Dimensions.get('window');
-
 export default function LoginScreen({ navigation }) {
-  const [emailOrCode, setEmailOrCode] = useState('');
+  const { height } = useWindowDimensions();
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
@@ -59,9 +58,9 @@ export default function LoginScreen({ navigation }) {
     try {
       const savedData = await AsyncStorage.getItem('savedCredentials');
       if (savedData) {
-        const { emailOrCode: savedEmail, password: savedPassword, rememberMe: savedRemember } = JSON.parse(savedData);
+        const { username: savedUsername, password: savedPassword, rememberMe: savedRemember } = JSON.parse(savedData);
         if (savedRemember) {
-          setEmailOrCode(savedEmail || '');
+          setUsername(savedUsername || '');
           setPassword(savedPassword || '');
           setRememberMe(true);
         }
@@ -75,7 +74,7 @@ export default function LoginScreen({ navigation }) {
     try {
       if (rememberMe) {
         const credentialsData = {
-          emailOrCode,
+          username,
           password,
           rememberMe: true,
         };
@@ -90,7 +89,7 @@ export default function LoginScreen({ navigation }) {
   };
 
   const handleLogin = async () => {
-    if (!emailOrCode || !password) {
+    if (!username || !password) {
       Alert.alert('Error', 'Please fill in all fields');
       return;
     }
@@ -100,7 +99,7 @@ export default function LoginScreen({ navigation }) {
     // Save credentials if remember me is checked
     await saveCredentials();
     
-    const result = await login(emailOrCode, password);
+    const result = await login(username, password);
     setIsLoading(false);
 
     if (!result.success) {
@@ -162,12 +161,12 @@ export default function LoginScreen({ navigation }) {
               />
               <TextInput
                 style={styles.input}
-                placeholder="Email or Staff Code"
+                placeholder="Username or Staff Code"
                 placeholderTextColor="#999"
-                value={emailOrCode}
-                onChangeText={setEmailOrCode}
+                value={username}
+                onChangeText={setUsername}
                 autoCapitalize="none"
-                autoComplete="email"
+                autoComplete="username"
               />
             </View>
 
