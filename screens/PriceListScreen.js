@@ -8,7 +8,9 @@ import {
   TextInput,
   Modal,
   Alert,
+  Image,
 } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -16,6 +18,48 @@ import { COLORS, GRADIENTS } from '../constants';
 import { useServices } from '../context/ServicesContext';
 
 const PriceListScreen = ({ navigation }) => {
+  const handleClearPriceData = async () => {
+    Alert.alert(
+      'Clear Service Prices',
+      'This will clear all prices but keep the service types. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear Prices',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // Get current services
+              const storedServices = await AsyncStorage.getItem('customServices');
+              let currentServices = storedServices ? JSON.parse(storedServices) : [];
+              
+              // If no custom services, get from SERVICES constant
+              if (currentServices.length === 0) {
+                const { SERVICES } = require('../constants');
+                currentServices = SERVICES;
+              }
+              
+              // Clear prices but keep service structure
+              const servicesWithoutPrices = currentServices.map(service => ({
+                ...service,
+                price: '',
+              }));
+              
+              await AsyncStorage.setItem('customServices', JSON.stringify(servicesWithoutPrices));
+              Alert.alert('Success', '✅ Service prices cleared!');
+              // Refresh the screen
+              navigation.reset({
+                index: 0,
+                routes: [{ name: 'PriceList' }],
+              });
+            } catch (error) {
+              Alert.alert('Error', 'Failed to clear prices');
+            }
+          }
+        }
+      ]
+    );
+  };
   const { services, addService, updateService, deleteService: removeService } = useServices();
   const insets = useSafeAreaInsets();
   const [editModalVisible, setEditModalVisible] = useState(false);
@@ -60,6 +104,12 @@ const PriceListScreen = ({ navigation }) => {
     }
 
     try {
+      console.log('💾 Saving service:', { 
+        isAddingNew, 
+        serviceId: selectedService.id,
+        editedService 
+      });
+      
       if (isAddingNew) {
         // Add new service
         await addService(editedService);
@@ -67,11 +117,13 @@ const PriceListScreen = ({ navigation }) => {
       } else {
         // Update existing service
         await updateService(selectedService.id, editedService);
+        console.log('✅ Service updated successfully');
         Alert.alert('Success', 'Service updated successfully');
       }
       
       setEditModalVisible(false);
     } catch (error) {
+      console.error('❌ Failed to save service:', error);
       Alert.alert('Error', 'Failed to save service. Please try again.');
     }
   };
@@ -122,13 +174,6 @@ const PriceListScreen = ({ navigation }) => {
       onPress={() => openEditModal(service)}
     >
       <View style={styles.serviceHeader}>
-        <View style={styles.iconContainer}>
-          <MaterialCommunityIcons
-            name={service.icon}
-            size={24}
-            color={COLORS.primary}
-          />
-        </View>
         <View style={styles.serviceInfo}>
           <Text style={styles.serviceTitle}>{service.title}</Text>
           <Text style={styles.serviceDescription} numberOfLines={2}>
@@ -136,16 +181,32 @@ const PriceListScreen = ({ navigation }) => {
           </Text>
         </View>
         <View style={styles.priceContainer}>
-          <View style={styles.priceRow}>
-            <Text style={styles.price}>{service.price}</Text>
-            <MaterialCommunityIcons
-              name="pencil"
-              size={16}
-              color={COLORS.textMuted}
-              style={styles.editIcon}
-            />
-          </View>
-          <Text style={styles.duration}>{service.duration}</Text>
+          {service.price ? (
+            <>
+              <View style={styles.priceRow}>
+                <Text style={styles.price}>{service.price}</Text>
+                <MaterialCommunityIcons
+                  name="pencil"
+                  size={16}
+                  color={COLORS.textMuted}
+                  style={styles.editIcon}
+                />
+              </View>
+              {service.duration ? (
+                <Text style={styles.duration}>{service.duration}</Text>
+              ) : null}
+            </>
+          ) : (
+            <View style={styles.priceRow}>
+              <Text style={[styles.price, { color: COLORS.textMuted }]}>Set Price</Text>
+              <MaterialCommunityIcons
+                name="pencil"
+                size={16}
+                color={COLORS.textMuted}
+                style={styles.editIcon}
+              />
+            </View>
+          )}
         </View>
       </View>
     </TouchableOpacity>
@@ -172,12 +233,7 @@ const PriceListScreen = ({ navigation }) => {
             <MaterialCommunityIcons name="arrow-left" size={24} color={COLORS.white} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Service Price List</Text>
-          <TouchableOpacity
-            onPress={addNewService}
-            style={styles.addButton}
-          >
-            <MaterialCommunityIcons name="plus" size={24} color={COLORS.white} />
-          </TouchableOpacity>
+          <View style={{ width: 24 }} />
         </View>
       </LinearGradient>
 
@@ -209,7 +265,7 @@ const PriceListScreen = ({ navigation }) => {
                 <LinearGradient
                   colors={GRADIENTS.header}
                   start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
+                  end={{ x: 0, y: 1 }}
                   style={styles.filterPillGradient}
                 >
                   <Text style={styles.filterPillText}>
@@ -227,6 +283,13 @@ const PriceListScreen = ({ navigation }) => {
           ))}
         </ScrollView>
       </View>
+
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
         {Object.entries(groupedServices).map(([category, categoryServices]) =>
@@ -405,7 +468,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.white,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: COLORS.primary,
   },
   searchInput: {
     flex: 1,
@@ -415,7 +478,7 @@ const styles = StyleSheet.create({
   },
   filterPillContainer: {
     paddingHorizontal: 20,
-    marginBottom: 10,
+    marginBottom: 20,
   },
   filterPillContent: {
     gap: 8,
@@ -423,14 +486,18 @@ const styles = StyleSheet.create({
   },
   filterPill: {
     marginRight: 0,
+    borderRadius: 20,
+    overflow: 'hidden',
+    minHeight: 36,
   },
   filterPillGradient: {
-    paddingHorizontal: 16,
+    flex: 1,
+    width: '100%',
+    paddingHorizontal: 10,
     paddingVertical: 8,
     borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 36,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.08,
@@ -439,7 +506,7 @@ const styles = StyleSheet.create({
   },
   inactiveFilterPill: {
     backgroundColor: COLORS.white,
-    paddingHorizontal: 16,
+    paddingHorizontal: 10,
     paddingVertical: 8,
     borderRadius: 20,
     alignItems: 'center',
@@ -452,20 +519,31 @@ const styles = StyleSheet.create({
     elevation: 1,
   },
   filterPillText: {
-    fontSize: 13,
-    fontFamily: 'Poppins_600SemiBold',
+    fontSize: 11,
+    fontFamily: 'Poppins_700Bold',
     color: COLORS.white,
     textAlign: 'center',
   },
   inactiveFilterPillText: {
-    fontSize: 13,
-    fontFamily: 'Poppins_600SemiBold',
+    fontSize: 11,
+    fontFamily: 'Poppins_700Bold',
     color: COLORS.textMuted,
     textAlign: 'center',
   },
   content: {
     flex: 1,
     paddingHorizontal: 20,
+    paddingTop: 5,
+    borderTopWidth: 0,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
   },
   categorySection: {
     marginBottom: 30,
@@ -477,7 +555,7 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     paddingBottom: 5,
     borderBottomWidth: 2,
-    borderBottomColor: COLORS.accent,
+    borderBottomColor: COLORS.primary,
   },
   serviceCard: {
     backgroundColor: COLORS.white,
@@ -559,7 +637,7 @@ const styles = StyleSheet.create({
     padding: 20,
     backgroundColor: COLORS.background,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    borderBottomColor: COLORS.primary,
   },
   modalTitle: {
     fontSize: 18,
@@ -584,7 +662,7 @@ const styles = StyleSheet.create({
   },
   textInput: {
     borderWidth: 1,
-    borderColor: COLORS.border,
+    borderColor: COLORS.primary,
     borderRadius: 8,
     padding: 12,
     fontSize: 16,
@@ -600,7 +678,7 @@ const styles = StyleSheet.create({
     padding: 20,
     backgroundColor: COLORS.background,
     borderTopWidth: 1,
-    borderTopColor: COLORS.border,
+    borderTopColor: COLORS.primary,
   },
   modalButton: {
     flex: 1,

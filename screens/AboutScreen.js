@@ -1,5 +1,5 @@
 import TouchableWeb from "../components/TouchableWeb";
-import React from 'react';
+import React, { useState } from 'react';
 import {
   View,
   Text,
@@ -11,10 +11,19 @@ import {
 import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
-import { COLORS, GRADIENTS, SPACING, CONTACT_INFO } from '../constants';
+import { COLORS, GRADIENTS, SPACING, CONTACT_INFO, COMPANY_INFO } from '../constants';
 
 export default function AboutScreen({ navigation }) {
   const insets = useSafeAreaInsets();
+
+  const [expandedSections, setExpandedSections] = useState({
+    mission: true,
+  });
+
+  const toggleSection = (key) => {
+    setExpandedSections((prev) => ({ ...prev, [key]: !prev[key] }));
+  };
+
   const ContactItem = ({ icon, title, value, onPress }) => (
     <TouchableWeb style={styles.contactItem} onPress={onPress} activeOpacity={0.7}>
       <View style={styles.contactIcon}>
@@ -28,14 +37,41 @@ export default function AboutScreen({ navigation }) {
     </TouchableWeb>
   );
 
-  const FeatureCard = ({ icon, title, description }) => (
+  const AccordionSection = ({ sectionKey, title, children }) => {
+    const isExpanded = !!expandedSections[sectionKey];
+    return (
+      <View style={styles.section}>
+        <TouchableWeb
+          style={styles.accordionHeader}
+          onPress={() => toggleSection(sectionKey)}
+          activeOpacity={0.8}
+        >
+          <Text style={styles.accordionTitle}>{title}</Text>
+          <MaterialCommunityIcons
+            name={isExpanded ? 'chevron-up' : 'chevron-down'}
+            size={22}
+            color={COLORS.textLight}
+          />
+        </TouchableWeb>
+        {isExpanded ? <View style={styles.accordionBody}>{children}</View> : null}
+      </View>
+    );
+  };
+
+  const SectionDivider = () => (
+    <LinearGradient
+      colors={GRADIENTS.header}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 0 }}
+      style={styles.sectionDivider}
+    />
+  );
+
+  const FeatureCard = ({ emoji, title, description }) => (
     <View style={styles.featureCard}>
-      <LinearGradient
-        colors={GRADIENTS.accent}
-        style={styles.featureIcon}
-      >
-        <MaterialCommunityIcons name={icon} size={20} color={COLORS.white} />
-      </LinearGradient>
+      <View style={styles.featureEmojiContainer}>
+        <Text style={styles.featureEmoji}>{emoji}</Text>
+      </View>
       <View style={styles.featureTextContainer}>
         <Text style={styles.featureTitle}>{title}</Text>
         <Text style={styles.featureDescription}>{description}</Text>
@@ -44,7 +80,7 @@ export default function AboutScreen({ navigation }) {
   );
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <LinearGradient
         colors={GRADIENTS.header}
         start={{ x: 0, y: 0 }}
@@ -55,10 +91,17 @@ export default function AboutScreen({ navigation }) {
           <TouchableWeb onPress={() => navigation.goBack()} style={styles.backButton}>
             <MaterialCommunityIcons name="arrow-left" size={26} color={COLORS.white} />
           </TouchableWeb>
-          <Text style={styles.headerTitle}>About CARE</Text>
+          <Text style={styles.headerTitle}>About {COMPANY_INFO.displayName}</Text>
           <View style={{ width: 44 }} />
         </View>
       </LinearGradient>
+
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
 
       <ScrollView 
         style={styles.scrollView} 
@@ -69,65 +112,76 @@ export default function AboutScreen({ navigation }) {
         <View style={styles.logoSection}>
           <View style={styles.logoContainer}>
             <Image 
-              source={require('../assets/Images/ceo.png')} 
+              source={require('../assets/Images/Nurses-logo.png')} 
               style={styles.ceoImage}
               resizeMode="cover"
             />
           </View>
-          <Text style={styles.appName}>CARE Nursing Services and More</Text>
+          <Text style={styles.appName}>{COMPANY_INFO.legalName}</Text>
           <Text style={styles.tagline}>
-            Professional healthcare delivered with compassion and excellence
+            {COMPANY_INFO.tagline}
           </Text>
         </View>
 
-        {/* Mission Section */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Our Mission</Text>
+        <SectionDivider />
+
+        <AccordionSection sectionKey="mission" title="Our Mission">
           <View style={styles.missionCard}>
             <Text style={styles.missionText}>
-              At CARE, we're committed to providing exceptional nursing care that puts patients first. 
-              Our team of certified professionals delivers compassionate, personalized healthcare services 
-              in the comfort of your home.
+              At 876 Nurses Home Care Services Limited, we are committed to bringing you premium healthcare services
+              to Jamaicans islandwide.{"\n\n"}
+              We serve:{"\n"}
+              • Elderly Jamaicans{"\n"}
+              • Those within our disabled communities{"\n"}
+              • And post-operative patients{"\n\n"}
+              In need of assistance with the activities of daily living.
             </Text>
           </View>
-        </View>
+        </AccordionSection>
 
-        {/* Features */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Why Choose CARE</Text>
+        <SectionDivider />
+
+        <AccordionSection
+          sectionKey="whyChoose"
+          title={`Why Choose ${COMPANY_INFO.displayName}`}
+        >
           <View style={styles.whyChooseContainer}>
             <FeatureCard
-              icon="shield-check"
+              emoji="✅"
               title="Licensed & Certified"
               description="All nurses are fully licensed by the Nursing Council of Jamaica"
             />
             <FeatureCard
-              icon="clock-fast"
+              emoji="⏰"
               title="24/7 Availability"
-              description="Round-the-clock care services and emergency response"
+              description="After-hours and weekend support when needed"
             />
             <FeatureCard
-              icon="heart-pulse"
+              emoji="❤️"
               title="Compassionate Care"
               description="Patient-centered approach with dignity and respect"
             />
             <FeatureCard
-              icon="account-group"
+              emoji="👥"
               title="Experienced Team"
               description="Skilled professionals with years of healthcare experience"
             />
           </View>
-        </View>
+        </AccordionSection>
 
-        {/* Contact Information */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Get in Touch</Text>
+        <SectionDivider />
+
+        <AccordionSection sectionKey="contact" title="Get in Touch">
           <View style={styles.contactCard}>
             <ContactItem
               icon="phone"
               title="Phone"
-              value={CONTACT_INFO.phone}
-              onPress={() => Linking.openURL(`tel:${CONTACT_INFO.phone}`)}
+              value={CONTACT_INFO.phoneWeekday || CONTACT_INFO.phone}
+              onPress={() =>
+                Linking.openURL(
+                  `tel:${String(CONTACT_INFO.phoneWeekday || CONTACT_INFO.phone).replace(/\D/g, '')}`
+                )
+              }
             />
             <View style={styles.divider} />
             <ContactItem
@@ -151,10 +205,18 @@ export default function AboutScreen({ navigation }) {
               onPress={() => Linking.openURL(`https://wa.me/${CONTACT_INFO.whatsapp.replace(/\D/g, '')}`)}
             />
           </View>
-        </View>
+        </AccordionSection>
 
-        {/* Legal Links */}
-        <View style={styles.section}>
+        <SectionDivider />
+
+        <AccordionSection sectionKey="legal" title="Legal & Help">
+          <TouchableWeb
+            style={styles.legalButton}
+            onPress={() => navigation.navigate('UserManual')}
+          >
+            <Text style={styles.legalButtonText}>User Manual</Text>
+            <MaterialCommunityIcons name="chevron-right" size={20} color={COLORS.textLight} />
+          </TouchableWeb>
           <TouchableWeb
             style={styles.legalButton}
             onPress={() => navigation.navigate('Terms')}
@@ -169,12 +231,12 @@ export default function AboutScreen({ navigation }) {
             <Text style={styles.legalButtonText}>Privacy Policy</Text>
             <MaterialCommunityIcons name="chevron-right" size={20} color={COLORS.textLight} />
           </TouchableWeb>
-        </View>
+        </AccordionSection>
 
         {/* Copyright */}
         <View style={styles.footer}>
           <Text style={styles.copyright}>
-            © 2025 CARE Nursing Services and More. All rights reserved.
+            © 2025 {COMPANY_INFO.legalName}. All rights reserved.
           </Text>
           <Text style={styles.version}>Version 1.0.0</Text>
           <Text style={styles.footerText}>
@@ -190,6 +252,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
   },
   header: {
     paddingHorizontal: 20,
@@ -211,7 +282,7 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
   },
   headerTitle: {
-    fontSize: 18,
+    fontSize: 16,
     fontFamily: 'Poppins_700Bold',
     color: COLORS.white,
     flex: 1,
@@ -223,6 +294,12 @@ const styles = StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
     paddingBottom: SPACING.xl,
+  },
+  sectionDivider: {
+    height: 2,
+    marginHorizontal: SPACING.md,
+    marginVertical: 2,
+    borderRadius: 2,
   },
   logoSection: {
     alignItems: 'center',
@@ -251,7 +328,7 @@ const styles = StyleSheet.create({
     marginTop: 10,
   },
   appName: {
-    fontSize: 20,
+    fontSize: 18,
     fontFamily: 'Poppins_700Bold',
     color: COLORS.text,
     marginBottom: SPACING.xs,
@@ -271,13 +348,35 @@ const styles = StyleSheet.create({
     lineHeight: 22,
   },
   section: {
-    padding: SPACING.lg,
+    padding: SPACING.sm,
   },
   sectionTitle: {
     fontSize: 18,
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.text,
     marginBottom: SPACING.md,
+  },
+  accordionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    padding: SPACING.sm,
+    shadowColor: COLORS.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  accordionTitle: {
+    fontSize: 16,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+    flex: 1,
+  },
+  accordionBody: {
+    marginTop: SPACING.xs,
   },
   missionCard: {
     backgroundColor: COLORS.white,
@@ -311,17 +410,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
   },
-  featureIcon: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
+  featureEmojiContainer: {
+    width: 28,
     alignItems: 'center',
     justifyContent: 'center',
-    marginRight: SPACING.md,
+    marginRight: SPACING.sm,
     flexShrink: 0,
   },
   featureTextContainer: {
     flex: 1,
+  },
+  featureEmoji: {
+    fontSize: 18,
+    lineHeight: 20,
+    textAlign: 'center',
   },
   featureTitle: {
     fontSize: 15,

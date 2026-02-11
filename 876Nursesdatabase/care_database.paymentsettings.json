@@ -1,0 +1,97 @@
+[{
+  "_id": {
+    "$oid": "691f34df5cde08d380bc3480"
+  },
+  "userId": {
+    "$oid": "691d0f464864ce7fd74ce458"
+  },
+  "userRole": "superAdmin",
+  "autoPayoutEnabled": false,
+  "paymentRemindersEnabled": true,
+  "currency": "JMD",
+  "payoutSchedule": "weekly",
+  "minimumPayout": 500,
+  "serviceFee": 0,
+  "paymentInfo": {
+    "bankAccounts": [
+      {
+        "bankName": "National Commercial Bank",
+        "_id": {
+          "$oid": "691f703fc2503da5f4d7ffc8"
+        }
+      }
+    ],
+    "cashAccepted": true,
+    "posAvailable": true
+  },
+  "adminPayrollSettings": {
+    "defaultPayType": "salary",
+    "salaryFrequency": "monthly",
+    "defaultSalaryAmount": null,
+    "defaultHourlyRate": null,
+    "overtimeMultiplier": 1.5,
+    "taxEnabled": false,
+    "healthInsurance": false,
+    "pensionContribution": false,
+    "allowances": {
+      "transport": null,
+      "meal": null,
+      "phone": null
+    },
+    "deductions": {
+      "tax": null,
+      "nis": null,
+      "education": null
+    }
+  },
+  "createdAt": {
+    "$date": "2025-11-20T15:33:51.271Z"
+  },
+  "updatedAt": {
+    "$date": "2025-11-20T19:47:11.689Z"
+  },
+  "__v": 0,
+  "companyDetails": {
+    "companyName": "CARE Nursing Services and More",
+    "fullName": "CARE Nursing Services and More",
+    "address": "",
+    "phone": "18762887304",
+    "email": "Care@nursingcareja.com",
+    "website": ""
+  }
+},
+{
+  "_id": {
+    "$oid": "691f92d345bbe324e902dae5"
+  },
+  "userId": {
+    "$oid": "691e4d50380a42895fb3e238"
+  },
+  "userRole": "patient",
+  "autoPayoutEnabled": false,
+  "paymentRemindersEnabled": true,
+  "currency": "JMD",
+  "payoutSchedule": "weekly",
+  "minimumPayout": 500,
+  "serviceFee": 0,
+  "paymentInfo": {
+    "cashAccepted": false,
+    "posAvailable": false,
+    "bankAccounts": []
+  },
+  "adminPayrollSettings": {
+    "defaultPayType": "hourly",
+    "salaryFrequency": "weekly",
+    "overtimeMultiplier": 1.5,
+    "taxEnabled": false,
+    "healthInsurance": false,
+    "pensionContribution": false
+  },
+  "createdAt": {
+    "$date": "2025-11-20T22:14:43.897Z"
+  },
+  "updatedAt": {
+    "$date": "2025-11-20T22:14:43.897Z"
+  },
+  "__v": 0
+}]

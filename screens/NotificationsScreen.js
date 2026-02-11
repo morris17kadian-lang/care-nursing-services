@@ -7,7 +7,7 @@ import {
   ScrollView,
   Animated,
   PanResponder,
-  useWindowDimensions,
+  Image,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -15,6 +15,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import { useNotifications } from '../context/NotificationContext';
 import { useAuth } from '../context/AuthContext';
 import { COLORS, SPACING, GRADIENTS } from '../constants';
+import useWindowDimensions from '../hooks/useWindowDimensions';
 
 export default function NotificationsScreen({ navigation }) {
   const { user } = useAuth();
@@ -51,14 +52,17 @@ export default function NotificationsScreen({ navigation }) {
         // Navigate back to NurseApp tab navigator, then to specific screen
         navigation.navigate('NurseApp', { screen, params });
       } else if (userRole === 'patient') {
-        // Navigate back to PatientApp tab navigator, then to specific screen
-        navigation.navigate('PatientApp', { screen, params });
+        // Navigate back to MainApp tab navigator, then to specific screen
+        navigation.navigate('MainApp', { screen, params });
       }
     };
 
     // Chat/Message notifications
     if (notifType === 'chat' && notification.data?.conversationId) {
-      navigateToMainApp('Chat');
+      navigateToMainApp('Chat', {
+        openConversation: notification.data.conversationId,
+        notificationData: notification.data
+      });
     } 
     // Appointment notifications (all roles)
     else if (notifType === 'appointment' || notifType === 'appointment_approved' || notifType === 'reminder' || notifType === 'appointment_reminder') {
@@ -77,9 +81,10 @@ export default function NotificationsScreen({ navigation }) {
       }
     }
     // Assignment notifications (nurse receives assignment, admin sees responses)
-    else if (notifType === 'assignment_received' && userRole === 'nurse') {
+    else if ((notifType === 'assignment_received' || notifType === 'appointment_assigned') && userRole === 'nurse') {
       navigateToMainApp('Appointments', {
-        highlightAssignment: notification.data?.assignmentId
+        initialTab: 'pending',
+        highlightAssignment: notification.data?.assignmentId || notification.data?.appointmentId
       });
     }
     else if ((notifType === 'assignment_accepted' || notifType === 'assignment_declined') && userRole === 'admin') {
@@ -92,6 +97,13 @@ export default function NotificationsScreen({ navigation }) {
       navigateToMainApp('Dashboard', { 
         initialTab: 'pending',
         highlightShiftRequest: notification.data?.shiftRequestId 
+      });
+    }
+    // Shift approved notifications (nurse receives approval)
+    else if (notifType === 'shift_approved' && userRole === 'nurse') {
+      navigateToMainApp('Appointments', {
+        initialTab: 'approved',
+        highlightShiftRequest: notification.data?.shiftRequestId
       });
     }
     // Shift approved/denied notifications (nurse)
@@ -116,6 +128,25 @@ export default function NotificationsScreen({ navigation }) {
       navigateToMainApp('Dashboard', {
         highlightCompletedShift: notification.data?.shiftId
       });
+    }
+    // Appointment completed notifications (admin and patient)
+    else if (notifType === 'appointment_completed') {
+      if (userRole === 'admin') {
+        navigateToMainApp('Dashboard', {
+          initialTab: 'completed',
+          highlightAppointment: notification.data?.appointmentId
+        });
+      } else if (userRole === 'patient') {
+        navigateToMainApp('Appointments', {
+          initialTab: 'completed',
+          highlightAppointment: notification.data?.appointmentId
+        });
+      } else if (userRole === 'nurse') {
+        navigateToMainApp('Appointments', {
+          initialTab: 'completed',
+          highlightAppointment: notification.data?.appointmentId
+        });
+      }
     }
     // Active shift notifications (both admin and nurse)
     else if (notifType === 'active_shift') {
@@ -179,8 +210,8 @@ export default function NotificationsScreen({ navigation }) {
           highlightInvoice: notification.data?.invoiceId
         });
       } else if (userRole === 'patient') {
-        navigateToMainApp('Invoice', {
-          highlightInvoice: notification.data?.invoiceId
+        navigation.navigate('InvoiceDisplay', {
+          invoiceId: notification.data?.invoiceId
         });
       }
     }
@@ -196,9 +227,7 @@ export default function NotificationsScreen({ navigation }) {
     // Payment/Transaction notifications
     else if (notifType === 'staff_payment') {
       if (userRole === 'admin') {
-        navigateToMainApp('Settings', {
-          showPaymentHistory: true
-        });
+        navigation.navigate('AdminPaymentsScreen');
       } else if (userRole === 'nurse') {
         navigateToMainApp('Profile', {
           showPaymentHistory: true
@@ -218,7 +247,7 @@ export default function NotificationsScreen({ navigation }) {
       } else if (userRole === 'nurse') {
         navigateToMainApp('Appointments');
       } else if (userRole === 'patient') {
-        navigateToMainApp('Services');
+        navigateToMainApp('Home');
       }
     }
     // System/Alert notifications - go to home
@@ -234,7 +263,6 @@ export default function NotificationsScreen({ navigation }) {
     // Default - go back or stay (just mark as read)
     else {
       // No specific navigation, notification marked as read
-      console.log('No specific navigation for notification type:', notifType);
     }
   };
 
@@ -315,7 +343,7 @@ export default function NotificationsScreen({ navigation }) {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       {/* Header */}
       <LinearGradient
         colors={GRADIENTS.header}
@@ -374,6 +402,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
   },
   header: {
     paddingHorizontal: 20,

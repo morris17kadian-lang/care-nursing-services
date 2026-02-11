@@ -3,14 +3,20 @@ import * as Device from 'expo-device';
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
 
+// Check if running in Expo Go (notifications not supported on Android)
+const isExpoGo = Constants.appOwnership === 'expo';
+
 // Configure how notifications are handled when app is in foreground
-Notifications.setNotificationHandler({
-  handleNotification: async () => ({
-    shouldShowAlert: false, // Don't show system alert - only in-app
-    shouldPlaySound: true,  // Still play sound
-    shouldSetBadge: true,   // Still update badge
-  }),
-});
+// Only set handler if not in Expo Go on Android
+if (!isExpoGo || Platform.OS !== 'android') {
+  Notifications.setNotificationHandler({
+    handleNotification: async () => ({
+      shouldShowAlert: false, // Don't show system alert - only in-app
+      shouldPlaySound: true,  // Still play sound
+      shouldSetBadge: true,   // Still update badge
+    }),
+  });
+}
 
 class PushNotificationService {
   constructor() {
@@ -22,6 +28,12 @@ class PushNotificationService {
   // Initialize push notifications
   async initialize() {
     try {
+      // Skip push notifications in Expo Go on Android
+      if (isExpoGo && Platform.OS === 'android') {
+        // Push notifications disabled in Expo Go on Android
+        return null;
+      }
+
       // Register for push notifications
       const token = await this.registerForPushNotificationsAsync();
       this.expoPushToken = token;
@@ -38,7 +50,7 @@ class PushNotificationService {
 
       return token;
     } catch (error) {
-      console.error('Failed to initialize push notifications:', error);
+      // console.error('Failed to initialize push notifications:', error);
       return null;
     }
   }
@@ -48,7 +60,7 @@ class PushNotificationService {
     let token;
 
     if (Platform.OS === 'android') {
-      console.log('📱 Setting up Android notification channel...');
+      // Setting up Android notification channel
       await Notifications.setNotificationChannelAsync('default', {
         name: 'default',
         importance: Notifications.AndroidImportance.MAX,
@@ -58,40 +70,40 @@ class PushNotificationService {
     }
 
     if (Device.isDevice) {
-      console.log('📱 Checking notification permissions...');
+      // Checking notification permissions
       const { status: existingStatus } = await Notifications.getPermissionsAsync();
-      console.log('📱 Existing permission status:', existingStatus);
+      // Existing permission status
       
       let finalStatus = existingStatus;
       
       if (existingStatus !== 'granted') {
-        console.log('📱 Requesting notification permissions...');
+        // Requesting notification permissions
         const { status } = await Notifications.requestPermissionsAsync();
         finalStatus = status;
-        console.log('📱 Permission request result:', status);
+        // Permission request result
       }
       
       if (finalStatus !== 'granted') {
-        console.log('❌ Failed to get push token for push notification!');
+        // Failed to get push token for push notification
         return null;
       }
       
-      console.log('✅ Notification permissions granted');
+      // Notification permissions granted
       
       try {
         const projectId = Constants?.expoConfig?.extra?.eas?.projectId ?? Constants?.easConfig?.projectId;
         if (!projectId) {
           throw new Error('Project ID not found');
         }
-        console.log('📱 Getting Expo push token with project ID:', projectId);
+        // Getting Expo push token with project ID
         token = (await Notifications.getExpoPushTokenAsync({ projectId })).data;
-        console.log('✅ Push token obtained:', token);
+        // Push token obtained
       } catch (e) {
-        console.error('❌ Error getting push token:', e);
+        // console.error('❌ Error getting push token:', e);
         token = `${e}`;
       }
     } else {
-      console.log('❌ Must use physical device for Push Notifications');
+      // Must use physical device for Push Notifications
     }
 
     return token;
@@ -99,14 +111,14 @@ class PushNotificationService {
 
   // Handle notification received while app is in foreground
   handleNotificationReceived = (notification) => {
-    console.log('📱 Notification received while app active - adding to in-app list');
+    // Notification received while app active - adding to in-app list
     // When app is in foreground, we rely on NotificationContext to handle it
     // The notification will appear in the notification screen, not as system alert
   };
 
   // Handle notification tap/interaction (when user taps notification)
   handleNotificationResponse = (response) => {
-    console.log('📱 User tapped notification - routing to app');
+    // User tapped notification - routing to app
     const { notification } = response;
     const data = notification.request.content.data;
     
@@ -116,7 +128,7 @@ class PushNotificationService {
       params: data || {}
     };
     
-    console.log('📱 Navigation queued:', this.pendingNavigation);
+    // Navigation queued
   };
 
   // Get and clear pending navigation (called by app when ready)
@@ -129,7 +141,7 @@ class PushNotificationService {
   // Send local notification (immediate)
   async sendLocalNotification(title, body, data = {}) {
     try {
-      console.log('📱 Sending local notification:', { title, body, data });
+      // Sending local notification
       
       const result = await Notifications.scheduleNotificationAsync({
         content: {
@@ -141,10 +153,10 @@ class PushNotificationService {
         trigger: null, // Send immediately
       });
       
-      console.log('✅ Local notification scheduled successfully:', result);
+      // Local notification scheduled successfully
       return result;
     } catch (error) {
-      console.error('❌ Failed to send local notification:', error);
+      // console.error('❌ Failed to send local notification:', error);
       throw error;
     }
   }
@@ -152,11 +164,23 @@ class PushNotificationService {
   // Schedule notification for later
   async scheduleNotification(title, body, scheduledTime, data = {}) {
     try {
-      const trigger = scheduledTime instanceof Date 
-        ? scheduledTime 
+      const triggerDate = scheduledTime instanceof Date
+        ? scheduledTime
         : new Date(scheduledTime);
 
-      await Notifications.scheduleNotificationAsync({
+      if (!(triggerDate instanceof Date) || Number.isNaN(triggerDate.getTime())) {
+        throw new TypeError('Invalid scheduledTime for notification trigger');
+      }
+
+      // expo-notifications SDK 53+ requires a trigger object with a `type`.
+      const trigger = {
+        type: Notifications.SchedulableTriggerInputTypes?.DATE ?? 'date',
+        date: triggerDate,
+      };
+
+      // Scheduling notification for trigger
+
+      const notificationId = await Notifications.scheduleNotificationAsync({
         content: {
           title,
           body,
@@ -165,8 +189,12 @@ class PushNotificationService {
         },
         trigger,
       });
+
+      // Notification scheduled with ID
+      return notificationId;
     } catch (error) {
-      console.error('Failed to schedule notification:', error);
+      // console.error('❌ Failed to schedule notification:', error);
+      throw error;
     }
   }
 
@@ -192,10 +220,10 @@ class PushNotificationService {
       });
 
       const result = await response.json();
-      console.log('Push notification sent:', result);
+      // Push notification sent
       return result;
     } catch (error) {
-      console.error('Failed to send push notification:', error);
+      // console.error('Failed to send push notification:', error);
       return null;
     }
   }
@@ -205,7 +233,19 @@ class PushNotificationService {
     try {
       await Notifications.cancelAllScheduledNotificationsAsync();
     } catch (error) {
-      console.error('Failed to cancel notifications:', error);
+      // console.error('Failed to cancel notifications:', error);
+    }
+  }
+
+  // Cancel specific notification by ID
+  async cancelNotification(notificationId) {
+    try {
+      if (notificationId) {
+        await Notifications.cancelScheduledNotificationAsync(notificationId);
+        // Notification cancelled
+      }
+    } catch (error) {
+      // console.error('Failed to cancel notification:', error);
     }
   }
 
@@ -215,7 +255,7 @@ class PushNotificationService {
       const { status } = await Notifications.getPermissionsAsync();
       return status;
     } catch (error) {
-      console.error('Failed to get permission status:', error);
+      // console.error('Failed to get permission status:', error);
       return 'undetermined';
     }
   }
@@ -226,7 +266,7 @@ class PushNotificationService {
       const { status } = await Notifications.requestPermissionsAsync();
       return status;
     } catch (error) {
-      console.error('Failed to request permissions:', error);
+      // console.error('Failed to request permissions:', error);
       return 'denied';
     }
   }
@@ -236,7 +276,7 @@ class PushNotificationService {
     try {
       await Notifications.setBadgeCountAsync(count);
     } catch (error) {
-      console.error('Failed to set badge count:', error);
+      // console.error('Failed to set badge count:', error);
     }
   }
 
@@ -256,9 +296,9 @@ class PushNotificationService {
         trigger: null, // Send immediately
       });
 
-      console.log('Overdue payment notification sent:', title);
+      // Overdue payment notification sent
     } catch (error) {
-      console.error('Failed to send overdue payment notification:', error);
+      // console.error('Failed to send overdue payment notification:', error);
     }
   }
 
@@ -273,7 +313,7 @@ class PushNotificationService {
         await new Promise(resolve => setTimeout(resolve, 100));
       }
     } catch (error) {
-      console.error('Failed to send batch overdue notifications:', error);
+      // console.error('Failed to send batch overdue notifications:', error);
     }
   }
 

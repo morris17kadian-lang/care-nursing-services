@@ -1,11 +1,13 @@
-import React, { useState, useEffect } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { createStackNavigator } from '@react-navigation/stack';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { StatusBar } from 'expo-status-bar';
-import { ActivityIndicator, View, Text } from 'react-native';
+import { ActivityIndicator, View, Text, TouchableOpacity } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { SafeAreaProvider } from 'react-native-safe-area-context';
 import {
   useFonts,
   Poppins_400Regular,
@@ -15,7 +17,6 @@ import {
 } from '@expo-google-fonts/poppins';
 
 import { AuthProvider, useAuth } from './context/AuthContext';
-import { ChatProvider, useChat } from './context/ChatContext';
 import { NotificationProvider } from './context/NotificationContext';
 import { AppointmentProvider } from './context/AppointmentContext';
 import { NurseProvider } from './context/NurseContext';
@@ -23,32 +24,36 @@ import { ServicesProvider } from './context/ServicesContext';
 import { ShiftProvider } from './context/ShiftContext';
 import { ProfileEditProvider } from './context/ProfileEditContext';
 import ErrorBoundary from './components/ErrorBoundary';
-import TestScreen from './screens/TestScreen';
+import AppOnboarding, { checkOnboardingStatus } from './components/AppOnboarding';
 import SplashScreen from './screens/SplashScreen';
 import LoginScreen from './screens/LoginScreen';
 import SignupScreen from './screens/SignupScreen';
 import HomeScreen from './screens/HomeScreen';
 import AppointmentsScreen from './screens/AppointmentsScreen';
 import BookScreen from './screens/BookScreen';
-import PatientChatScreen from './screens/PatientChatScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import NotificationsScreen from './screens/NotificationsScreen';
 import ProfileScreen from './screens/ProfileScreen';
 import ChangePasswordScreen from './screens/ChangePasswordScreen';
 import PrivacySecurityScreen from './screens/PrivacySecurityScreen';
 import NotificationSettingsScreen from './screens/NotificationSettingsScreen';
+import ContactSupportScreen from './screens/ContactSupportScreen';
 import HelpScreen from './screens/HelpScreen';
 import AboutScreen from './screens/AboutScreen';
+import UserManualScreen from './screens/UserManualScreen';
 import TermsScreen from './screens/TermsScreen';
 import PrivacyPolicyScreen from './screens/PrivacyPolicyScreen';
 import NurseAppointmentsScreen from './screens/NurseAppointmentsScreen';
-import NurseChatScreen from './screens/NurseChatScreen';
+import NurseRequestShiftScreen from './screens/NurseRequestShiftScreen';
 import NurseProfileScreen from './screens/NurseProfileScreen';
+import AdminProfileScreen from './screens/AdminProfileScreen';
 import AdminDashboardScreen from './screens/AdminDashboardScreen';
 import AdminClientsScreen from './screens/AdminClientsScreen';
+import AdminUserManagementScreen from './screens/AdminUserManagementScreen';
+import AdminOperationsScreen from './screens/AdminOperationsScreen';
 import AdminAnalyticsScreen from './screens/AdminAnalyticsScreen';
-import AdminChatScreen from './screens/AdminChatScreen';
 import AdminPaymentsScreen from './screens/AdminPaymentsScreen';
+import AdminRecurringShiftScreen from './screens/AdminRecurringShiftScreen';
 import InvoiceManagementScreen from './screens/InvoiceManagementScreen';
 import InvoiceScreen from './screens/InvoiceScreen';
 import TransactionDetailsScreen from './screens/TransactionDetailsScreen';
@@ -61,63 +66,13 @@ import RecentTransactionsScreen from './screens/RecentTransactionsScreen';
 import PaymentAnalyticsScreen from './screens/PaymentAnalyticsScreen';
 import PaymentSettingsScreen from './screens/PaymentSettingsScreen';
 import AdminManagementHubScreen from './screens/AdminManagementHubScreen';
-import UserManualScreen from './screens/UserManualScreen';
-import { COLORS } from './constants';
+import TestPayslipScreen from './screens/TestPayslipScreen';
+
+import { COLORS, GRADIENTS } from './constants';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const Tab = createBottomTabNavigator();
 const Stack = createStackNavigator();
-
-// Custom Chat Tab Icon with Badge
-function ChatTabIcon({ focused, color, size }) {
-  const { getTotalUnreadCount } = useChat();
-  const { user } = useAuth();
-  
-  // Get unread count based on user role
-  let userType = 'patient'; // default
-  if (user?.role === 'admin') {
-    userType = 'admin-001';
-  } else if (user?.role === 'nurse') {
-    userType = 'nurse-001';
-  } else if (user?.role === 'patient') {
-    userType = 'PATIENT001';
-  }
-  
-  const unreadCount = getTotalUnreadCount(userType);
-  
-  return (
-    <View style={{ position: 'relative' }}>
-      <MaterialCommunityIcons 
-        name={focused ? 'chat' : 'chat-outline'} 
-        size={size} 
-        color={color} 
-      />
-      {unreadCount > 0 && (
-        <View style={{
-          position: 'absolute',
-          top: -2,
-          right: -2,
-          backgroundColor: COLORS.error,
-          borderRadius: 10,
-          minWidth: 18,
-          height: 18,
-          justifyContent: 'center',
-          alignItems: 'center',
-          borderWidth: 2,
-          borderColor: COLORS.white,
-        }}>
-          <Text style={{
-            color: COLORS.white,
-            fontSize: 10,
-            fontFamily: 'Poppins_700Bold',
-            textAlign: 'center',
-          }}>
-            {unreadCount > 99 ? '99+' : unreadCount}
-          </Text>
-        </View>
-      )}
-    </View>
-  );
-}
 
 function AuthStack() {
   return (
@@ -129,6 +84,8 @@ function AuthStack() {
 }
 
 function MainTabs() {
+  const insets = useSafeAreaInsets();
+
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="MainApp">
@@ -144,15 +101,13 @@ function MainTabs() {
                   iconName = focused ? 'calendar-clock' : 'calendar-clock';
                 } else if (route.name === 'Book') {
                   iconName = focused ? 'calendar-check' : 'calendar-check-outline';
-                } else if (route.name === 'Chat') {
-                  return <ChatTabIcon focused={focused} color={color} size={size} />;
                 } else if (route.name === 'Settings') {
                   iconName = focused ? 'cog' : 'cog-outline';
                 }
 
                 return <MaterialCommunityIcons name={iconName} size={size} color={color} />;
               },
-              tabBarActiveTintColor: COLORS.accent,
+              tabBarActiveTintColor: COLORS.primary,
               tabBarInactiveTintColor: COLORS.textMuted,
               tabBarStyle: {
                 backgroundColor: COLORS.white,
@@ -162,8 +117,8 @@ function MainTabs() {
                 shadowOffset: { width: 0, height: -4 },
                 shadowOpacity: 0.1,
                 shadowRadius: 12,
-                height: 90,
-                paddingBottom: 34,
+                height: 62 + insets.bottom,
+                paddingBottom: Math.max(insets.bottom, 8),
                 paddingTop: 8,
                 position: 'relative',
                 zIndex: 10,
@@ -178,7 +133,6 @@ function MainTabs() {
             <Tab.Screen name="Home" component={HomeScreen} />
             <Tab.Screen name="Appointments" component={AppointmentsScreen} />
             <Tab.Screen name="Book" component={BookScreen} />
-            <Tab.Screen name="Chat" component={PatientChatScreen} />
             <Tab.Screen name="Settings" component={SettingsScreen} />
           </Tab.Navigator>
         )}
@@ -191,9 +145,10 @@ function MainTabs() {
       <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />
       <Stack.Screen name="PrivacySecurity" component={PrivacySecurityScreen} />
       <Stack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
+      <Stack.Screen name="ContactSupport" component={ContactSupportScreen} />
       <Stack.Screen name="Help" component={HelpScreen} />
-      <Stack.Screen name="UserManual" component={UserManualScreen} />
       <Stack.Screen name="About" component={AboutScreen} />
+      <Stack.Screen name="UserManual" component={UserManualScreen} />
       <Stack.Screen name="Terms" component={TermsScreen} />
       <Stack.Screen name="Privacy" component={PrivacyPolicyScreen} />
     </Stack.Navigator>
@@ -201,6 +156,8 @@ function MainTabs() {
 }
 
 function NurseNavigator() {
+  const insets = useSafeAreaInsets();
+
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="NurseApp">
@@ -212,17 +169,15 @@ function NurseNavigator() {
 
                 if (route.name === 'Appointments') {
                   iconName = focused ? 'calendar-clock' : 'calendar-clock';
-                } else if (route.name === 'Chat') {
-                  return <ChatTabIcon focused={focused} color={color} size={size} />;
-                } else if (route.name === 'Profile') {
-                  iconName = focused ? 'account-heart' : 'account-heart-outline';
+                } else if (route.name === 'RequestShift') {
+                  iconName = focused ? 'calendar-plus' : 'calendar-plus';
                 } else if (route.name === 'Settings') {
                   iconName = focused ? 'cog' : 'cog-outline';
                 }
 
                 return <MaterialCommunityIcons name={iconName} size={size} color={color} />;
               },
-              tabBarActiveTintColor: COLORS.accent,
+              tabBarActiveTintColor: COLORS.primary,
               tabBarInactiveTintColor: COLORS.textMuted,
               tabBarStyle: {
                 backgroundColor: COLORS.white,
@@ -232,9 +187,9 @@ function NurseNavigator() {
                 shadowOffset: { width: 0, height: -4 },
                 shadowOpacity: 0.1,
                 shadowRadius: 12,
-                height: 90,
-                paddingBottom: 34,
-                paddingTop: 8,
+                height: 62 + insets.bottom,
+                paddingBottom: Math.max(insets.bottom, 20),
+                paddingTop: 20,
                 position: 'relative',
                 zIndex: 10,
               },
@@ -246,26 +201,71 @@ function NurseNavigator() {
             })}
           >
             <Tab.Screen name="Appointments" component={NurseAppointmentsScreen} />
-            <Tab.Screen name="Chat" component={NurseChatScreen} />
-            <Tab.Screen name="Profile" component={NurseProfileScreen} />
+            <Tab.Screen 
+              name="RequestShift" 
+              component={NurseRequestShiftScreen}
+              options={{
+                tabBarButton: (props) => (
+                  <CustomTabBarButton {...props}>
+                    <MaterialCommunityIcons name="calendar-plus" size={30} color={COLORS.white} />
+                  </CustomTabBarButton>
+                ),
+                tabBarLabel: () => null,
+              }}
+            />
             <Tab.Screen name="Settings" component={SettingsScreen} />
           </Tab.Navigator>
         )}
       </Stack.Screen>
       <Stack.Screen name="Notifications" component={NotificationsScreen} />
+      <Stack.Screen name="Profile" component={NurseProfileScreen} />
       <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />
       <Stack.Screen name="PrivacySecurity" component={PrivacySecurityScreen} />
       <Stack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
+      <Stack.Screen name="ContactSupport" component={ContactSupportScreen} />
       <Stack.Screen name="Help" component={HelpScreen} />
-      <Stack.Screen name="UserManual" component={UserManualScreen} />
       <Stack.Screen name="About" component={AboutScreen} />
+      <Stack.Screen name="UserManual" component={UserManualScreen} />
       <Stack.Screen name="Terms" component={TermsScreen} />
       <Stack.Screen name="Privacy" component={PrivacyPolicyScreen} />
     </Stack.Navigator>
   );
 }
 
+const CustomTabBarButton = ({ children, onPress }) => (
+  <TouchableOpacity
+    style={{
+      top: -20,
+      justifyContent: 'center',
+      alignItems: 'center',
+    }}
+    onPress={onPress}
+  >
+    <LinearGradient
+      colors={GRADIENTS.header}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 0, y: 1 }}
+      style={{
+        width: 60,
+        height: 60,
+        borderRadius: 30,
+        justifyContent: 'center',
+        alignItems: 'center',
+        shadowColor: COLORS.primary,
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        elevation: 5,
+      }}
+    >
+      {children}
+    </LinearGradient>
+  </TouchableOpacity>
+);
+
 function AdminDashboardNavigator() {
+  const insets = useSafeAreaInsets();
+
   return (
     <Stack.Navigator screenOptions={{ headerShown: false }}>
       <Stack.Screen name="AdminApp">
@@ -277,19 +277,17 @@ function AdminDashboardNavigator() {
 
                 if (route.name === 'Dashboard') {
                   iconName = focused ? 'view-dashboard' : 'view-dashboard-outline';
-                } else if (route.name === 'Clients') {
+                } else if (route.name === 'Users') {
                   iconName = focused ? 'account-group' : 'account-group-outline';
-                } else if (route.name === 'Staff') {
-                  iconName = focused ? 'account-heart' : 'account-heart-outline';
-                } else if (route.name === 'Chat') {
-                  return <ChatTabIcon focused={focused} color={color} size={24} />;
+                } else if (route.name === 'Operations') {
+                  iconName = focused ? 'cog-box' : 'cog-box';
                 } else if (route.name === 'Settings') {
                   iconName = focused ? 'cog' : 'cog-outline';
                 }
 
                 return <MaterialCommunityIcons name={iconName} size={24} color={color} />;
               },
-              tabBarActiveTintColor: COLORS.accent,
+              tabBarActiveTintColor: COLORS.primary,
               tabBarInactiveTintColor: COLORS.textMuted,
               tabBarStyle: {
                 backgroundColor: COLORS.white,
@@ -299,8 +297,8 @@ function AdminDashboardNavigator() {
                 shadowOffset: { width: 0, height: -4 },
                 shadowOpacity: 0.1,
                 shadowRadius: 12,
-                height: 90,
-                paddingBottom: 34,
+                height: 62 + insets.bottom,
+                paddingBottom: Math.max(insets.bottom, 8),
                 paddingTop: 8,
                 position: 'relative',
                 zIndex: 10,
@@ -313,9 +311,20 @@ function AdminDashboardNavigator() {
             })}
           >
             <Tab.Screen name="Dashboard" component={AdminDashboardScreen} />
-            <Tab.Screen name="Clients" component={AdminClientsScreen} />
-            <Tab.Screen name="Staff" component={AdminAnalyticsScreen} />
-            <Tab.Screen name="Chat" component={AdminChatScreen} />
+            <Tab.Screen name="Users" component={AdminUserManagementScreen} />
+            <Tab.Screen 
+              name="Recurring" 
+              component={AdminRecurringShiftScreen}
+              options={{
+                tabBarButton: (props) => (
+                  <CustomTabBarButton {...props}>
+                    <MaterialCommunityIcons name="calendar-sync" size={30} color={COLORS.white} />
+                  </CustomTabBarButton>
+                ),
+                tabBarLabel: () => null,
+              }}
+            />
+            <Tab.Screen name="Operations" component={AdminOperationsScreen} />
             <Tab.Screen name="Settings" component={SettingsScreen} />
           </Tab.Navigator>
         )}
@@ -333,14 +342,16 @@ function AdminDashboardNavigator() {
       <Stack.Screen name="PaymentSettings" component={PaymentSettingsScreen} />
       <Stack.Screen name="AdminManagementHub" component={AdminManagementHubScreen} />
       <Stack.Screen name="AdminPaymentsScreen" component={AdminPaymentsScreen} />
+      <Stack.Screen name="TestPayslip" component={TestPayslipScreen} />
       <Stack.Screen name="AdminAnalyticsScreen" component={AdminAnalyticsScreen} />
       <Stack.Screen name="TransactionDetailsScreen" component={TransactionDetailsScreen} />
       <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />
       <Stack.Screen name="PrivacySecurity" component={PrivacySecurityScreen} />
       <Stack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
+      <Stack.Screen name="ContactSupport" component={ContactSupportScreen} />
       <Stack.Screen name="Help" component={HelpScreen} />
-      <Stack.Screen name="UserManual" component={UserManualScreen} />
       <Stack.Screen name="About" component={AboutScreen} />
+      <Stack.Screen name="UserManual" component={UserManualScreen} />
       <Stack.Screen name="Terms" component={TermsScreen} />
       <Stack.Screen name="Privacy" component={PrivacyPolicyScreen} />
     </Stack.Navigator>
@@ -350,6 +361,8 @@ function AdminDashboardNavigator() {
 function AppNavigator() {
   const { user, isLoading } = useAuth();
   const [showSplash, setShowSplash] = useState(true);
+  const [showOnboarding, setShowOnboarding] = useState(false);
+  const previousUserRef = useRef(user);
 
   useEffect(() => {
     // Check if we should show splash screen on app load or after logout
@@ -358,7 +371,7 @@ function AppNavigator() {
         const shouldShowSplash = await AsyncStorage.getItem('shouldShowSplash');
         if (shouldShowSplash === 'true') {
           setShowSplash(true);
-          // Clear the flag
+          // Clear the flag after reading
           await AsyncStorage.removeItem('shouldShowSplash');
         } else if (user) {
           // If user is already logged in and no splash flag, skip splash
@@ -373,20 +386,39 @@ function AppNavigator() {
   }, [user]);
 
   useEffect(() => {
-    // When user logs out (user becomes null), show splash screen
-    if (user === null && !isLoading) {
-      const checkLogoutSplash = async () => {
-        const shouldShowSplash = await AsyncStorage.getItem('shouldShowSplash');
-        if (shouldShowSplash === 'true') {
-          setShowSplash(true);
-        }
-      };
-      checkLogoutSplash();
+    // Detect logout and show splash screen
+    const previousUser = previousUserRef.current;
+    if (previousUser && !user && !isLoading) {
+      // User just logged out - show splash screen
+      setShowSplash(true);
     }
+    previousUserRef.current = user;
   }, [user, isLoading]);
 
+  // Check onboarding status when user logs in
+  useEffect(() => {
+    const checkOnboarding = async () => {
+      if (user && !isLoading && !showSplash) {
+        const completed = await checkOnboardingStatus();
+        if (!completed) {
+          // Show onboarding after a brief delay
+          setTimeout(() => setShowOnboarding(true), 800);
+        }
+      }
+    };
+    
+    checkOnboarding();
+  }, [user, isLoading, showSplash]);
+
   if (showSplash) {
-    return <SplashScreen onFinish={() => setShowSplash(false)} />;
+    // Keep the styled SplashScreen when logged out; only dismiss when authenticated
+    const handleSplashFinish = () => {
+      if (user) {
+        setShowSplash(false);
+      }
+      // If no user, remain on SplashScreen which contains the auth forms
+    };
+    return <SplashScreen onFinish={handleSplashFinish} />;
   }
 
   if (isLoading) {
@@ -398,17 +430,24 @@ function AppNavigator() {
   }
 
   // Check user role for navigation
-  const isAdmin = user?.role === 'admin';
-  const isNurse = user?.role === 'nurse';
+  const isAdmin = user?.role === 'admin' || user?.role === 'admins' || user?.role === 'superAdmin';
+  const isNurse = user?.role === 'nurse' || user?.role === 'nurses';
 
   return (
-    <NavigationContainer>
-      {user ? (
-        isAdmin ? <AdminDashboardNavigator /> : 
-        isNurse ? <NurseNavigator /> : 
-        <MainTabs />
-      ) : <AuthStack />}
-    </NavigationContainer>
+    <>
+      <AppOnboarding 
+        visible={showOnboarding} 
+        onComplete={() => setShowOnboarding(false)} 
+        userRole={user?.role}
+      />
+      <NavigationContainer>
+        {user ? (
+          isAdmin ? <AdminDashboardNavigator /> : 
+          isNurse ? <NurseNavigator /> : 
+          <MainTabs />
+        ) : <SplashScreen onFinish={() => {}} />}
+      </NavigationContainer>
+    </>
   );
 }
 
@@ -426,24 +465,24 @@ export default function App() {
 
   return (
     <ErrorBoundary>
-      <AuthProvider>
-        <ServicesProvider>
-          <NurseProvider>
-            <ShiftProvider>
+      <SafeAreaProvider>
+        <AuthProvider>
+          <ServicesProvider>
+            <NurseProvider>
               <NotificationProvider>
-                <ProfileEditProvider>
-                  <AppointmentProvider>
-                    <ChatProvider>
-                      <StatusBar style="light" />
-                      <AppNavigator />
-                    </ChatProvider>
-                  </AppointmentProvider>
-                </ProfileEditProvider>
+                <ShiftProvider>
+                  <ProfileEditProvider>
+                    <AppointmentProvider>
+                        <StatusBar style="light" />
+                        <AppNavigator />
+                    </AppointmentProvider>
+                  </ProfileEditProvider>
+                </ShiftProvider>
               </NotificationProvider>
-            </ShiftProvider>
-          </NurseProvider>
-        </ServicesProvider>
-      </AuthProvider>
+            </NurseProvider>
+          </ServicesProvider>
+        </AuthProvider>
+      </SafeAreaProvider>
     </ErrorBoundary>
   );
 }

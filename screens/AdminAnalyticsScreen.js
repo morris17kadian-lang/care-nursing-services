@@ -1,20 +1,27 @@
 import TouchableWeb from "../components/TouchableWeb";
-import React, { useState } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, Modal, Alert, Animated, PanResponder, KeyboardAvoidingView, Platform } from 'react-native';
+import React, { useState, useEffect, useCallback } from 'react';
+import { View, Text, StyleSheet, ScrollView, TextInput, Modal, Alert, Animated, PanResponder, KeyboardAvoidingView, Platform, Image, Linking } from 'react-native';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as ImagePicker from 'expo-image-picker';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, GRADIENTS, SPACING } from '../constants';
 import { useAuth } from '../context/AuthContext';
 import { useNurses } from '../context/NurseContext';
+import ApiService from '../services/ApiService';
+import FirebaseService from '../services/FirebaseService';
+import { clearAllAdminData, checkCurrentData } from '../utils/clearData';
+import BankAutocomplete from '../components/BankAutocomplete';
 
-export default function AdminAnalyticsScreen({ navigation }) {
-  const { createNurseAccount } = useAuth();
-  const { nurses, addNurse, updateNurseStatus, deleteNurse, getNursesByStatus } = useNurses();
+export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = false, onAddPress }) {
+  const { createNurseAccount, user } = useAuth();
+  const { nurses, addNurse, updateNurse, updateNurseStatus, deleteNurse, getNursesByStatus } = useNurses();
   const insets = useSafeAreaInsets();
   const [selectedCard, setSelectedCard] = useState(null);
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
   const [createNurseModalVisible, setCreateNurseModalVisible] = useState(false);
+  const [editMode, setEditMode] = useState(false); // Edit mode state
   const [nurseDetailsModalVisible, setNurseDetailsModalVisible] = useState(false);
   const [nurseToDelete, setNurseToDelete] = useState(null);
   const [selectedNurseDetails, setSelectedNurseDetails] = useState(null);
@@ -23,8 +30,228 @@ export default function AdminAnalyticsScreen({ navigation }) {
   const [nursePhone, setNursePhone] = useState('');
   const [nurseSpecialization, setNurseSpecialization] = useState('');
   const [nurseCode, setNurseCode] = useState('');
-  const [nurseEmergencyContact, setNurseEmergencyContact] = useState('');
-  const [nurseEmergencyPhone, setNurseEmergencyPhone] = useState('');
+  const [nurseBankName, setNurseBankName] = useState('');
+  const [nurseAccountNumber, setNurseAccountNumber] = useState('');
+  const [nurseAccountHolderName, setNurseAccountHolderName] = useState('');
+  const [nurseBankBranch, setNurseBankBranch] = useState('');
+  const [nurseIdPhoto, setNurseIdPhoto] = useState(null); // For nurse ID photo upload
+  const [staffRole, setStaffRole] = useState('nurse'); // 'nurse' or 'admin'
+  const [nurseSequence, setNurseSequence] = useState(1); // Sequential counter for nurses
+  const [adminSequence, setAdminSequence] = useState(1); // Sequential counter for admins
+  const [sequencesInitialized, setSequencesInitialized] = useState(false); // Flag to prevent multiple initializations
+  const [showRoleModal, setShowRoleModal] = useState(false); // Role selection modal
+
+  // Initialize sequences based on persistent sequence tracking
+  useEffect(() => {
+    // Reset initialization flag when user context changes
+    setSequencesInitialized(false);
+    const initializeSequences = async () => {
+      // console.log('🔄 Analytics: Starting sequence initialization with persistent tracking...');
+      try {
+        // Get or initialize persistent sequence counters
+        const storedNurseSequence = await AsyncStorage.getItem('nurseSequenceCounter');
+        const storedAdminSequence = await AsyncStorage.getItem('adminSequenceCounter');
+        
+        // Also check existing data to ensure we don't go backwards
+        const allKeys = await AsyncStorage.getAllKeys();
+        const existingNurses = nurses || [];
+        // Try to fetch admins/nurses from backend for accurate sequencing
+        let backendAdmins = [];
+        let backendNurses = [];
+        if (true) {
+          try {
+            const adminResp = await ApiService.makeRequest('/staff/admins?limit=1000');
+            if (adminResp && adminResp.success && Array.isArray(adminResp.data)) backendAdmins = adminResp.data;
+          } catch (e) {
+            // console.log('⚠️ Could not fetch admin users:', e.message || e);
+          }
+          try {
+            const nurseResp = await ApiService.makeRequest('/staff/nurses?limit=1000');
+            if (nurseResp && nurseResp.success && Array.isArray(nurseResp.data)) backendNurses = nurseResp.data;
+          } catch (e) {
+            // console.log('⚠️ Could not fetch nurse users:', e.message || e);
+          }
+        }
+        
+        // Find all nurse and admin codes that have ever been used
+        const existingNurseCodes = [...existingNurses, ...backendNurses]
+          .filter(nurse => {
+            const code = nurse.nurseCode || nurse.code; // Check both new and old field names
+            return code && code.match(/^NURSE\d{3}$/);
+          })
+          .map(nurse => {
+            const code = nurse.nurseCode || nurse.code;
+            const match = code.match(/NURSE(\d{3})/);
+            return match ? parseInt(match[1]) : 0;
+          })
+          .filter(num => num > 0);
+
+        const existingAdminCodes = [...existingNurses, ...backendAdmins]
+          .filter(admin => {
+            const code = admin.adminCode || admin.code; // Check both new and old field names  
+            return code && code.match(/^ADMIN\d{3}$/);
+          })
+          .map(admin => {
+            const code = admin.adminCode || admin.code;
+            const match = code.match(/ADMIN(\d{3})/);
+            return match ? parseInt(match[1]) : 0;
+          })
+          .filter(num => num > 0);
+        
+        // Ensure ADMIN001 is always recognized as existing (Nurse Bernard)
+        if (!existingAdminCodes.includes(1)) {
+          existingAdminCodes.push(1);
+          // console.log('🔧 Analytics: Added ADMIN001 (Nurse Bernard) to existing admin codes');
+        }
+        
+        // Also check AsyncStorage keys for historical usage
+        const nurseKeys = allKeys.filter(key => key.match(/^NURSE\d{3}$/));
+        const adminKeys = allKeys.filter(key => key.match(/^ADMIN\d{3}$/));
+        
+        const storageNurseNumbers = nurseKeys.map(key => {
+          const match = key.match(/NURSE(\d{3})/);
+          return match ? parseInt(match[1]) : 0;
+        }).filter(num => num > 0);
+        
+        const storageAdminNumbers = adminKeys.map(key => {
+          const match = key.match(/ADMIN(\d{3})/);
+          return match ? parseInt(match[1]) : 0;
+        }).filter(num => num > 0);
+        
+        // Combine all sources to find the highest ever used numbers
+        const allNurseNumbers = [...new Set([...existingNurseCodes, ...storageNurseNumbers])];
+        const allAdminNumbers = [...new Set([...existingAdminCodes, ...storageAdminNumbers])];
+        
+        // Calculate what the next sequence should be based on highest usage
+        const highestNurseUsed = allNurseNumbers.length > 0 ? Math.max(...allNurseNumbers) : 0;
+        const highestAdminUsed = allAdminNumbers.length > 0 ? Math.max(...allAdminNumbers) : 0;
+        
+        // console.log('🔍 Sequence Debug Info:');
+        // console.log('  - All nurse numbers found:', allNurseNumbers);
+        // console.log('  - All admin numbers found:', allAdminNumbers);
+        // console.log('  - Highest nurse used:', highestNurseUsed);
+        // console.log('  - Highest admin used:', highestAdminUsed);
+        
+        // Get stored counters or initialize them. Prefer backend data when available.
+        const backendFetched = backendAdmins.length > 0 || backendNurses.length > 0;
+        let nextNurseSequence;
+        let nextAdminSequence;
+        if (backendFetched) {
+          nextNurseSequence = highestNurseUsed + 1;
+          nextAdminSequence = highestAdminUsed + 1;
+          // console.log('  - Using backend-derived sequences');
+        } else {
+          nextNurseSequence = storedNurseSequence ? parseInt(storedNurseSequence) : (highestNurseUsed + 1);
+          nextAdminSequence = storedAdminSequence ? parseInt(storedAdminSequence) : (highestAdminUsed + 1);
+          // console.log('  - Using stored/calculated sequences');
+        }
+        
+        // Ensure we never go backwards (in case storage is out of sync)
+        // Ensure we never go backwards
+        nextNurseSequence = Math.max(nextNurseSequence, highestNurseUsed + 1);
+        nextAdminSequence = Math.max(nextAdminSequence, highestAdminUsed + 1);
+        
+        // Override: If sequence is unreasonably high (>50), reset to a reasonable number
+        // This handles cases where test data has inflated the sequence
+        if (nextNurseSequence > 50) {
+          // console.log(`⚠️ Nurse sequence is high (${nextNurseSequence}), resetting to 2`);
+          nextNurseSequence = 2; // Start from 2 since NURSE001 might exist
+        }
+        if (nextAdminSequence > 50) {
+          // console.log(`⚠️ Admin sequence is high (${nextAdminSequence}), resetting to 2`);  
+          nextAdminSequence = 2; // Start from 2 since ADMIN001 exists (Nurse Bernard)
+        }
+        
+        // Ensure admin sequence is never less than 2 (ADMIN001 is taken by Nurse Bernard)
+        nextAdminSequence = Math.max(nextAdminSequence, 2);
+        
+        // console.log('🔍 Analytics: Sequence calculation:');
+        // console.log('  - Stored nurse sequence:', storedNurseSequence);
+        // console.log('  - Stored admin sequence:', storedAdminSequence);
+        // console.log('  - Highest nurse used:', highestNurseUsed);
+        // console.log('  - Highest admin used:', highestAdminUsed);
+        // console.log('  - Next nurse sequence:', nextNurseSequence);
+        // console.log('  - Next admin sequence:', nextAdminSequence);
+        
+        // Save the counters back to storage
+        await AsyncStorage.setItem('nurseSequenceCounter', nextNurseSequence.toString());
+        await AsyncStorage.setItem('adminSequenceCounter', nextAdminSequence.toString());
+        
+        setNurseSequence(nextNurseSequence);
+        setAdminSequence(nextAdminSequence);
+        setSequencesInitialized(true);
+        
+        // console.log('✅ Analytics: Sequence initialization complete - Nurses:', nextNurseSequence, 'Admins:', nextAdminSequence);
+        // console.log('Analytics: Found admin codes from context:', existingAdminCodes);
+      } catch (error) {
+        console.error('❌ Analytics: Error initializing sequences:', error);
+        // Fallback to safe numbers if there's an error
+        setNurseSequence(4);
+        setAdminSequence(4);
+        setSequencesInitialized(true);
+      }
+    };
+    
+    initializeSequences();
+  }, [user]);
+
+  // Auto-generate the next sequential code based on role
+  const getNextCode = () => {
+    if (staffRole === 'admin') {
+      return `ADMIN${adminSequence.toString().padStart(3, '0')}`;
+    } else {
+      return `NURSE${nurseSequence.toString().padStart(3, '0')}`;
+    }
+  };
+
+  // Initialize the code when component mounts
+  useEffect(() => {
+    setNurseCode(getNextCode());
+  }, [staffRole, nurseSequence, adminSequence]);
+
+  // Memoize the add function to prevent infinite re-renders
+  const handleAddStaff = useCallback(() => {
+    setCreateNurseModalVisible(true);
+  }, []);
+
+  // Expose add function to parent component when embedded
+  useEffect(() => {
+    if (isEmbedded && onAddPress) {
+      onAddPress(handleAddStaff);
+    }
+  }, [isEmbedded, onAddPress, handleAddStaff]);
+
+  // Function to pick nurse ID photo
+  const pickNurseIdPhoto = async () => {
+    try {
+      // Request permission to access photo library
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission Required', 'Sorry, we need camera roll permissions to upload nurse ID photos.');
+        return;
+      }
+
+      // Launch image picker
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 0.8,
+      });
+
+      if (!result.canceled && result.assets && result.assets[0]) {
+        setNurseIdPhoto(result.assets[0]);
+      }
+    } catch (error) {
+      console.error('Error picking nurse ID photo:', error);
+      Alert.alert('Error', 'Failed to select photo. Please try again.');
+    }
+  };
+
+  // Function to remove selected photo
+  const removeNurseIdPhoto = () => {
+    setNurseIdPhoto(null);
+  };
 
   const handleCardPress = (cardType) => {
     if (selectedCard === cardType) {
@@ -61,9 +288,204 @@ export default function AdminAnalyticsScreen({ navigation }) {
     Alert.alert('Success', `${nurseToDelete?.name} has been removed from the staff.`);
   };
 
+  const handleDeleteStaff = async (staffMember) => {
+    const staffType = staffMember.code?.startsWith('ADMIN') ? 'Admin' : 'Nurse';
+    
+    Alert.alert(
+      `Delete ${staffType}`,
+      `Are you sure you want to delete ${staffMember.name}?\n\nThis action cannot be undone and will:\n• Remove their account access\n• Clear all their data\n• Remove them from all assignments`,
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // Delete from NurseContext (works for both nurses and admins)
+              deleteNurse(staffMember.id);
+              
+              // Delete their AsyncStorage user account data
+              const userKey = staffMember.code;
+              if (userKey) {
+                await AsyncStorage.removeItem(userKey);
+              }
+              
+              // Close the details modal
+              setNurseDetailsModalVisible(false);
+              setSelectedNurseDetails(null);
+              
+              Alert.alert(
+                'Success', 
+                `${staffMember.name} has been deleted successfully.`,
+                [{ text: 'OK' }]
+              );
+              
+            } catch (error) {
+              console.error('Error deleting staff member:', error);
+              Alert.alert(
+                'Error', 
+                'Failed to delete staff member. Please try again.',
+                [{ text: 'OK' }]
+              );
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  // Initialize the code when component mounts
+  useEffect(() => {
+    setNurseCode(getNextCode());
+  }, [staffRole, nurseSequence, adminSequence]);
+
+  // Handle role selection and auto-update code
+  const handleRoleSelection = (role) => {
+    setStaffRole(role);
+    setShowRoleModal(false);
+    // Auto-set the next sequential code
+    if (role === 'admin') {
+      setNurseCode(`ADMIN${adminSequence.toString().padStart(3, '0')}`);
+    } else {
+      setNurseCode(`NURSE${nurseSequence.toString().padStart(3, '0')}`);
+    }
+  };
+
+  // Temporary function to clear all sample data
+  const handleClearSampleData = async () => {
+    Alert.alert(
+      'Clear Sample Data',
+      'This will remove all sample ADMIN001 data and reset the app. You will need to restart after this.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear All Data',
+          style: 'destructive',
+          onPress: async () => {
+            const result = await clearAllAdminData();
+            if (result.success) {
+              Alert.alert(
+                'Data Cleared',
+                'All sample data cleared! Please restart the app with:\nnpx expo start --clear',
+                [{ text: 'OK' }]
+              );
+            } else {
+              Alert.alert('Error', `Failed to clear data: ${result.error}`);
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const handleClearAnalyticsData = async () => {
+    Alert.alert(
+      'Clear Analytics Data',
+      'This will clear all staff analytics, sequences, and management data. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const keysToClear = [
+                'nurseSequenceCounter',
+                'adminSequenceCounter',
+                'staffSequence',
+                'staffManagement',
+                'nurses',
+                'admins'
+              ];
+              await AsyncStorage.multiRemove(keysToClear);
+              setNurseSequence(1);
+              setAdminSequence(1);
+              Alert.alert('Success', '✅ Analytics data cleared!');
+            } catch (error) {
+              Alert.alert('Error', 'Failed to clear data');
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const handleResetAllNurses = async () => {
+    Alert.alert(
+      '⚠️ HARD RESET NURSES',
+      'This will PERMANENTLY DELETE ALL NURSES from the database and reset the staff code counter to NURSE001.\n\nAre you sure?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'DELETE ALL',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              // 1. Delete from Firebase
+              const result = await FirebaseService.deleteAllNurses();
+              
+              if (result.success) {
+                // 2. Reset Sequence in AsyncStorage
+                await AsyncStorage.setItem('nurseSequenceCounter', '1');
+                setNurseSequence(1);
+                
+                // 3. Clear local cache
+                await AsyncStorage.removeItem('nurses');
+                
+                // 4. Refresh Context
+                // We can't easily force refresh context from here without a refresh method exposed, 
+                // but we can reload the app or show success message.
+                
+                Alert.alert(
+                  'Reset Complete', 
+                  `Deleted ${result.count} nurse profiles.\nNext nurse will be NURSE001.\n\nPlease restart the app to see changes.`
+                );
+              } else {
+                Alert.alert('Error', 'Failed to delete nurses: ' + result.error);
+              }
+            } catch (error) {
+              Alert.alert('Error', 'An unexpected error occurred');
+              console.error(error);
+            }
+          }
+        }
+      ]
+    );
+  };
+
+  const handleEditNurse = (nurse) => {
+    setEditMode(true);
+    setSelectedNurseDetails(nurse);
+    setNurseName(nurse.name);
+    setNurseEmail(nurse.email);
+    setNursePhone(nurse.phone);
+    setNurseCode(nurse.code || nurse.nurseCode);
+    setNurseSpecialization(nurse.specialization || 'General Nursing');
+    
+    // Banking
+    setNurseBankName(nurse.bankName || nurse.bankingDetails?.bankName || '');
+    setNurseAccountNumber(nurse.accountNumber || nurse.bankingDetails?.accountNumber || '');
+    setNurseAccountHolderName(nurse.accountHolderName || nurse.bankingDetails?.accountHolderName || '');
+    setNurseBankBranch(nurse.bankBranch || nurse.bankingDetails?.bankBranch || '');
+    
+    // Photo
+    if (nurse.profilePhoto) {
+      setNurseIdPhoto({ uri: nurse.profilePhoto });
+    } else {
+      setNurseIdPhoto(null);
+    }
+    
+    // Determine role (to set code correctly if needed)
+    const isAdmin = (nurse.code || '').startsWith('ADMIN');
+    setStaffRole(isAdmin ? 'admin' : 'nurse');
+    
+    setNurseDetailsModalVisible(false); // Close details modal
+    setCreateNurseModalVisible(true); // Open form modal
+  };
+
   const handleCreateNurse = async () => {
-    if (!nurseName || !nurseEmail || !nursePhone || !nurseSpecialization || !nurseCode || !nurseEmergencyContact || !nurseEmergencyPhone) {
-      Alert.alert('Error', 'Please fill in all fields');
+    if (!nurseName || !nurseEmail || !nursePhone || !nurseCode || !nurseBankName || !nurseAccountNumber || !nurseAccountHolderName) {
+      Alert.alert('Error', 'Please fill in all fields including banking details');
       return;
     }
 
@@ -74,68 +496,141 @@ export default function AdminAnalyticsScreen({ navigation }) {
       return;
     }
 
+    // Determine role based on code prefix
+    const isAdmin = upperCode.startsWith('ADMIN');
+    const role = isAdmin ? 'admin' : 'nurse';
+    
     // Create staff account in the system
     const nurseData = {
       name: nurseName,
+      fullName: nurseName,
       email: nurseEmail,
       phone: nursePhone,
-      specialization: nurseSpecialization,
+      specialization: nurseSpecialization || 'General Nursing',
       nurseCode: upperCode,
-      emergencyContact: nurseEmergencyContact,
-      emergencyPhone: nurseEmergencyPhone,
+      code: upperCode, // Add code field for admins
+      role: role, // Explicitly set the role
+      nurseIdPhoto: nurseIdPhoto || null, // Add nurse ID photo
+      bankingDetails: {
+        bankName: nurseBankName,
+        accountNumber: nurseAccountNumber,
+        accountHolderName: nurseAccountHolderName,
+        bankBranch: nurseBankBranch || 'Main Branch',
+        currency: 'JMD'
+      }
     };
 
-    // Add to local nurse context
-    const result = addNurse(nurseData);
-    
-    // Also create account in auth system
-    await createNurseAccount(nurseData);
+    let result;
+    try {
+      if (editMode && selectedNurseDetails) {
+         // Updating existing staff
+         // Confirm we have an ID
+         if (!selectedNurseDetails.id) {
+           Alert.alert('Error', 'Cannot update staff: Missing ID');
+           return;
+         }
+         // Preserve original ID
+         const updatePayload = { ...nurseData };
+         // If backend supports partial update, good. For now sending full data.
+         result = await updateNurse(selectedNurseDetails.id, updatePayload);
+      } else {
+         // Creating new staff
+         result = await addNurse(nurseData);
+      }
+      
+      // Check result - handle potential undefined result if context fails
+      if (!result) {
+        throw new Error('No result returned from staff operation');
+      }
 
-    if (result.success) {
-      Alert.alert(
-        'Nurse Account Created',
-        `${nurseName} has been created with:\n\nUsername: ${nurseCode.toUpperCase()}\nTemporary Password: temp123\n\nShare these credentials with the nurse for first login. They should change the password after logging in.`,
-        [
-          {
-            text: 'OK',
-            onPress: () => {
-              setCreateNurseModalVisible(false);
-              setNurseName('');
-              setNurseEmail('');
-              setNursePhone('');
-              setNurseSpecialization('');
-              setNurseCode('');
-              setNurseEmergencyContact('');
-              setNurseEmergencyPhone('');
+      const authResult = result; // Keep variable name for compatibility
+
+      if (authResult.success) {
+        // Increment the sequence counter for next time (Only if creating new)
+        if (!editMode) {
+          try {
+            if (upperCode.startsWith('ADMIN')) {
+              const nextAdminSequence = adminSequence + 1;
+              setAdminSequence(nextAdminSequence);
+              await AsyncStorage.setItem('adminSequenceCounter', nextAdminSequence.toString());
+              // console.log('✅ Incremented admin sequence to:', nextAdminSequence);
+            } else if (upperCode.startsWith('NURSE')) {
+              const nextNurseSequence = nurseSequence + 1;
+              setNurseSequence(nextNurseSequence);
+              await AsyncStorage.setItem('nurseSequenceCounter', nextNurseSequence.toString());
+              // console.log('✅ Incremented nurse sequence to:', nextNurseSequence);
+            }
+          } catch (error) {
+            console.error('❌ Error updating sequence counter:', error);
+          }
+        }
+        
+        Alert.alert(
+          editMode ? 'Staff Details Updated' : 'Staff Account Created',
+          editMode 
+            ? `${nurseName}'s information has been updated successfully.`
+            : `${nurseName} has been created with:\n\nUsername: ${nurseCode.toUpperCase()}\nTemporary Password: temp123\n\nShare these credentials with the staff member for first login. They should change the password after logging in.`,
+          [
+            {
+              text: 'OK',
+              onPress: () => {
+                setCreateNurseModalVisible(false);
+                setEditMode(false);
+                setNurseName('');
+                setNurseEmail('');
+                setNursePhone('');
+                setNurseSpecialization('');
+                setNurseCode('');
+                setNurseBankName('');
+                setNurseAccountNumber('');
+                setNurseAccountHolderName('');
+                setNurseBankBranch('');
+                setNurseIdPhoto(null);
+              },
             },
-          },
-        ]
-      );
-    } else {
-      Alert.alert('Error', result.error);
+          ]
+        );
+      } else {
+        // Handle errors from either staff creation or auth account creation
+        const errorMessage = result.error || 'Failed to create staff account';
+        console.error('Staff update/create error:', errorMessage);
+        Alert.alert('Error', errorMessage);
+      }
+    } catch (e) {
+      console.error('Exception in handleCreateNurse:', e);
+      Alert.alert('Error', e.message || 'An unexpected error occurred');
     }
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
-      <LinearGradient
-        colors={GRADIENTS.header}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 0, y: 1 }}
-        style={[styles.header, { paddingTop: insets.top + 20 }]}
-      >
-        <View style={styles.headerRow}>
-          <View style={styles.headerLeft} />
-          <Text style={styles.welcomeText}>Staff Management</Text>
-          <TouchableWeb 
-            style={styles.iconButton}
-            onPress={() => setCreateNurseModalVisible(true)}
-            activeOpacity={0.7}
-          >
-            <MaterialCommunityIcons name="plus" size={28} color={COLORS.white} />
-          </TouchableWeb>
-        </View>
-      </LinearGradient>
+    <SafeAreaView style={styles.container} edges={[]}>
+      {!isEmbedded && (
+        <LinearGradient
+          colors={GRADIENTS.header}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 0, y: 1 }}
+          style={[styles.header, { paddingTop: insets.top + 20 }]}
+        >
+          <View style={styles.headerRow}>
+            <View style={{ width: 44 }} />
+            <Text style={styles.welcomeText}>Staff Management</Text>
+            <TouchableWeb 
+              style={styles.iconButton}
+              onPress={() => setCreateNurseModalVisible(true)}
+              activeOpacity={0.7}
+            >
+              <MaterialCommunityIcons name="plus" size={28} color={COLORS.white} />
+            </TouchableWeb>
+          </View>
+        </LinearGradient>
+      )}
+
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
 
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
         {/* Stats Cards */}
@@ -149,7 +644,7 @@ export default function AdminAnalyticsScreen({ navigation }) {
               <LinearGradient
                 colors={GRADIENTS.header}
                 start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
+                end={{ x: 0, y: 1 }}
                 style={styles.statGradient}
               >
                 <Text style={styles.statLabel}>Total Staff</Text>
@@ -170,7 +665,7 @@ export default function AdminAnalyticsScreen({ navigation }) {
               <LinearGradient
                 colors={GRADIENTS.header}
                 start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
+                end={{ x: 0, y: 1 }}
                 style={styles.statGradient}
               >
                 <Text style={styles.statLabel}>Available</Text>
@@ -191,14 +686,14 @@ export default function AdminAnalyticsScreen({ navigation }) {
               <LinearGradient
                 colors={GRADIENTS.header}
                 start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
+                end={{ x: 0, y: 1 }}
                 style={styles.statGradient}
               >
-                <Text style={styles.statLabel}>Offline</Text>
+                <Text style={styles.statLabel}>Unavailable</Text>
               </LinearGradient>
             ) : (
               <View style={styles.inactiveStatCard}>
-                <Text style={styles.inactiveStatLabel}>Offline</Text>
+                <Text style={styles.inactiveStatLabel}>Unavailable</Text>
               </View>
             )}
           </TouchableWeb>
@@ -211,8 +706,8 @@ export default function AdminAnalyticsScreen({ navigation }) {
               'All Staff Members'
             }
           </Text>
-          {getDisplayedNurses().map((nurse) => (
-            <View key={nurse.id} style={styles.compactCard}>
+          {getDisplayedNurses().map((nurse, index) => (
+            <View key={`nurse-${nurse.id || nurse.code || nurse.name || 'unknown'}-${index}`} style={styles.compactCard}>
               <TouchableWeb
                 onLongPress={() => {
                   setNurseToDelete(nurse);
@@ -222,13 +717,27 @@ export default function AdminAnalyticsScreen({ navigation }) {
                 activeOpacity={0.7}
               >
                 <View style={styles.compactHeader}>
-                  <MaterialCommunityIcons 
-                    name="account-heart" 
-                    size={20} 
-                    color={nurse.status === 'available' ? COLORS.success : COLORS.warning} 
-                  />
+                  {nurse.profilePhoto || nurse.profileImage || nurse.photoUrl ? (
+                    <Image 
+                      source={{ uri: nurse.profilePhoto || nurse.profileImage || nurse.photoUrl }} 
+                      style={{ 
+                        width: 40, 
+                        height: 40, 
+                        borderRadius: 20, 
+                        marginRight: 10,
+                        backgroundColor: COLORS.lightGray 
+                      }} 
+                    />
+                  ) : (
+                    <MaterialCommunityIcons 
+                      name="account-heart" 
+                      size={20} 
+                      color={nurse.status === 'available' ? COLORS.success : COLORS.warning} 
+                    />
+                  )}
                   <View style={styles.compactInfo}>
                     <Text style={styles.compactClient}>{nurse.name}</Text>
+                    <Text style={styles.compactService}>{nurse.specialization || 'General Nursing'}</Text>
                   </View>
                   <TouchableWeb
                     style={styles.detailsButton}
@@ -241,16 +750,42 @@ export default function AdminAnalyticsScreen({ navigation }) {
                     <LinearGradient
                       colors={GRADIENTS.header}
                       start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
+                      end={{ x: 0, y: 1 }}
                       style={styles.detailsButtonGradient}
                     >
-                      <Text style={styles.detailsButtonText}>Details</Text>
+                      <Text style={styles.detailsButtonText}>View</Text>
                     </LinearGradient>
                   </TouchableWeb>
                 </View>
               </TouchableWeb>
             </View>
           ))}
+        </View>
+
+        <View style={{ padding: 20, paddingBottom: 40 }}>
+          <TouchableWeb
+            style={{
+              backgroundColor: '#FFEBEE',
+              padding: 15,
+              borderRadius: 12,
+              borderWidth: 1,
+              borderColor: '#FFCDD2',
+              flexDirection: 'row',
+              alignItems: 'center',
+              justifyContent: 'center',
+              gap: 10
+            }}
+            onPress={handleResetAllNurses}
+          >
+            <MaterialCommunityIcons name="nuke" size={24} color="#D32F2F" />
+            <Text style={{ 
+              color: '#D32F2F', 
+              fontFamily: 'Poppins_600SemiBold',
+              fontSize: 14
+            }}>
+              RESET ALL NURSES (Start Fresh)
+            </Text>
+          </TouchableWeb>
         </View>
       </ScrollView>
 
@@ -317,25 +852,54 @@ export default function AdminAnalyticsScreen({ navigation }) {
 
                 <View style={styles.detailItem}>
                   <MaterialCommunityIcons name="email" size={20} color={COLORS.primary} />
-                  <View style={styles.detailContent}>
+                  <TouchableWeb
+                    style={styles.detailContent}
+                    onPress={() => {
+                      const email = selectedNurseDetails?.email;
+                      if (!email) return;
+                      const url = `mailto:${String(email).trim()}`;
+                      Linking.openURL(url).catch(() => {});
+                    }}
+                    activeOpacity={selectedNurseDetails?.email ? 0.7 : 1}
+                    disabled={!selectedNurseDetails?.email}
+                  >
                     <Text style={styles.detailLabel}>Email</Text>
-                    <Text style={styles.detailValue}>{selectedNurseDetails?.email}</Text>
-                  </View>
+                    <Text style={styles.detailValue}>{selectedNurseDetails?.email || 'Not provided'}</Text>
+                  </TouchableWeb>
                 </View>
 
                 <View style={styles.detailItem}>
                   <MaterialCommunityIcons name="phone" size={20} color={COLORS.primary} />
-                  <View style={styles.detailContent}>
+                  <TouchableWeb
+                    style={styles.detailContent}
+                    onPress={() => {
+                      const phone = selectedNurseDetails?.phone;
+                      if (!phone) return;
+                      const sanitized = String(phone).trim().replace(/[^\d+]/g, '');
+                      const url = `tel:${sanitized}`;
+                      Linking.openURL(url).catch(() => {});
+                    }}
+                    activeOpacity={selectedNurseDetails?.phone ? 0.7 : 1}
+                    disabled={!selectedNurseDetails?.phone}
+                  >
                     <Text style={styles.detailLabel}>Phone</Text>
-                    <Text style={styles.detailValue}>{selectedNurseDetails?.phone}</Text>
+                    <Text style={styles.detailValue}>{selectedNurseDetails?.phone || 'Not provided'}</Text>
+                  </TouchableWeb>
+                </View>
+
+                <View style={styles.detailItem}>
+                  <MaterialCommunityIcons name="doctor" size={20} color={COLORS.primary} />
+                  <View style={styles.detailContent}>
+                    <Text style={styles.detailLabel}>Specialization</Text>
+                    <Text style={styles.detailValue}>{selectedNurseDetails?.specialization || 'General Nursing'}</Text>
                   </View>
                 </View>
 
                 <View style={styles.detailItem}>
-                  <MaterialCommunityIcons name="medical-bag" size={20} color={COLORS.primary} />
+                  <MaterialCommunityIcons name="map-marker-outline" size={20} color={COLORS.primary} />
                   <View style={styles.detailContent}>
-                    <Text style={styles.detailLabel}>Specialization</Text>
-                    <Text style={styles.detailValue}>{selectedNurseDetails?.specialization}</Text>
+                    <Text style={styles.detailLabel}>Bank Branch</Text>
+                    <Text style={styles.detailValue}>{selectedNurseDetails?.bankBranch || 'Not provided'}</Text>
                   </View>
                 </View>
 
@@ -364,22 +928,64 @@ export default function AdminAnalyticsScreen({ navigation }) {
                 </View>
 
                 <View style={styles.detailItem}>
-                  <MaterialCommunityIcons name="account-heart" size={20} color={COLORS.primary} />
+                  <MaterialCommunityIcons name="bank" size={20} color={COLORS.primary} />
                   <View style={styles.detailContent}>
-                    <Text style={styles.detailLabel}>Emergency Contact Name</Text>
-                    <Text style={styles.detailValue}>{selectedNurseDetails?.emergencyContact || 'Not provided'}</Text>
+                    <Text style={styles.detailLabel}>Bank Name</Text>
+                    <Text style={styles.detailValue}>{selectedNurseDetails?.bankName || 'Not provided'}</Text>
                   </View>
                 </View>
 
                 <View style={styles.detailItem}>
-                  <MaterialCommunityIcons name="phone-alert" size={20} color={COLORS.primary} />
+                  <MaterialCommunityIcons name="credit-card-outline" size={20} color={COLORS.primary} />
                   <View style={styles.detailContent}>
-                    <Text style={styles.detailLabel}>Emergency Contact Phone</Text>
-                    <Text style={styles.detailValue}>{selectedNurseDetails?.emergencyPhone || 'Not provided'}</Text>
+                    <Text style={styles.detailLabel}>Account Number</Text>
+                    <Text style={styles.detailValue}>{selectedNurseDetails?.accountNumber ? `****${selectedNurseDetails.accountNumber.slice(-4)}` : 'Not provided'}</Text>
+                  </View>
+                </View>
+
+                <View style={styles.detailItem}>
+                  <MaterialCommunityIcons name="account-outline" size={20} color={COLORS.primary} />
+                  <View style={styles.detailContent}>
+                    <Text style={styles.detailLabel}>Account Holder</Text>
+                    <Text style={styles.detailValue}>{selectedNurseDetails?.accountHolderName || 'Not provided'}</Text>
                   </View>
                 </View>
               </View>
+
             </ScrollView>
+
+            {/* Edit and Delete Buttons - Fixed at bottom */}
+            <View style={styles.modalFooter}>
+              <TouchableWeb 
+                style={styles.modalEditButton}
+                onPress={() => handleEditNurse(selectedNurseDetails)}
+              >
+                <LinearGradient
+                  colors={GRADIENTS.header}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={styles.modalButtonGradient}
+                >
+                  <MaterialCommunityIcons name="pencil" size={20} color="#FFFFFF" />
+                  <Text style={styles.modalButtonText}>Edit</Text>
+                </LinearGradient>
+              </TouchableWeb>
+
+              <TouchableWeb 
+                style={styles.modalDeleteButton}
+                onPress={() => handleDeleteStaff(selectedNurseDetails)}
+              >
+                <LinearGradient
+                  colors={['#ef4444', '#dc2626']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={styles.modalButtonGradient}
+                >
+                  <MaterialCommunityIcons name="delete" size={20} color="#FFFFFF" />
+                  <Text style={styles.modalButtonText}>Delete</Text>
+                </LinearGradient>
+              </TouchableWeb>
+            </View>
           </View>
         </View>
       </Modal>
@@ -397,7 +1003,7 @@ export default function AdminAnalyticsScreen({ navigation }) {
         >
           <View style={styles.modalContent}>
             <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Add New Staff Member</Text>
+              <Text style={styles.modalTitle}>{editMode ? 'Edit Staff Member' : 'Add New Staff Member'}</Text>
               <TouchableWeb onPress={() => setCreateNurseModalVisible(false)}>
                 <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
               </TouchableWeb>
@@ -425,7 +1031,7 @@ export default function AdminAnalyticsScreen({ navigation }) {
                 <MaterialCommunityIcons name="email" size={20} color={COLORS.textLight} />
                 <TextInput
                   style={styles.input}
-                  placeholder="nurse@care.com"
+                  placeholder="johndoe@nurse.com"
                   placeholderTextColor={COLORS.textLight}
                   value={nurseEmail}
                   onChangeText={setNurseEmail}
@@ -449,53 +1055,190 @@ export default function AdminAnalyticsScreen({ navigation }) {
 
               <Text style={styles.formLabel}>Specialization</Text>
               <View style={styles.formInput}>
-                <MaterialCommunityIcons name="medical-bag" size={20} color={COLORS.textLight} />
+                <MaterialCommunityIcons name="doctor" size={20} color={COLORS.textLight} />
                 <TextInput
                   style={styles.input}
-                  placeholder="e.g., Home Care, Physiotherapy"
+                  placeholder="e.g. Critical Care, Pediatric, General"
                   placeholderTextColor={COLORS.textLight}
                   value={nurseSpecialization}
                   onChangeText={setNurseSpecialization}
                 />
               </View>
 
-              <Text style={styles.formLabel}>Staff Code</Text>
+              {/* Staff Role Selection - Simple Toggle */}
+              <Text style={styles.formLabel}>Staff Role</Text>
+              <View style={styles.roleToggleContainer}>
+                <TouchableWeb
+                  style={[
+                    styles.roleToggleOption,
+                    staffRole === 'nurse' && styles.roleToggleSelected,
+                    { paddingVertical: 0, paddingHorizontal: 0, borderWidth: 0 } // Reset default button styles
+                  ]}
+                  onPress={() => handleRoleSelection('nurse')}
+                  activeOpacity={0.7}
+                >
+                  <LinearGradient
+                    colors={staffRole === 'nurse' ? GRADIENTS.header : [COLORS.card, COLORS.card]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 0, y: 1 }}
+                    style={{
+                      flex: 1,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      paddingVertical: 12,
+                      width: '100%',
+                      gap: 8
+                    }}
+                  >
+                    <MaterialCommunityIcons 
+                      name="hospital-box" 
+                      size={18} 
+                      color={staffRole === 'nurse' ? COLORS.white : COLORS.primary} 
+                    />
+                    <Text style={[
+                      styles.roleToggleText,
+                      staffRole === 'nurse' && styles.roleToggleTextSelected
+                    ]}>Nurse</Text>
+                  </LinearGradient>
+                </TouchableWeb>
+                
+                <TouchableWeb
+                  style={[
+                    styles.roleToggleOption,
+                    staffRole === 'admin' && styles.roleToggleSelected,
+                    { paddingVertical: 0, paddingHorizontal: 0, borderWidth: 0 }
+                  ]}
+                  onPress={() => handleRoleSelection('admin')}
+                  activeOpacity={0.7}
+                >
+                  <LinearGradient
+                    colors={staffRole === 'admin' ? GRADIENTS.header : [COLORS.card, COLORS.card]}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 0, y: 1 }}
+                    style={{
+                      flex: 1,
+                      flexDirection: 'row',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      paddingVertical: 12,
+                      width: '100%',
+                      gap: 8
+                    }}
+                  >
+                    <MaterialCommunityIcons 
+                      name="shield-account" 
+                      size={18} 
+                      color={staffRole === 'admin' ? COLORS.white : COLORS.primary} 
+                    />
+                    <Text style={[
+                      styles.roleToggleText,
+                      staffRole === 'admin' && styles.roleToggleTextSelected
+                    ]}>Admin</Text>
+                  </LinearGradient>
+                </TouchableWeb>
+              </View>
+
+              {/* Auto-Generated Staff Code Field */}
+              <Text style={styles.formLabel}>Staff Code (Auto-Generated)</Text>
+              <View style={styles.codeDisplayField}>
+                <MaterialCommunityIcons name="key-variant" size={20} color={COLORS.primary} />
+                <Text style={styles.autoCodeText}>
+                  {getNextCode()}
+                </Text>
+                <View style={styles.autoLabel}>
+                  <Text style={styles.autoLabelText}>AUTO</Text>
+                </View>
+              </View>
+
+              {/* Nurse ID Photo Upload Section */}
+              <Text style={styles.sectionTitle}>Nurse ID Photo</Text>
+              <Text style={styles.formLabel}>Upload Nurse ID Photo</Text>
+              <View style={styles.photoUploadContainer}>
+                {!nurseIdPhoto ? (
+                  <TouchableWeb style={styles.photoUploadButton} onPress={pickNurseIdPhoto}>
+                    <MaterialCommunityIcons name="camera-plus" size={32} color={COLORS.primary} />
+                    <Text style={styles.photoUploadText}>Tap to upload nurse ID photo</Text>
+                    <Text style={styles.photoUploadSubtext}>Required for staff identification</Text>
+                  </TouchableWeb>
+                ) : (
+                  <View style={styles.photoPreviewContainer}>
+                    <Image source={{ uri: nurseIdPhoto.uri }} style={styles.photoPreview} />
+                    <View style={styles.photoActions}>
+                    <TouchableWeb 
+                      style={styles.actionButtonWrapper} // Use common wrapper
+                      onPress={pickNurseIdPhoto}
+                    >
+                      <LinearGradient
+                        colors={GRADIENTS.header}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 0, y: 1 }}
+                        style={styles.actionButtonContent}
+                      >
+                        <MaterialCommunityIcons name="camera" size={16} color={COLORS.white} />
+                        <Text style={styles.deleteButtonText}>Change</Text>
+                      </LinearGradient>
+                    </TouchableWeb>
+                    
+                    <TouchableWeb 
+                      style={styles.actionButtonWrapper} // Use common wrapper
+                      onPress={removeNurseIdPhoto}
+                    >
+                      <View style={[styles.actionButtonContent, { backgroundColor: '#ff4444' }]}>
+                        <MaterialCommunityIcons name="trash-can" size={16} color={COLORS.white} />
+                        <Text style={styles.deleteButtonText}>Remove</Text>
+                      </View>
+                    </TouchableWeb>
+                  </View>
+                  </View>
+                )}
+              </View>
+
+              <BankAutocomplete
+                label="Bank Name"
+                icon="bank"
+                value={nurseBankName}
+                onSelect={(bankName) => {
+                  setNurseBankName(bankName);
+                  setNurseBankBranch(''); // Clear branch when bank changes
+                }}
+                placeholder="Select your bank (e.g., NCB, Scotiabank, JMMB)"
+              />
+
+              <Text style={styles.formLabel}>Account Number</Text>
               <View style={styles.formInput}>
-                <MaterialCommunityIcons name="key-variant" size={20} color={COLORS.textLight} />
+                <MaterialCommunityIcons name="credit-card-outline" size={20} color={COLORS.textLight} />
                 <TextInput
                   style={styles.input}
-                  placeholder="e.g., NURSE001 or ADMIN001"
+                  placeholder="Bank account number"
                   placeholderTextColor={COLORS.textLight}
-                  value={nurseCode}
-                  onChangeText={setNurseCode}
-                  autoCapitalize="characters"
+                  value={nurseAccountNumber}
+                  onChangeText={setNurseAccountNumber}
+                  keyboardType="numeric"
                 />
               </View>
 
-              <Text style={styles.formLabel}>Emergency Contact Name</Text>
+              <Text style={styles.formLabel}>Account Holder Name</Text>
               <View style={styles.formInput}>
-                <MaterialCommunityIcons name="account-alert" size={20} color={COLORS.textLight} />
+                <MaterialCommunityIcons name="account-outline" size={20} color={COLORS.textLight} />
                 <TextInput
                   style={styles.input}
-                  placeholder="Emergency contact full name"
+                  placeholder="Full name as on bank account"
                   placeholderTextColor={COLORS.textLight}
-                  value={nurseEmergencyContact}
-                  onChangeText={setNurseEmergencyContact}
+                  value={nurseAccountHolderName}
+                  onChangeText={setNurseAccountHolderName}
                 />
               </View>
 
-              <Text style={styles.formLabel}>Emergency Contact Phone</Text>
-              <View style={styles.formInput}>
-                <MaterialCommunityIcons name="phone-alert" size={20} color={COLORS.textLight} />
-                <TextInput
-                  style={styles.input}
-                  placeholder="876-555-0000"
-                  placeholderTextColor={COLORS.textLight}
-                  value={nurseEmergencyPhone}
-                  onChangeText={setNurseEmergencyPhone}
-                  keyboardType="phone-pad"
-                />
-              </View>
+              <BankAutocomplete
+                label="Bank Branch"
+                icon="map-marker-outline"
+                value={nurseBankBranch}
+                onSelect={(branchName) => setNurseBankBranch(branchName)}
+                placeholder="Select branch (e.g., Liguanea, Half Way Tree)"
+                isBranch={true}
+                selectedBank={nurseBankName}
+              />
             </ScrollView>
             
             <View style={styles.modalFooter}>
@@ -514,16 +1257,73 @@ export default function AdminAnalyticsScreen({ navigation }) {
                 <LinearGradient
                   colors={GRADIENTS.header}
                   start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
+                  end={{ x: 0, y: 1 }}
                   style={styles.createButtonGradient}
                 >
-                  <MaterialCommunityIcons name="account-plus" size={20} color={COLORS.white} />
-                  <Text style={styles.createButtonText}>Add Staff</Text>
+                  <MaterialCommunityIcons name={editMode ? "content-save" : "account-plus"} size={20} color={COLORS.white} />
+                  <Text style={styles.createButtonText}>{editMode ? "Update Staff" : "Add Staff"}</Text>
                 </LinearGradient>
               </TouchableWeb>
             </View>
           </View>
         </KeyboardAvoidingView>
+      </Modal>
+
+      {/* Role Selection Modal */}
+      <Modal
+        transparent={true}
+        visible={showRoleModal}
+        animationType="fade"
+        onRequestClose={() => {
+          setShowRoleModal(false);
+        }}
+      >
+        <View style={styles.roleModalOverlay}>
+          <TouchableWeb 
+            style={styles.roleModalBackdrop}
+            activeOpacity={1}
+            onPress={() => setShowRoleModal(false)}
+          />
+          <View style={styles.roleModalContainer}>
+            <TouchableWeb 
+              activeOpacity={1} 
+              onPress={(e) => e.stopPropagation()}
+              style={styles.roleModalContent}
+            >
+              <Text style={styles.roleModalTitle}>Select Staff Role</Text>
+              
+              <TouchableWeb
+                style={styles.roleModalOption}
+                onPress={() => handleRoleSelection('nurse')}
+                activeOpacity={0.7}
+              >
+                <MaterialCommunityIcons name="hospital-box" size={24} color={COLORS.primary} />
+                <View style={styles.roleModalOptionText}>
+                  <Text style={styles.roleModalOptionTitle}>Nurse</Text>
+                  <Text style={styles.roleModalOptionSubtitle}>Healthcare professional</Text>
+                </View>
+                {staffRole === 'nurse' && (
+                  <MaterialCommunityIcons name="check-circle" size={20} color={COLORS.success} />
+                )}
+              </TouchableWeb>
+
+              <TouchableWeb
+                style={styles.roleModalOption}
+                onPress={() => handleRoleSelection('admin')}
+                activeOpacity={0.7}
+              >
+                <MaterialCommunityIcons name="shield-account" size={24} color={COLORS.primary} />
+                <View style={styles.roleModalOptionText}>
+                  <Text style={styles.roleModalOptionTitle}>Administrator</Text>
+                  <Text style={styles.roleModalOptionSubtitle}>System administrator</Text>
+                </View>
+                {staffRole === 'admin' && (
+                  <MaterialCommunityIcons name="check-circle" size={20} color={COLORS.success} />
+                )}
+              </TouchableWeb>
+            </TouchableWeb>
+          </View>
+        </View>
       </Modal>
     </SafeAreaView>
   );
@@ -531,6 +1331,15 @@ export default function AdminAnalyticsScreen({ navigation }) {
 
 const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: COLORS.background },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
+  },
   header: { paddingHorizontal: 20, paddingBottom: 20, borderBottomLeftRadius: 24, borderBottomRightRadius: 24 },
   headerRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between' },
   headerLeft: { width: 44 }, // Same width as iconButton to balance
@@ -689,19 +1498,27 @@ const styles = StyleSheet.create({
     color: COLORS.textLight,
   },
   detailsButton: {
-    borderRadius: 8,
+    borderRadius: 20,
     overflow: 'hidden',
+    shadowColor: COLORS.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
   },
   detailsButtonGradient: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    gap: 4,
   },
   detailsButtonText: {
-    fontSize: 11,
-    fontFamily: 'Poppins_600SemiBold',
     color: COLORS.white,
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
   },
   
   // Details Modal Styles
@@ -710,12 +1527,13 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     width: '100%',
     maxWidth: 380,
-    maxHeight: '85%',
+    maxHeight: Platform.OS === 'android' ? '93%' : '85%',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.25,
     shadowRadius: 20,
     elevation: 10,
+    overflow: 'hidden',
   },
   detailsModalHeader: {
     flexDirection: 'row',
@@ -787,7 +1605,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     width: '100%',
     maxWidth: 380,
-    maxHeight: '85%',
+    maxHeight: Platform.OS === 'android' ? '93%' : '85%',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.25,
@@ -809,7 +1627,7 @@ const styles = StyleSheet.create({
     color: COLORS.text,
   },
   createNurseForm: {
-    maxHeight: '85%',
+    maxHeight: Platform.OS === 'android' ? '93%' : '85%',
   },
   createNurseFormContent: {
     padding: 20,
@@ -917,5 +1735,388 @@ const styles = StyleSheet.create({
     fontSize: 15,
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.white,
+  },
+  // Horizontal Box Layout Styles
+  horizontalBoxContainer: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 16,
+  },
+  staffBox: {
+    flex: 1,
+    backgroundColor: COLORS.card,
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  boxLabel: {
+    fontSize: 11,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.primary,
+    marginBottom: 8,
+    textAlign: 'center',
+  },
+  roleSelector: {
+    flexDirection: 'column',
+    gap: 6,
+  },
+  roleOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.background,
+    gap: 6,
+  },
+  roleOptionSelected: {
+    borderColor: COLORS.primary,
+    backgroundColor: COLORS.card,
+  },
+  roleOptionText: {
+    fontSize: 11,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.textLight,
+  },
+  roleOptionTextSelected: {
+    color: COLORS.primary,
+  },
+  codeGenerationContainer: {
+    alignItems: 'center',
+    gap: 6,
+  },
+  sequenceInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: COLORS.background,
+    paddingHorizontal: 6,
+    paddingVertical: 3,
+    borderRadius: 6,
+  },
+  sequenceText: {
+    fontSize: 9,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.text,
+  },
+  generateButtonSmall: {
+    borderRadius: 6,
+    overflow: 'hidden',
+    shadowColor: COLORS.primary,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.2,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  generateButtonGradientSmall: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 8,
+    paddingVertical: 6,
+    gap: 3,
+  },
+  generateButtonTextSmall: {
+    fontSize: 9,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.white,
+  },
+  generatedCodeDisplay: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    backgroundColor: COLORS.success + '10',
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: COLORS.success + '30',
+    gap: 8,
+    marginBottom: 16,
+  },
+  generatedCodeText: {
+    flex: 1,
+    fontSize: 14,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.success,
+    textAlign: 'center',
+  },
+  // Dropdown Styles
+  dropdownContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    backgroundColor: COLORS.card,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: 16,
+    gap: 12,
+  },
+  dropdownText: {
+    flex: 1,
+    fontSize: 15,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.text,
+  },
+  // Auto-Generated Code Field Styles
+  codeDisplayField: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    backgroundColor: COLORS.background,
+    borderRadius: 12,
+    borderWidth: 2,
+    borderColor: COLORS.primary + '40',
+    marginBottom: 16,
+    gap: 12,
+  },
+  autoCodeText: {
+    flex: 1,
+    fontSize: 16,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.primary,
+  },
+  autoLabel: {
+    backgroundColor: COLORS.success,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 6,
+  },
+  autoLabelText: {
+    fontSize: 10,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.white,
+  },
+  // Role Toggle Styles (simpler approach)
+  roleToggleContainer: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 16,
+  },
+  roleToggleOption: {
+    flex: 1,
+    borderRadius: 10,
+    borderWidth: 1, // Reduced border width
+    borderColor: COLORS.border, // Default border is neutral
+    backgroundColor: COLORS.card,
+    overflow: 'hidden', // Required for child gradient
+  },
+  roleToggleSelected: {
+    borderColor: 'transparent', // Gradient handles the border look
+    backgroundColor: COLORS.primary, // Fallback
+  },
+  roleToggleText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.primary,
+  },
+  roleToggleTextSelected: {
+    color: COLORS.white,
+  },
+  // Role Selection Modal Styles
+  roleModalOverlay: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  roleModalBackdrop: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+  },
+  roleModalContainer: {
+    width: '80%',
+    maxWidth: 300,
+  },
+  roleModalContent: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    padding: 20,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.25,
+    shadowRadius: 8,
+    elevation: 8,
+  },
+  roleModalTitle: {
+    fontSize: 18,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+    textAlign: 'center',
+    marginBottom: 20,
+  },
+  roleModalOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    marginBottom: 12,
+    backgroundColor: COLORS.background,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    gap: 12,
+  },
+  roleModalOptionText: {
+    flex: 1,
+  },
+  roleModalOptionTitle: {
+    fontSize: 15,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+  },
+  roleModalOptionSubtitle: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textLight,
+    marginTop: 2,
+  },
+  // Delete Button Styles
+  deleteButtonContainer: {
+    marginTop: 20,
+    paddingHorizontal: 20,
+    flexDirection: 'row',
+    gap: 12,
+  },
+  actionButtonWrapper: {
+    flex: 1,
+    height: 48,
+    borderRadius: 10,
+    overflow: 'hidden',
+    shadowColor: "#000",
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 3,
+    elevation: 2,
+  },
+  actionButtonContent: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  deleteButtonText: {
+    color: '#FFFFFF',
+    fontSize: 16,
+    fontFamily: 'Poppins_600SemiBold',
+  },
+  // Modal Footer Buttons (matching shift request details modal)
+  modalFooter: {
+    flexDirection: 'row',
+    gap: 12,
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    backgroundColor: COLORS.white,
+    alignItems: 'stretch',
+  },
+  modalEditButton: {
+    flex: 1,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  modalDeleteButton: {
+    flex: 1,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  modalButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 14,
+    paddingHorizontal: 16,
+    gap: 8,
+  },
+  modalButtonText: {
+    color: COLORS.white,
+    fontSize: 15,
+    fontFamily: 'Poppins_600SemiBold',
+  },
+  // Photo Upload Styles
+  sectionTitle: {
+    fontSize: 16,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+    marginTop: 20,
+    marginBottom: 8,
+  },
+  photoUploadContainer: {
+    marginBottom: 20,
+  },
+  photoUploadButton: {
+    backgroundColor: COLORS.background,
+    borderWidth: 2,
+    borderColor: COLORS.primary,
+    borderStyle: 'dashed',
+    borderRadius: 12,
+    padding: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 120,
+  },
+  photoUploadText: {
+    fontSize: 15,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.primary,
+    marginTop: 8,
+    textAlign: 'center',
+  },
+  photoUploadSubtext: {
+    fontSize: 13,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textLight,
+    marginTop: 4,
+    textAlign: 'center',
+  },
+  photoPreviewContainer: {
+    alignItems: 'center',
+  },
+  photoPreview: {
+    width: 120,
+    height: 120,
+    borderRadius: 12,
+    marginBottom: 12,
+  },
+  photoActions: {
+    flexDirection: 'row',
+    gap: 12,
+  },
+  changePhotoButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.primary,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    gap: 6,
+  },
+  changePhotoText: {
+    color: COLORS.white,
+    fontSize: 13,
+    fontFamily: 'Poppins_500Medium',
+  },
+  removePhotoButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#ff4444',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    gap: 6,
+  },
+  removePhotoText: {
+    color: COLORS.white,
+    fontSize: 13,
+    fontFamily: 'Poppins_500Medium',
   },
 });

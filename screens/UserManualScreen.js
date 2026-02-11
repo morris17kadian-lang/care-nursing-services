@@ -30,10 +30,6 @@ export default function UserManualScreen({ navigation }) {
           step: 'Logging In',
           details: 'Enter your registered email/username and password on the login screen. Use the "Remember Me" option for quick access on future visits.',
         },
-        {
-          step: 'Profile Setup',
-          details: 'Complete your profile by adding emergency contacts, medical conditions, and preferred payment methods. This helps us provide better service.',
-        },
       ],
     },
     {
@@ -86,14 +82,10 @@ export default function UserManualScreen({ navigation }) {
     },
     {
       id: 4,
-      icon: 'chat',
-      title: 'Chat & Communication',
-      subtitle: 'Connect with nurses and support',
+      icon: 'bell',
+      title: 'Notifications',
+      subtitle: 'Stay updated with alerts',
       content: [
-        {
-          step: 'Messaging',
-          details: 'Use the Chat tab to communicate with your assigned nurse or admin team. Messages are encrypted for privacy.',
-        },
         {
           step: 'Notifications',
           details: 'Receive real-time notifications for appointment updates, messages, and important alerts.',
@@ -148,66 +140,7 @@ export default function UserManualScreen({ navigation }) {
         },
       ],
     },
-    {
-      id: 7,
-      icon: 'shield-account',
-      title: 'For Nurses',
-      subtitle: 'Nurse-specific features',
-      content: [
-        {
-          step: 'Nurse Login',
-          details: 'Use your unique Nurse Code provided by admin along with your password to access the nurse portal.',
-        },
-        {
-          step: 'View Assignments',
-          details: 'Check your assigned appointments in the Appointments tab. View patient details, service type, and location.',
-        },
-        {
-          step: 'Update Status',
-          details: 'Mark appointments as Started, In Progress, or Completed. Add notes about services provided.',
-        },
-        {
-          step: 'Edit Profile Request',
-          details: 'Request permission from admin to edit your profile. Once approved, you have 30 minutes to make changes.',
-        },
-      ],
-    },
-    {
-      id: 8,
-      icon: 'shield-crown',
-      title: 'For Admins',
-      subtitle: 'Admin dashboard features',
-      content: [
-        {
-          step: 'Admin Login',
-          details: 'Use your Admin Code and password. ADMIN001 has super admin privileges with full access.',
-        },
-        {
-          step: 'Dashboard Overview',
-          details: 'View key metrics: total appointments, pending requests, revenue, and active clients.',
-        },
-        {
-          step: 'Manage Clients',
-          details: 'View all clients, their appointment history, and manage their accounts.',
-        },
-        {
-          step: 'Staff Management',
-          details: 'Add new nurses or admin users, assign appointments, view nurse performance.',
-        },
-        {
-          step: 'Assign Nurses',
-          details: 'Review pending appointments and assign available nurses based on specialization and location.',
-        },
-        {
-          step: 'Analytics & Reports',
-          details: 'Access comprehensive analytics: revenue trends, appointment statistics, and staff performance (ADMIN001 only).',
-        },
-        {
-          step: 'Payment Management',
-          details: 'View invoices, mark payments as received, generate reports, and manage payment settings (ADMIN001 only).',
-        },
-      ],
-    },
+    // 'For Nurses' and 'For Admins' sections removed from patient-facing manual per request
   ];
 
   const ManualSection = ({ section }) => {
@@ -260,7 +193,7 @@ export default function UserManualScreen({ navigation }) {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <LinearGradient
         colors={GRADIENTS.header}
         start={{ x: 0, y: 0 }}
@@ -282,9 +215,9 @@ export default function UserManualScreen({ navigation }) {
       >
         <View style={styles.introSection}>
           <MaterialCommunityIcons name="information" size={32} color={COLORS.primary} />
-          <Text style={styles.introTitle}>Welcome to CARE</Text>
+          <Text style={styles.introTitle}>Welcome to 876Nurses</Text>
           <Text style={styles.introText}>
-            Your complete guide to using the CARE Nursing Services app. 
+            Your complete guide to using the 876Nurses app. 
             Tap on any section below to learn more.
           </Text>
         </View>

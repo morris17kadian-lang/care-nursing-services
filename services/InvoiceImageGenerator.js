@@ -6,12 +6,11 @@ import * as Sharing from 'expo-sharing';
 class InvoiceImageGenerator {
   static async generateInvoiceImage(invoiceData) {
     try {
-      console.log('🖼️ GENERATING PROFESSIONAL INVOICE...');
       
       // Generate HTML invoice and convert to PDF using Expo Print
       const pdfUri = await this.generatePDFInvoice(invoiceData);
       
-      console.log('✅ INVOICE PDF GENERATED:', pdfUri);
+      // Invoice PDF generated
       return pdfUri;
       
     } catch (error) {
@@ -26,10 +25,10 @@ class InvoiceImageGenerator {
         const fileExtension = invoiceUri.includes('.pdf') ? 'PDF' : 'SVG';
         await Sharing.shareAsync(invoiceUri, {
           mimeType: invoiceUri.includes('.pdf') ? 'application/pdf' : 'image/svg+xml',
-          dialogTitle: `CARE Invoice for ${clientName} (${fileExtension})`,
+          dialogTitle: `876Nurses Invoice for ${clientName} (${fileExtension})`,
         });
       } else {
-        console.log('Sharing not available on this platform');
+        // Sharing not available on this platform
       }
     } catch (error) {
       console.error('Error sharing invoice:', error);
@@ -48,7 +47,7 @@ class InvoiceImageGenerator {
         height: 792, // A4 height in points
       });
 
-      console.log('📄 PDF Invoice created:', uri);
+      // PDF Invoice created
       return uri;
       
     } catch (error) {
@@ -63,14 +62,14 @@ class InvoiceImageGenerator {
     try {
       const svgContent = this.createSVGInvoice(invoiceData);
       
-      const fileName = `CARE_Invoice_${invoiceData.invoiceNumber}_${Date.now()}.svg`;
+      const fileName = `876Nurses_Invoice_${invoiceData.invoiceNumber}_${Date.now()}.svg`;
       const fileUri = `${FileSystem.documentDirectory}${fileName}`;
       
       await FileSystem.writeAsStringAsync(fileUri, svgContent, {
         encoding: FileSystem.EncodingType.UTF8,
       });
       
-      console.log('📄 SVG Invoice created:', fileUri);
+      // SVG Invoice created
       return fileUri;
       
     } catch (error) {
@@ -137,9 +136,9 @@ class InvoiceImageGenerator {
   
   <!-- Header -->
   <rect x="0" y="0" width="100%" height="120" fill="#f8f9fa"/>
-  <text x="60" y="50" class="header-text primary-color" font-size="36">CARE</text>
-  <text x="60" y="80" class="body-text" font-size="16" fill="#666">Nursing Services &amp; More</text>
-  <text x="60" y="100" class="body-text" font-size="12" fill="#666">Phone: 876-288-7304 | Email: care@nursingcareja.com</text>
+  <text x="60" y="50" class="header-text primary-color" font-size="36">876NURSES</text>
+  <text x="60" y="80" class="body-text" font-size="16" fill="#666">Professional Home Nursing Care</text>
+  <text x="60" y="100" class="body-text" font-size="12" fill="#666">Phone: (876) 618-9876 | Email: info@876nurses.com</text>
   
   <!-- Invoice Header -->
   <text x="650" y="50" class="header-text primary-color" font-size="32" text-anchor="end">INVOICE</text>
@@ -177,7 +176,7 @@ class InvoiceImageGenerator {
   
   <!-- Total Section -->
   <rect x="500" y="${totalSectionY}" width="234" height="120" fill="#f8f9fa" stroke="#ddd"/>
-  <text x="520" y="${totalSectionY + 25}" class="body-text" font-size="14" fill="#333">Subtotal:</text>
+    <text x="520" y="${totalSectionY + 25}" class="body-text" font-size="14" fill="#333">Deposit:</text>
   <text x="710" y="${totalSectionY + 25}" class="body-text" font-size="14" fill="#333" text-anchor="end">${formatCurrency(invoiceData.subtotal)}</text>
   <text x="520" y="${totalSectionY + 50}" class="body-text" font-size="14" fill="#333">Tax (Healthcare):</text>
   <text x="710" y="${totalSectionY + 50}" class="body-text" font-size="14" fill="#333" text-anchor="end">${formatCurrency(invoiceData.tax || 0)}</text>
@@ -194,7 +193,7 @@ class InvoiceImageGenerator {
   <text x="80" y="${paymentSectionY + 55}" class="body-text" font-size="12" fill="#666">Payment due within 24 hours | Include invoice #${invoiceData.invoiceNumber} in reference</text>
   
   <!-- Banking Details -->
-  <text x="80" y="${paymentSectionY + 80}" class="header-text" font-size="13" fill="#333">CARE Banking Details:</text>
+  <text x="80" y="${paymentSectionY + 80}" class="header-text" font-size="13" fill="#333">876Nurses Banking Details:</text>
   
   <text x="80" y="${paymentSectionY + 100}" class="header-text" font-size="11" fill="#333">Bank:</text>
   <text x="180" y="${paymentSectionY + 100}" class="body-text" font-size="11" fill="#666">National Commercial Bank (NCB)</text>
@@ -202,7 +201,7 @@ class InvoiceImageGenerator {
   <text x="480" y="${paymentSectionY + 100}" class="body-text" font-size="11" fill="#666">Knutsford Branch</text>
   
   <text x="80" y="${paymentSectionY + 120}" class="header-text" font-size="11" fill="#333">Account Holder:</text>
-  <text x="180" y="${paymentSectionY + 120}" class="body-text" font-size="11" fill="#666">CARE.CARE</text>
+  <text x="180" y="${paymentSectionY + 120}" class="body-text" font-size="11" fill="#666">876 Nurses Home Care Services Limited</text>
   <text x="400" y="${paymentSectionY + 120}" class="header-text" font-size="11" fill="#333">Account Type:</text>
   <text x="480" y="${paymentSectionY + 120}" class="body-text" font-size="11" fill="#666">NCB Saving</text>
   
@@ -217,10 +216,10 @@ class InvoiceImageGenerator {
   <text x="480" y="${paymentSectionY + 160}" class="body-text" font-size="11" fill="#666">876-288-7304</text>
   
   <text x="80" y="${paymentSectionY + 180}" class="header-text" font-size="11" fill="#333">Email:</text>
-  <text x="180" y="${paymentSectionY + 180}" class="body-text" font-size="10" fill="#666">care@nursingcareja.com</text>
+  <text x="180" y="${paymentSectionY + 180}" class="body-text" font-size="10" fill="#666">info@876nurses.com</text>
   
   <!-- Footer -->
-  <text x="397" y="${footerY + 20}" class="header-text primary-color" font-size="16" text-anchor="middle">Thank you for choosing CARE Nursing Services &amp; More</text>
+  <text x="397" y="${footerY + 20}" class="header-text primary-color" font-size="16" text-anchor="middle">Thank you for choosing 876NURSES Home Care Services</text>
   <text x="397" y="${footerY + 40}" class="body-text" font-size="10" fill="#999" text-anchor="middle">This invoice was generated electronically and is valid without signature.</text>
   <text x="397" y="${footerY + 55}" class="body-text" font-size="10" fill="#999" text-anchor="middle">Professional healthcare services provided with care and compassion.</text>
   <text x="397" y="${footerY + 70}" class="body-text" font-size="10" fill="#999" text-anchor="middle">For questions about this invoice, please contact us at 876-288-7304</text>
@@ -237,6 +236,9 @@ class InvoiceImageGenerator {
         day: 'numeric' 
       });
     };
+
+        const periodStart = invoiceData?.periodStart || invoiceData?.billingPeriodStart || invoiceData?.recurringPeriodStart;
+        const periodEnd = invoiceData?.periodEnd || invoiceData?.billingPeriodEnd || invoiceData?.recurringPeriodEnd;
 
     const formatCurrency = (amount) => {
       if (!amount && amount !== 0) return 'J$0.00';
@@ -685,17 +687,17 @@ class InvoiceImageGenerator {
     <div class="invoice-container">
         <div class="header">
             <div class="company-info">
-                <div class="company-name">CARE</div>
-                <div class="company-tagline">Nursing Services & More</div>
+                <div class="company-name">876 Nurses</div>
+                <div class="company-tagline">Home Care Services Limited</div>
                 <div class="company-details">
-                    Professional Healthcare Services<br>
-                    Phone: 876-288-7304<br>
-                    Email: care@nursingcareja.com
+                    60 Knutsford Blvd, Panjam Building, 9th Floor - Regus, Kingston 5, Jamaica, West Indies<br>
+                    Phone: (876) 618-9876<br>
+                    Email: 876nurses@gmail.com
                 </div>
             </div>
             <div class="invoice-header">
                 <div class="invoice-title">INVOICE</div>
-                <div class="invoice-number">#${invoiceData.invoiceNumber}</div>
+                <div class="invoice-number">#${(invoiceData.invoiceId || invoiceData.invoiceNumber)?.replace('CARE-INV', 'NUR-INV')}</div>
                 <div class="invoice-date">${formatDate(invoiceData.date)}</div>
             </div>
         </div>
@@ -714,6 +716,7 @@ class InvoiceImageGenerator {
                 <div class="section-title">Service Information</div>
                 <div class="service-details-info">
                     <div><strong>Service Date:</strong> ${formatDate(invoiceData.serviceDate) || formatDate(invoiceData.date)}</div>
+                    ${periodStart && periodEnd ? `<div><strong>Service Period:</strong> ${formatDate(periodStart)} - ${formatDate(periodEnd)}</div>` : ''}
                     <div><strong>Total Sessions:</strong> ${invoiceData.totalSessions || 1}</div>
                     <div><strong>Nurse:</strong> ${invoiceData.nurseName || 'Care Professional'}</div>
                     <div><strong>Payment Method:</strong> ${invoiceData.paymentMethod || 'Bank Transfer'}</div>
@@ -741,7 +744,7 @@ class InvoiceImageGenerator {
         <div class="total-section">
             <div class="total-box">
                 <div class="total-row">
-                    <span class="total-label">Subtotal:</span>
+                    <span class="total-label">Deposit:</span>
                     <span class="total-amount">${formatCurrency(invoiceData.subtotal)}</span>
                 </div>
                 <div class="total-row">
@@ -777,7 +780,7 @@ class InvoiceImageGenerator {
             </div>
             
             <div class="banking-info">
-                <div class="banking-title">CARE Banking Details</div>
+                <div class="banking-title">876Nurses Banking Details</div>
                 <div class="banking-details">
                     <div class="banking-item">
                         <div class="banking-label">Bank Name:</div>
@@ -793,7 +796,7 @@ class InvoiceImageGenerator {
                     </div>
                     <div class="banking-item">
                         <div class="banking-label">Account Holder:</div>
-                        <div class="banking-value">CARE.CARE</div>
+                        <div class="banking-value">876 Nurses Home Care Services Limited</div>
                     </div>
                     <div class="banking-item">
                         <div class="banking-label">JMD Account:</div>
@@ -817,7 +820,7 @@ class InvoiceImageGenerator {
                     </div>
                     <div class="banking-item">
                         <div class="banking-label">Business Email:</div>
-                        <div class="banking-value">care@nursingcareja.com</div>
+                        <div class="banking-value">info@876nurses.com</div>
                     </div>
                     <div class="banking-item">
                         <div class="banking-label">Registration:</div>
@@ -839,7 +842,7 @@ class InvoiceImageGenerator {
         </div>
         
         <div class="footer">
-            <div class="thank-you">Thank you for choosing CARE Nursing Services & More</div>
+            <div class="thank-you">Thank you for choosing 876NURSES Home Care Services</div>
             <div class="footer-text">This invoice was generated electronically and is valid without signature.</div>
             <div class="footer-text">Professional healthcare services provided with care and compassion.</div>
             <div class="footer-text">License Number: [Healthcare License] | Registration: [Professional Registration]</div>
@@ -998,8 +1001,8 @@ class InvoiceImageGenerator {
 </head>
 <body>
     <div class="header">
-        <div class="company-name">CARE</div>
-        <div class="company-subtitle">Nursing Services & More</div>
+        <div class="company-name">876 Nurses</div>
+        <div class="company-subtitle">Home Care Services Limited</div>
     </div>
     
     <div class="invoice-header">
@@ -1051,12 +1054,12 @@ class InvoiceImageGenerator {
         <div class="payment-title">PAYMENT INSTRUCTIONS:</div>
         <div class="payment-detail">Bank: NCB Saving</div>
         <div class="payment-detail">Account: JMD354756226 / USD354756234</div>
-        <div class="payment-detail">Payee: CARE.CARE</div>
+        <div class="payment-detail">Payee: 876 Nurses Home Care Services Limited</div>
     </div>
     
     <div class="footer">
-        <div class="footer-text">Thank you for choosing CARE Nursing Services & More</div>
-        <div class="footer-text">Phone: 876-288-7304 | Email: care@nursingcareja.com</div>
+        <div class="footer-text">Thank you for choosing 876NURSES Home Care Services</div>
+        <div class="footer-text">Phone: (876) 618-9876 | Email: 876nurses@gmail.com</div>
     </div>
 </body>
 </html>`;

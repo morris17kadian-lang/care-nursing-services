@@ -1,0 +1,504 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { Platform } from 'react-native';
+import * as Device from 'expo-device';
+
+// Production API URL - Replace with your deployed backend URL
+const BASE_URL = __DEV__ 
+  ? 'http://10.5.0.238:5000/api' // Development (local) - has ADMIN001 support
+  : 'https://shielded-coast-08850-f496a70eafdb.herokuapp.com/api'; // Production (Heroku)
+
+class ApiService {
+  static isOffline = false; // Track offline status to reduce log spam
+  static lastOfflineCheck = 0; // Timestamp of last offline check
+  static OFFLINE_CHECK_INTERVAL = 30000; // Check every 30 seconds
+  static consecutiveFailures = 0; // Track consecutive failures
+  static FAILURE_THRESHOLD = 3; // Mark offline after 3 consecutive failures
+  
+  // Throttle shift request calls
+  static lastShiftRequestCall = 0;
+  static SHIFT_REQUEST_THROTTLE = 0; // Disable throttle for debugging
+  
+  static async getAuthToken() {
+    try {
+      // Try to get the auth token saved during login
+      const authToken = await AsyncStorage.getItem('authToken');
+      if (authToken) {
+        // Removed excessive logging
+        return authToken;
+      }
+
+      // Fallback: Try to get Firebase token
+      const firebaseToken = await AsyncStorage.getItem('firebaseToken');
+      if (firebaseToken) {
+        return firebaseToken;
+      }
+
+      return null;
+    } catch (error) {
+      return null;
+    }
+  }
+
+  static async makeRequest(endpoint, options = {}) {
+    try {
+      // Skip API calls only if we're definitely offline (multiple consecutive failures)
+      const now = Date.now();
+      if (this.isOffline && (now - this.lastOfflineCheck) < this.OFFLINE_CHECK_INTERVAL) {
+        throw new Error('API offline - using cached data');
+      }
+
+      const token = await this.getAuthToken();
+      
+      // If no token and endpoint requires authentication, return empty result
+      if (!token && !endpoint.includes('/auth/login') && !endpoint.includes('/auth/register')) {
+        // No auth token for this endpoint - skipping API call
+        return { success: true, data: [], items: [], shiftRequests: [], appointments: [], invoices: [] };
+      }
+      
+      const config = {
+        headers: {
+          'Content-Type': 'application/json',
+          ...(token && { Authorization: `Bearer ${token}` }),
+          ...options.headers,
+        },
+        ...options,
+      };
+
+      const fullUrl = `${BASE_URL}${endpoint}`;
+      
+      const response = await fetch(fullUrl, config);
+      const data = await response.json();
+
+      if (!response.ok) {
+        console.error(`API Error ${response.status}:`, data);
+        throw new Error(data.error || data.message || `HTTP error! status: ${response.status}`);
+      }
+
+      // Reset failure counter on successful request
+      this.consecutiveFailures = 0;
+
+      // Mark as online if request succeeds
+      if (this.isOffline) {
+        // Backend connection restored
+        this.isOffline = false;
+      }
+
+      return data;
+    } catch (error) {
+      // Only count network/connection errors as consecutive failures
+      // Don't count 403/401/400 errors as they indicate request issues, not connectivity
+      const status = error.status || error.response?.status;
+      const isConnectionError = !status || (status >= 500) || error.message?.includes('fetch');
+      
+      if (isConnectionError) {
+        this.consecutiveFailures++;
+        
+        // Only mark as offline after multiple consecutive failures
+        if (this.consecutiveFailures >= this.FAILURE_THRESHOLD && !this.isOffline) {
+          this.isOffline = true;
+          this.lastOfflineCheck = Date.now();
+        }
+      } else {
+        // Reset failure counter for non-connection errors
+        if (this.consecutiveFailures > 0) {
+          // Connection restored after request error
+          this.consecutiveFailures = 0;
+        }
+      }
+      
+      throw error;
+    }
+  }
+
+  // Chat API methods - DEPRECATED/REMOVED
+  /*
+  // Send a chat message. Accepts a single payload object so we can
+  // include conversationId, content, messageType, and optional attachment.
+  static async sendMessage(payload) {
+    return this.makeRequest('/messages/send', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    });
+  }
+
+  static async getConversationMessages(conversationId, limit = 50, page = 1) {
+    return this.makeRequest(`/messages/conversation/${conversationId}?limit=${limit}&page=${page}`);
+  }
+
+  static async getConversations() {
+    return this.makeRequest('/messages/conversations');
+  }
+
+  static async getUnreadCount(conversationId = null) {
+    const query = conversationId ? `?conversationId=${conversationId}` : '';
+    return this.makeRequest(`/messages/unread-count${query}`);
+  }
+
+  static async markConversationAsRead(conversationId) {
+    return this.makeRequest(`/messages/mark-read/${conversationId}`, {
+      method: 'POST'
+    });
+  }
+
+  static async deleteMessage(messageId) {
+    return this.makeRequest(`/messages/${messageId}`, {
+      method: 'DELETE'
+    });
+  }
+  */
+
+  // Auth API methods
+  static async login(emailOrUsername, password) {
+    return this.makeRequest('/auth/login', {
+      method: 'POST',
+      body: JSON.stringify({ email: emailOrUsername, password })
+    });
+  }
+
+  static async register(userData) {
+    return this.makeRequest('/auth/register', {
+      method: 'POST',
+      body: JSON.stringify(userData)
+    });
+  }
+
+  static async getCurrentUser() {
+    return this.makeRequest('/auth/me');
+  }
+
+  // User management API methods
+  static async getUsers(filters = {}) {
+    const queryParams = new URLSearchParams(filters).toString();
+    const endpoint = queryParams ? `/users?${queryParams}` : '/users';
+    return this.makeRequest(endpoint);
+  }
+
+  // Get all admins from backend
+  static async getAdmins(filters = {}) {
+    const queryParams = new URLSearchParams(filters).toString();
+    const endpoint = queryParams ? `/staff/admins?${queryParams}` : '/staff/admins';
+    return this.makeRequest(endpoint);
+  }
+
+  // Get all nurses from backend
+  static async getNurses(filters = {}) {
+    const queryParams = new URLSearchParams(filters).toString();
+    const endpoint = queryParams ? `/staff/nurses?${queryParams}` : '/staff/nurses';
+    return this.makeRequest(endpoint);
+  }
+
+  // Helper method to generate conversation ID (matching backend logic)
+  /*
+  static generateConversationId(user1, user2) {
+    const sorted = [user1, user2].sort();
+    return `${sorted[0]}_${sorted[1]}`;
+  }
+  */
+
+  // Shift/Appointment API methods
+  static async submitShiftRequest(shiftData) {
+    return this.makeRequest('/shifts/request', {
+      method: 'POST',
+      body: JSON.stringify(shiftData)
+    });
+  }
+
+  static async getShiftRequests(filters = {}) {
+    // Throttle to prevent rapid repeated calls
+    const now = Date.now();
+    if (now - this.lastShiftRequestCall < this.SHIFT_REQUEST_THROTTLE) {
+      return { success: true, shiftRequests: [] }; // Return empty result, no log
+    }
+    this.lastShiftRequestCall = now;
+    
+    const queryParams = new URLSearchParams(filters).toString();
+    const endpoint = queryParams ? `/shifts/requests?${queryParams}` : '/shifts/requests';
+    return this.makeRequest(endpoint);
+  }
+
+  static async approveShiftRequest(shiftId) {
+    return this.makeRequest(`/shifts/requests/${shiftId}/approve`, {
+      method: 'PUT'
+    });
+  }
+
+  static async denyShiftRequest(shiftId, reason = '') {
+    return this.makeRequest(`/shifts/requests/${shiftId}/deny`, {
+      method: 'PUT',
+      body: JSON.stringify({ reason })
+    });
+  }
+
+  static async startShift(shiftId) {
+    return this.makeRequest(`/shifts/requests/${shiftId}/start`, {
+      method: 'PUT'
+    });
+  }
+
+  static async completeShift(shiftId, hoursWorked, completionNotes) {
+    return this.makeRequest(`/shifts/requests/${shiftId}/complete`, {
+      method: 'PUT',
+      body: JSON.stringify({ hoursWorked, completionNotes })
+    });
+  }
+
+  // Recurring Shift API methods
+  static async createRecurringSchedule(scheduleData) {
+    return this.makeRequest('/shifts/recurring', {
+      method: 'POST',
+      body: JSON.stringify(scheduleData)
+    });
+  }
+
+  static async getRecurringSchedules(nurseId = null) {
+    const queryParams = nurseId ? `?nurseId=${nurseId}` : '';
+    return this.makeRequest(`/shifts/recurring/schedules${queryParams}`);
+  }
+
+  static async cancelRecurringSchedule(scheduleId, cancelFuture = true) {
+    const queryParams = `?cancelFuture=${cancelFuture}`;
+    return this.makeRequest(`/shifts/recurring/${scheduleId}${queryParams}`, {
+      method: 'DELETE'
+    });
+  }
+
+  static async generateRecurringInvoice(invoiceData) {
+    return this.makeRequest('/invoices/recurring/generate', {
+      method: 'POST',
+      body: JSON.stringify(invoiceData)
+    });
+  }
+
+  // Notification API methods
+  static async sendNotification(notificationData) {
+    return this.makeRequest('/notifications/send', {
+      method: 'POST',
+      body: JSON.stringify(notificationData)
+    });
+  }
+
+  static async getNotifications(filters = {}) {
+    const queryParams = new URLSearchParams(filters).toString();
+    const endpoint = queryParams ? `/notifications?${queryParams}` : '/notifications';
+    return this.makeRequest(endpoint);
+  }
+
+  static async markNotificationRead(notificationId) {
+    return this.makeRequest(`/notifications/${notificationId}/read`, {
+      method: 'PUT'
+    });
+  }
+
+  static async markAllNotificationsRead() {
+    return this.makeRequest('/notifications/read-all', {
+      method: 'PUT'
+    });
+  }
+
+  static async updateFCMToken(token) {
+    const deviceName = Device.deviceName || Device.modelName || 'Unknown Device';
+    const platform = Platform.OS; // 'ios' or 'android'
+    
+    return this.makeRequest('/notifications/fcm-token', {
+      method: 'POST',
+      body: JSON.stringify({ 
+        token,
+        device: deviceName,
+        platform: platform
+      })
+    });
+  }
+
+  // Appointment API methods
+  static async createAppointment(appointmentData) {
+    return this.makeRequest('/appointments', {
+      method: 'POST',
+      body: JSON.stringify(appointmentData)
+    });
+  }
+
+  static async getAppointments(filters = {}) {
+    const queryParams = new URLSearchParams(filters).toString();
+    const endpoint = queryParams ? `/appointments?${queryParams}` : '/appointments';
+    return this.makeRequest(endpoint);
+  }
+
+  static async getAppointmentById(appointmentId) {
+    return this.makeRequest(`/appointments/${appointmentId}`);
+  }
+
+  static async updateAppointment(appointmentId, updateData) {
+    return this.makeRequest(`/appointments/${appointmentId}`, {
+      method: 'PUT',
+      body: JSON.stringify(updateData)
+    });
+  }
+
+  static async cancelAppointment(appointmentId) {
+    return this.makeRequest(`/appointments/${appointmentId}`, {
+      method: 'DELETE'
+    });
+  }
+
+  static async assignNurseToAppointment(appointmentId, nurseId) {
+    return this.makeRequest(`/appointments/${appointmentId}/assign`, {
+      method: 'POST',
+      body: JSON.stringify({ nurseId })
+    });
+  }
+
+  static async getAppointmentStats() {
+    return this.makeRequest('/appointments/stats/overview');
+  }
+
+  // Store/Product API methods
+  static async getProducts(filters = {}) {
+    const queryParams = new URLSearchParams(filters).toString();
+    const endpoint = queryParams ? `/store/products?${queryParams}` : '/store/products';
+    return this.makeRequest(endpoint);
+  }
+
+  static async getProductById(productId) {
+    return this.makeRequest(`/store/products/${productId}`);
+  }
+
+  static async createProduct(productData) {
+    return this.makeRequest('/store/products', {
+      method: 'POST',
+      body: JSON.stringify(productData)
+    });
+  }
+
+  static async updateProduct(productId, updateData) {
+    return this.makeRequest(`/store/products/${productId}`, {
+      method: 'PUT',
+      body: JSON.stringify(updateData)
+    });
+  }
+
+  static async updateProductStock(productId, stock, operation = 'set') {
+    return this.makeRequest(`/store/products/${productId}/stock`, {
+      method: 'PATCH',
+      body: JSON.stringify({ stock, operation })
+    });
+  }
+
+  static async deleteProduct(productId) {
+    return this.makeRequest(`/store/products/${productId}`, {
+      method: 'DELETE'
+    });
+  }
+
+  // Order API methods
+  static async getOrders(filters = {}) {
+    const queryParams = new URLSearchParams(filters).toString();
+    const endpoint = queryParams ? `/store/orders?${queryParams}` : '/store/orders';
+    return this.makeRequest(endpoint);
+  }
+
+  static async getOrderById(orderId) {
+    return this.makeRequest(`/store/orders/${orderId}`);
+  }
+
+  static async createOrder(orderData) {
+    return this.makeRequest('/store/orders', {
+      method: 'POST',
+      body: JSON.stringify(orderData)
+    });
+  }
+
+  static async updateOrderStatus(orderId, status) {
+    return this.makeRequest(`/store/orders/${orderId}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status })
+    });
+  }
+
+  static async cancelOrder(orderId) {
+    return this.makeRequest(`/store/orders/${orderId}`, {
+      method: 'DELETE'
+    });
+  }
+
+  // Invoice API methods
+  static async getInvoices(filters = {}) {
+    const queryParams = new URLSearchParams(filters).toString();
+    const endpoint = queryParams ? `/invoices?${queryParams}` : '/invoices';
+    return this.makeRequest(endpoint);
+  }
+
+  static async getInvoiceById(invoiceId) {
+    return this.makeRequest(`/invoices/${invoiceId}`);
+  }
+
+  static async createInvoice(invoiceData) {
+    return this.makeRequest('/invoices', {
+      method: 'POST',
+      body: JSON.stringify(invoiceData)
+    });
+  }
+
+  static async createBulkInvoices(invoices) {
+    return this.makeRequest('/invoices/bulk', {
+      method: 'POST',
+      body: JSON.stringify({ invoices })
+    });
+  }
+
+  static async updateInvoice(invoiceId, updateData) {
+    return this.makeRequest(`/invoices/${invoiceId}`, {
+      method: 'PUT',
+      body: JSON.stringify(updateData)
+    });
+  }
+
+  static async updateInvoiceStatus(invoiceId, status) {
+    return this.makeRequest(`/invoices/${invoiceId}/status`, {
+      method: 'PATCH',
+      body: JSON.stringify({ status })
+    });
+  }
+
+  static async deleteInvoice(invoiceId) {
+    return this.makeRequest(`/invoices/${invoiceId}`, {
+      method: 'DELETE'
+    });
+  }
+
+  static async getInvoiceStats() {
+    return this.makeRequest('/invoices/stats/overview');
+  }
+
+  static async getInvoiceSeries(seriesId) {
+    return this.makeRequest(`/invoices/series/${seriesId}`);
+  }
+
+  // Authentication API methods
+  static async changePassword(currentPassword, newPassword) {
+    return this.makeRequest('/auth/change-password', {
+      method: 'PUT',
+      body: JSON.stringify({
+        currentPassword,
+        newPassword
+      })
+    });
+  }
+
+  // Payment Settings API methods
+  static async getPaymentSettings() {
+    return this.makeRequest('/payments/settings');
+  }
+
+  // User Management API methods
+  static async getAllUsers() {
+    try {
+      const response = await this.makeRequest('/users');
+      return response;
+    } catch (error) {
+      // Failed to fetch users from backend
+      return [];
+    }
+  }
+}
+
+export default ApiService;

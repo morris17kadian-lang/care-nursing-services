@@ -1,12 +1,14 @@
 {
   "expo": {
-    "name": "CARE Mobile",
-    "slug": "care-mobile-app",
+    "name": "876Nurses",
+    "slug": "876nurses",
     "version": "1.0.0",
     "orientation": "portrait",
+    "icon": "./assets/Images/Nurses-icon.png",
     "userInterfaceStyle": "light",
     "splash": {
-      "backgroundColor": "#0a7fb8",
+      "image": "./assets/Images/Nurses-icon.png",
+      "backgroundColor": "#FFFFFF",
       "resizeMode": "contain"
     },
     "assetBundlePatterns": [
@@ -14,7 +16,7 @@
     ],
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.care.nursing",
+      "bundleIdentifier": "com.nurses876.home",
       "buildNumber": "1",
       "infoPlist": {
         "ITSAppUsesNonExemptEncryption": false
@@ -22,25 +24,35 @@
     },
     "android": {
       "adaptiveIcon": {
-        "backgroundColor": "#0a7fb8"
+        "foregroundImage": "./assets/Images/Nurses-logo.png",
+        "backgroundColor": "#FFFFFF"
       },
-      "package": "com.care.nursing",
+      "package": "com.nurses876.home",
       "versionCode": 1,
       "permissions": [
         "RECEIVE_BOOT_COMPLETED"
       ]
     },
     "notification": {
-      "icon": "./assets/notification-icon.png",
-      "color": "#0a7fb8",
+      "icon": "./assets/Images/Nurses-icon.png",
+      "color": "#8B0000",
       "androidMode": "default",
       "androidCollapsedTitle": "#{unread_notifications} new notifications"
     },
-    "platforms": ["ios", "android"],
+    "platforms": [
+      "ios",
+      "android",
+      "web"
+    ],
+    "web": {
+      "favicon": "./assets/Images/Nurses-icon.png",
+      "bundler": "metro"
+    },
     "extra": {
       "eas": {
-        "projectId": "36c20da6-6d6d-4287-b885-d03988aa187d"
+        "projectId": "9e3794a4-ec1e-48bc-9199-2e8ff5ab418d"
       }
-    }
+    },
+    "owner": "kadian"
   }
 }

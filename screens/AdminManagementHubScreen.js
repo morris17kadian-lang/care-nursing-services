@@ -6,42 +6,70 @@ import {
   StyleSheet,
   ScrollView,
 } from 'react-native';
+import { Image } from 'expo-image';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS, SPACING, GRADIENTS } from '../constants';
 import { useAuth } from '../context/AuthContext';
 
-export default function AdminManagementHubScreen({ navigation }) {
+export default function AdminManagementHubScreen({ navigation, isEmbedded = false }) {
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
 
-  // Redirect if not super admin
-  React.useEffect(() => {
-    if (!user?.isSuperAdmin) {
-      navigation.goBack();
+  // Check access control - only ADMIN001 (Nurse Bernard) can access
+  const hasAccess = user?.isSuperAdmin || 
+                    user?.role === 'superAdmin' ||
+                    user?.code === 'ADMIN001' || 
+                    user?.adminCode === 'ADMIN001' ||
+                    user?.username === 'ADMIN001';
+  
+  if (!hasAccess) {
+    if (!isEmbedded) {
+      React.useEffect(() => {
+        navigation.goBack();
+      }, [navigation]);
     }
-  }, [user, navigation]);
+    
+    // Show access denied message for embedded mode
+    return (
+      <View style={styles.accessDeniedContainer}>
+        <MaterialCommunityIcons name="shield-lock" size={64} color={COLORS.lightGray} />
+        <Text style={styles.accessDeniedTitle}>Access Restricted</Text>
+        <Text style={styles.accessDeniedSubtitle}>
+          Only ADMIN001 (Nurse Bernard) can access this management hub.
+        </Text>
+      </View>
+    );
+  }
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
-      {/* Header */}
-      <LinearGradient
-        colors={GRADIENTS.header}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 0, y: 1 }}
-        style={[styles.header, { paddingTop: insets.top + 20 }]}
-      >
-        <View style={styles.headerRow}>
-          <TouchableWeb
-            onPress={() => navigation.goBack()}
-            style={styles.backButton}
-          >
-            <MaterialCommunityIcons name="arrow-left" size={24} color={COLORS.white} />
-          </TouchableWeb>
-          <Text style={styles.welcomeText}>Admin Management Hub</Text>
-        </View>
-      </LinearGradient>
+    <SafeAreaView style={styles.container} edges={[]}>
+      {!isEmbedded && (
+        <LinearGradient
+          colors={GRADIENTS.header}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 0, y: 1 }}
+          style={[styles.header, { paddingTop: insets.top + 20 }]}
+        >
+          <View style={styles.headerRow}>
+            <TouchableWeb
+              onPress={() => navigation.goBack()}
+              style={styles.backButton}
+            >
+              <MaterialCommunityIcons name="arrow-left" size={24} color={COLORS.white} />
+            </TouchableWeb>
+            <Text style={styles.welcomeText}>Admin Management Hub</Text>
+          </View>
+        </LinearGradient>
+      )}
+
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
 
       <ScrollView 
         style={styles.content}
@@ -58,9 +86,9 @@ export default function AdminManagementHubScreen({ navigation }) {
               activeOpacity={0.7}
             >
               <LinearGradient
-                colors={['#667eea', '#764ba2']}
+                colors={GRADIENTS.header}
                 start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
+                end={{ x: 0, y: 1 }}
                 style={styles.managementCardGradient}
               >
                 <MaterialCommunityIcons name="format-list-bulleted" size={32} color={COLORS.white} />
@@ -75,9 +103,9 @@ export default function AdminManagementHubScreen({ navigation }) {
               onPress={() => navigation.navigate('RecentTransactions')}
             >
               <LinearGradient
-                colors={['#f093fb', '#f5576c']}
+                colors={GRADIENTS.header}
                 start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
+                end={{ x: 0, y: 1 }}
                 style={styles.managementCardGradient}
               >
                 <MaterialCommunityIcons name="account-group" size={32} color={COLORS.white} />
@@ -95,9 +123,9 @@ export default function AdminManagementHubScreen({ navigation }) {
               onPress={() => navigation.navigate('PaymentAnalytics')}
             >
               <LinearGradient
-                colors={['#4facfe', '#00f2fe']}
+                colors={GRADIENTS.header}
                 start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
+                end={{ x: 0, y: 1 }}
                 style={styles.managementCardGradient}
               >
                 <MaterialCommunityIcons name="chart-box" size={32} color={COLORS.white} />
@@ -109,49 +137,12 @@ export default function AdminManagementHubScreen({ navigation }) {
             <TouchableWeb 
               style={styles.managementCard} 
               activeOpacity={0.7}
-              onPress={() => navigation.navigate('InvoiceManagement')}
-            >
-              <LinearGradient
-                colors={['#43e97b', '#38f9d7']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.managementCardGradient}
-              >
-                <MaterialCommunityIcons name="file-document-multiple" size={32} color={COLORS.white} />
-                <Text style={styles.managementCardTitle}>Invoices</Text>
-                <Text style={styles.managementCardSubtitle}>Generate & manage</Text>
-              </LinearGradient>
-            </TouchableWeb>
-          </View>
-
-          {/* Row 3 */}
-          <View style={styles.managementRow}>
-            <TouchableWeb 
-              style={styles.managementCard} 
-              activeOpacity={0.7}
-              onPress={() => navigation.navigate('AdminStoreOrders')}
-            >
-              <LinearGradient
-                colors={['#10B981', '#059669']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.managementCardGradient}
-              >
-                <MaterialCommunityIcons name="package-variant" size={32} color={COLORS.white} />
-                <Text style={styles.managementCardTitle}>Store Orders</Text>
-                <Text style={styles.managementCardSubtitle}>Manage orders</Text>
-              </LinearGradient>
-            </TouchableWeb>
-
-            <TouchableWeb 
-              style={styles.managementCard} 
-              activeOpacity={0.7}
               onPress={() => navigation.navigate('InventoryManagement')}
             >
               <LinearGradient
-                colors={['#667eea', '#764ba2']}
+                colors={GRADIENTS.header}
                 start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
+                end={{ x: 0, y: 1 }}
                 style={styles.managementCardGradient}
               >
                 <MaterialCommunityIcons name="package-variant-closed" size={32} color={COLORS.white} />
@@ -161,33 +152,51 @@ export default function AdminManagementHubScreen({ navigation }) {
             </TouchableWeb>
           </View>
 
-          {/* Row 4 - Full width */}
-          <TouchableWeb 
-            style={styles.managementCardFull} 
-            activeOpacity={0.7}
-            onPress={() => navigation.navigate('PaymentSettings')}
-          >
-            <LinearGradient
-              colors={['#fa709a', '#fee140']}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.managementCardFullGradient}
+          {/* Row 3 */}
+          <View style={styles.managementRow}>
+            <TouchableWeb
+              style={styles.managementCard}
+              onPress={() => navigation.navigate('InvoiceManagement')}
+              activeOpacity={0.7}
             >
-              <MaterialCommunityIcons name="cog" size={28} color={COLORS.white} />
-              <View style={styles.managementCardFullContent}>
+              <LinearGradient
+                colors={GRADIENTS.header}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 0, y: 1 }}
+                style={styles.managementCardGradient}
+              >
+                <MaterialCommunityIcons name="file-document-multiple" size={32} color={COLORS.white} />
+                <Text style={styles.managementCardTitle}>Invoices</Text>
+                <Text style={styles.managementCardSubtitle}>Billing & invoices</Text>
+              </LinearGradient>
+            </TouchableWeb>
+
+            <TouchableWeb
+              style={styles.managementCard}
+              onPress={() => navigation.navigate('PaymentSettings')}
+              activeOpacity={0.7}
+            >
+              <LinearGradient
+                colors={GRADIENTS.header}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 0, y: 1 }}
+                style={styles.managementCardGradient}
+              >
+                <MaterialCommunityIcons name="credit-card-settings" size={32} color={COLORS.white} />
                 <Text style={styles.managementCardTitle}>Payment Settings</Text>
-                <Text style={styles.managementCardSubtitle}>Configure payment methods & preferences</Text>
-              </View>
-              <MaterialCommunityIcons name="chevron-right" size={24} color={COLORS.white} />
-            </LinearGradient>
-          </TouchableWeb>
+                <Text style={styles.managementCardSubtitle}>Cards & payouts</Text>
+              </LinearGradient>
+            </TouchableWeb>
+          </View>
+
+
         </View>
 
         {/* Info Section */}
         <View style={styles.infoSection}>
           <MaterialCommunityIcons name="information" size={20} color={COLORS.accent} />
           <Text style={styles.infoText}>
-            Only ADMIN001 can access this management hub
+            Only ADMIN001 (Nurse Bernard) can access this management hub
           </Text>
         </View>
       </ScrollView>
@@ -199,6 +208,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
   },
   header: {
     paddingHorizontal: 20,
@@ -244,22 +262,14 @@ const styles = StyleSheet.create({
   },
   managementCard: {
     flex: 1,
-    borderRadius: 20,
+    borderRadius: 16,
     overflow: 'hidden',
+    backgroundColor: COLORS.white,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 10 },
-    shadowOpacity: 0.35,
-    shadowRadius: 15,
-    elevation: 15,
-    transform: [{ translateY: -3 }],
-    borderTopWidth: 2,
-    borderLeftWidth: 1,
-    borderRightWidth: 1,
-    borderTopColor: 'rgba(255, 255, 255, 0.4)',
-    borderLeftColor: 'rgba(255, 255, 255, 0.2)',
-    borderRightColor: 'rgba(255, 255, 255, 0.1)',
-    borderBottomWidth: 3,
-    borderBottomColor: 'rgba(0, 0, 0, 0.2)',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3,
   },
   managementCardGradient: {
     padding: SPACING.md,
@@ -325,5 +335,27 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: 'Poppins_400Regular',
     color: COLORS.textLight,
+  },
+  accessDeniedContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: SPACING.xl,
+    backgroundColor: COLORS.background,
+  },
+  accessDeniedTitle: {
+    fontSize: 24,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+    textAlign: 'center',
+    marginTop: SPACING.md,
+    marginBottom: SPACING.sm,
+  },
+  accessDeniedSubtitle: {
+    fontSize: 16,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.lightGray,
+    textAlign: 'center',
+    lineHeight: 24,
   },
 });

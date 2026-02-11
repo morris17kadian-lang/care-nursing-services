@@ -1,5 +1,5 @@
 import TouchableWeb from "../components/TouchableWeb";
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -7,34 +7,182 @@ import {
   ScrollView,
   Switch,
   Alert,
+  Image,
 } from 'react-native';
+import * as FileSystem from 'expo-file-system/legacy';
+import * as Sharing from 'expo-sharing';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { COLORS, GRADIENTS, SPACING } from '../constants';
+import { useAuth } from '../context/AuthContext';
+import ApiService from '../services/ApiService';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import FirebaseService from '../services/FirebaseService';
+import InvoiceService from '../services/InvoiceService';
+import { auth } from '../config/firebase';
+import { deleteUser as deleteAuthUser } from 'firebase/auth';
+
 
 export default function PrivacySecurityScreen({ navigation }) {
   const insets = useSafeAreaInsets();
+  const { user, logout } = useAuth();
   const [settings, setSettings] = useState({
     dataCollection: true,
     shareWithPartners: false,
     locationTracking: false,
     twoFactorAuth: false,
-    biometric: true,
   });
 
-  const handleToggle = (key, value) => {
-    setSettings({ ...settings, [key]: value });
-    
-    const messages = {
-      dataCollection: value ? 'Data collection enabled for better service' : 'Data collection disabled',
-      shareWithPartners: value ? 'Data sharing with partners enabled' : 'Data sharing disabled',
-      locationTracking: value ? 'Location services enabled' : 'Location services disabled',
-      twoFactorAuth: value ? 'Two-factor authentication enabled' : 'Two-factor authentication disabled',
-      biometric: value ? 'Biometric login enabled' : 'Biometric login disabled',
-    };
+  // Load privacy settings from backend on mount
+  useEffect(() => {
+    loadPrivacySettings();
+  }, [user]);
 
-    Alert.alert('Updated', messages[key]);
+  const loadPrivacySettings = async () => {
+    try {
+      // Try backend first
+      if (user?.id) {
+        const backendSettings = await ApiService.getPrivacySettings(user.id);
+        if (backendSettings) {
+          setSettings({
+            dataCollection: backendSettings.dataCollection ?? true,
+            shareWithPartners: backendSettings.shareWithPartners ?? false,
+            locationTracking: backendSettings.locationTracking ?? false,
+            twoFactorAuth: backendSettings.twoFactorAuth ?? false,
+          });
+          return;
+        }
+      }
+
+      // Fallback to AsyncStorage
+      const stored = await AsyncStorage.getItem('privacySettings');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        setSettings(prev => ({ ...prev, ...parsed }));
+      }
+    } catch (error) {
+      // Error loading privacy settings
+    }
+  };
+
+  const handleToggle = async (key, value) => {
+    const newSettings = { ...settings, [key]: value };
+    setSettings(newSettings);
+
+    try {
+      // Try backend first
+      if (user?.id) {
+        await ApiService.updatePrivacySettings(user.id, { [key]: value });
+      }
+
+      // Always save to AsyncStorage as backup
+      await AsyncStorage.setItem('privacySettings', JSON.stringify(newSettings));
+
+      const messages = {
+        dataCollection: value ? 'Data collection enabled for better service' : 'Data collection disabled',
+        shareWithPartners: value ? 'Data sharing with partners enabled' : 'Data sharing disabled',
+        locationTracking: value ? 'Location services enabled' : 'Location services disabled',
+        twoFactorAuth: value ? 'Two-factor authentication enabled' : 'Two-factor authentication disabled',
+      };
+
+      Alert.alert('Updated', messages[key]);
+    } catch (error) {
+      Alert.alert('Error', 'Failed to update privacy setting');
+      // Reset the toggle on error
+      setSettings(prev => ({ ...prev, [key]: !value }));
+    }
+  };
+
+  const handleDownloadData = async () => {
+    try {
+      if (!user?.id) {
+        Alert.alert('Error', 'No user found for data export');
+        return;
+      }
+
+      await ApiService.createDataRequest({
+        userId: user.id,
+        type: 'access',
+        source: 'app',
+      });
+
+      const profileResult = await FirebaseService.getUser(user.id);
+      const profile = profileResult?.user || {};
+      const appointmentsResult = await FirebaseService.getAppointments(user.id);
+      const appointments = appointmentsResult?.appointments || [];
+      const invoices = await ApiService.getInvoices({ userId: user.id });
+      const notifications = await ApiService.getNotifications(user.id, { limit: 500 });
+      const privacySettings = await ApiService.getPrivacySettings(user.id);
+
+      const exportPayload = {
+        exportedAt: new Date().toISOString(),
+        user: profile,
+        privacySettings,
+        appointments,
+        invoices,
+        notifications,
+      };
+
+      const fileUri = `${FileSystem.documentDirectory}876nurses-data-${user.id}-${Date.now()}.json`;
+      await FileSystem.writeAsStringAsync(fileUri, JSON.stringify(exportPayload, null, 2));
+
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(fileUri, {
+          mimeType: 'application/json',
+          dialogTitle: 'Download My Data',
+        });
+      } else {
+        Alert.alert('Saved', `Your data export is saved at: ${fileUri}`);
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Unable to export your data. Please try again.');
+    }
+  };
+
+  const handleDeleteAccount = async () => {
+    if (!user?.id) {
+      Alert.alert('Error', 'No user found for deletion');
+      return;
+    }
+
+    Alert.alert(
+      'Delete Account',
+      'Are you sure you want to delete your account? This action cannot be undone.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              await ApiService.createDataRequest({
+                userId: user.id,
+                type: 'deletion',
+                source: 'app',
+              });
+
+              await FirebaseService.deleteUserData(user.id);
+              await FirebaseService.deleteUser(user.id);
+
+              if (auth.currentUser) {
+                try {
+                  await deleteAuthUser(auth.currentUser);
+                } catch (authError) {
+                  // If auth deletion fails, continue cleanup and log out
+                }
+              }
+
+              await AsyncStorage.clear();
+              await logout();
+              Alert.alert('Account Deleted', 'Your account has been deleted.');
+            } catch (error) {
+              Alert.alert('Error', 'Failed to delete account. Please contact support.');
+            }
+          },
+        },
+      ]
+    );
   };
 
   const SettingItem = ({ icon, title, subtitle, value, onToggle, iconColor = COLORS.primary }) => (
@@ -62,7 +210,7 @@ export default function PrivacySecurityScreen({ navigation }) {
   );
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <LinearGradient
         colors={GRADIENTS.header}
         start={{ x: 0, y: 0 }}
@@ -82,6 +230,13 @@ export default function PrivacySecurityScreen({ navigation }) {
         </View>
       </LinearGradient>
 
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
+
       <ScrollView 
         style={styles.scrollView} 
         contentContainerStyle={styles.scrollContent}
@@ -94,7 +249,7 @@ export default function PrivacySecurityScreen({ navigation }) {
             <SettingItem
               icon="database"
               title="Data Collection"
-              subtitle="Allow CARE to collect usage data"
+              subtitle="Allow 876Nurses to collect usage data"
               value={settings.dataCollection}
               onToggle={(value) => handleToggle('dataCollection', value)}
             />
@@ -120,25 +275,7 @@ export default function PrivacySecurityScreen({ navigation }) {
         {/* Security Section */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Security Settings</Text>
-          <View style={styles.settingsCard}>
-            <SettingItem
-              icon="shield-lock"
-              title="Two-Factor Authentication"
-              subtitle="Add extra layer of security"
-              value={settings.twoFactorAuth}
-              onToggle={(value) => handleToggle('twoFactorAuth', value)}
-              iconColor={COLORS.success}
-            />
-            <View style={styles.divider} />
-            <SettingItem
-              icon="fingerprint"
-              title="Biometric Login"
-              subtitle="Use fingerprint or face ID"
-              value={settings.biometric}
-              onToggle={(value) => handleToggle('biometric', value)}
-              iconColor={COLORS.success}
-            />
-          </View>
+          <View style={styles.settingsCard} />
         </View>
 
         {/* Info Cards */}
@@ -169,7 +306,7 @@ export default function PrivacySecurityScreen({ navigation }) {
         <View style={styles.section}>
           <TouchableWeb
             style={styles.actionButton}
-            onPress={() => Alert.alert('Privacy Policy', 'Opening privacy policy...')}
+            onPress={() => navigation.navigate('Privacy')}
           >
             <MaterialCommunityIcons name="file-document" size={20} color={COLORS.primary} />
             <Text style={styles.actionButtonText}>View Privacy Policy</Text>
@@ -178,7 +315,7 @@ export default function PrivacySecurityScreen({ navigation }) {
 
           <TouchableWeb
             style={styles.actionButton}
-            onPress={() => Alert.alert('Download Data', 'Preparing your data for download...')}
+            onPress={handleDownloadData}
           >
             <MaterialCommunityIcons name="download" size={20} color={COLORS.primary} />
             <Text style={styles.actionButtonText}>Download My Data</Text>
@@ -186,19 +323,18 @@ export default function PrivacySecurityScreen({ navigation }) {
           </TouchableWeb>
 
           <TouchableWeb
-            style={[styles.actionButton, styles.dangerButton]}
-            onPress={() => Alert.alert(
-              'Delete Account',
-              'Are you sure you want to delete your account? This action cannot be undone.',
-              [
-                { text: 'Cancel', style: 'cancel' },
-                { text: 'Delete', style: 'destructive' }
-              ]
-            )}
+            style={styles.deleteAccountButton}
+            onPress={handleDeleteAccount}
           >
-            <MaterialCommunityIcons name="delete-forever" size={20} color={COLORS.error} />
-            <Text style={[styles.actionButtonText, styles.dangerText]}>Delete Account</Text>
-            <MaterialCommunityIcons name="chevron-right" size={20} color={COLORS.error} />
+            <LinearGradient
+              colors={['#FF4757', '#FF6348']}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 0, y: 1 }}
+              style={styles.deleteAccountGradient}
+            >
+              <MaterialCommunityIcons name="delete-forever" size={16} color={COLORS.white} />
+              <Text style={styles.deleteAccountText}>Delete Account</Text>
+            </LinearGradient>
           </TouchableWeb>
         </View>
       </ScrollView>
@@ -263,6 +399,15 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     flexGrow: 1,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
   },
   section: {
     padding: SPACING.lg,
@@ -370,5 +515,28 @@ const styles = StyleSheet.create({
   },
   dangerText: {
     color: COLORS.error,
+  },
+  deleteAccountButton: {
+    marginTop: SPACING.sm,
+    borderRadius: 16,
+    overflow: 'hidden',
+    shadowColor: '#FF4757',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 12,
+    elevation: 5,
+  },
+  deleteAccountGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.lg,
+    gap: SPACING.sm,
+  },
+  deleteAccountText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.white,
   },
 });

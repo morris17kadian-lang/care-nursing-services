@@ -4,14 +4,68 @@ import { Dimensions, PixelRatio, Platform } from 'react-native';
 const BASE_WIDTH = 375;
 const BASE_HEIGHT = 812;
 
-// Helper function to get current dimensions
-const getDimensions = () => {
+// Runtime readiness tracking
+let runtimeReady = false;
+let dimensionsChecked = false;
+
+// Initialize runtime readiness after a delay to allow React Native to fully initialize
+const initializeRuntime = () => {
+  if (dimensionsChecked) return;
+  
   try {
-    return Dimensions.get('window');
+    // Multiple checks to ensure runtime is truly ready
+    if (global.__r && typeof Dimensions !== 'undefined' && Dimensions && 
+        typeof Dimensions.get === 'function') {
+      const testDims = Dimensions.get('window');
+      if (testDims && testDims.width > 0 && testDims.height > 0) {
+        runtimeReady = true;
+      }
+    }
+  } catch (e) {
+    // Runtime still not ready
+  }
+  
+  dimensionsChecked = true;
+};
+
+// Delay runtime check to avoid early access
+setTimeout(initializeRuntime, 200);
+
+// Helper function to get current dimensions with strict runtime protection
+const getDimensions = () => {
+  const fallback = { width: BASE_WIDTH, height: BASE_HEIGHT };
+  
+  // If runtime hasn't been checked yet, do it now
+  if (!dimensionsChecked) {
+    initializeRuntime();
+  }
+  
+  // If runtime is still not ready, return fallback immediately
+  if (!runtimeReady) {
+    return fallback;
+  }
+  
+  try {
+    // Triple-check runtime state before accessing Dimensions
+    if (!global.__r || typeof Dimensions === 'undefined' || !Dimensions || 
+        typeof Dimensions.get !== 'function') {
+      return fallback;
+    }
+    
+    const dims = Dimensions.get('window');
+    
+    // Validate returned dimensions
+    if (!dims || typeof dims !== 'object' || 
+        typeof dims.width !== 'number' || typeof dims.height !== 'number' ||
+        dims.width <= 0 || dims.height <= 0 || 
+        !Number.isFinite(dims.width) || !Number.isFinite(dims.height)) {
+      return fallback;
+    }
+    
+    return dims;
+    
   } catch (error) {
-    // Fallback dimensions if runtime not ready
-    console.warn('Dimensions not ready, using fallback');
-    return { width: 375, height: 812 };
+    return fallback;
   }
 };
 

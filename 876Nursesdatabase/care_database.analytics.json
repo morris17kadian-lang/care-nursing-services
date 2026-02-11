@@ -1,0 +1,1372 @@
+[{
+  "_id": {
+    "$oid": "691e4c2191309777f23efdd3"
+  },
+  "period": "weekly",
+  "date": {
+    "$date": "2025-11-16T23:00:46.395Z"
+  },
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-19T23:00:46.774Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 0,
+    "totalClients": 0,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-19T23:00:46.774Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 0,
+    "totalServices": 0,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 0,
+  "updatedAt": {
+    "$date": "2025-11-19T23:00:46.774Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "691e4c2191309777f23efdd2"
+  },
+  "date": {
+    "$date": "2025-11-16T23:00:46.375Z"
+  },
+  "period": "weekly",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-19T23:00:46.694Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 0,
+    "totalClients": 0,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-19T23:00:46.708Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 0,
+    "totalServices": 0,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 0,
+  "updatedAt": {
+    "$date": "2025-11-19T23:00:46.708Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "691f31d791309777f23f10e1"
+  },
+  "date": {
+    "$date": "2025-11-16T15:20:55.429Z"
+  },
+  "period": "weekly",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-20T15:20:55.785Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 1,
+    "totalClients": 1,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-20T15:20:55.807Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 100,
+    "totalServices": 1,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 1,
+  "updatedAt": {
+    "$date": "2025-11-20T15:20:55.807Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "691f31d791309777f23f10e2"
+  },
+  "date": {
+    "$date": "2025-11-16T15:20:55.488Z"
+  },
+  "period": "weekly",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-20T15:20:55.887Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 1,
+    "totalClients": 1,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-20T15:20:55.887Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 100,
+    "totalServices": 1,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 1,
+  "updatedAt": {
+    "$date": "2025-11-20T15:20:55.887Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "691f31df91309777f23f10e3"
+  },
+  "date": {
+    "$date": "2025-11-20T05:00:00.000Z"
+  },
+  "period": "daily",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-20T15:21:03.748Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 1,
+    "totalClients": 1,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-20T15:21:03.745Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 100,
+    "totalServices": 1,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 1,
+  "updatedAt": {
+    "$date": "2025-11-20T15:21:03.748Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "691f347191309777f23f1113"
+  },
+  "date": {
+    "$date": "2025-11-16T15:32:00.643Z"
+  },
+  "period": "weekly",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-20T15:32:00.977Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 1,
+    "totalClients": 1,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-20T15:32:00.983Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 100,
+    "totalServices": 1,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 1,
+  "updatedAt": {
+    "$date": "2025-11-20T15:32:00.983Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "691f347191309777f23f1114"
+  },
+  "date": {
+    "$date": "2025-11-16T15:32:00.615Z"
+  },
+  "period": "weekly",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-20T15:32:01.012Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 1,
+    "totalClients": 1,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-20T15:32:01.012Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 100,
+    "totalServices": 1,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 1,
+  "updatedAt": {
+    "$date": "2025-11-20T15:32:01.012Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "691f348f91309777f23f1117"
+  },
+  "date": {
+    "$date": "2025-11-16T15:32:30.662Z"
+  },
+  "period": "weekly",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-20T15:32:31.166Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 1,
+    "totalClients": 1,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-20T15:32:31.166Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 100,
+    "totalServices": 1,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 1,
+  "updatedAt": {
+    "$date": "2025-11-20T15:32:31.166Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "691f373e91309777f23f1155"
+  },
+  "period": "weekly",
+  "date": {
+    "$date": "2025-11-16T15:43:57.657Z"
+  },
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-20T15:43:58.021Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 1,
+    "totalClients": 1,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-20T15:43:58.022Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 100,
+    "totalServices": 1,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 1,
+  "updatedAt": {
+    "$date": "2025-11-20T15:43:58.022Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "691f373e91309777f23f1156"
+  },
+  "date": {
+    "$date": "2025-11-16T15:43:57.660Z"
+  },
+  "period": "weekly",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-20T15:43:58.235Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 1,
+    "totalClients": 1,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-20T15:43:58.236Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 100,
+    "totalServices": 1,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 1,
+  "updatedAt": {
+    "$date": "2025-11-20T15:43:58.236Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "691f4ba091309777f23f12b6"
+  },
+  "period": "weekly",
+  "date": {
+    "$date": "2025-11-16T17:10:55.691Z"
+  },
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-20T17:10:56.046Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 0,
+    "totalClients": 0,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-20T17:10:56.048Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 0,
+    "totalServices": 0,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 0,
+  "updatedAt": {
+    "$date": "2025-11-20T17:10:56.048Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "691f4ba091309777f23f12b7"
+  },
+  "period": "weekly",
+  "date": {
+    "$date": "2025-11-16T17:10:55.679Z"
+  },
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-20T17:10:56.057Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 0,
+    "totalClients": 0,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-20T17:10:56.057Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 0,
+    "totalServices": 0,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 0,
+  "updatedAt": {
+    "$date": "2025-11-20T17:10:56.057Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "691f4c0b91309777f23f12c4"
+  },
+  "period": "weekly",
+  "date": {
+    "$date": "2025-11-16T17:12:43.284Z"
+  },
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-20T17:12:43.635Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 0,
+    "totalClients": 0,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-20T17:12:43.635Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 0,
+    "totalServices": 0,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 0,
+  "updatedAt": {
+    "$date": "2025-11-20T17:12:43.635Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "691f4c0b91309777f23f12c5"
+  },
+  "date": {
+    "$date": "2025-11-16T17:12:43.286Z"
+  },
+  "period": "weekly",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-20T17:12:43.637Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 0,
+    "totalClients": 0,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-20T17:12:43.637Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 0,
+    "totalServices": 0,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 0,
+  "updatedAt": {
+    "$date": "2025-11-20T17:12:43.637Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "691f65ff91309777f23f160a"
+  },
+  "period": "weekly",
+  "date": {
+    "$date": "2025-11-16T19:03:26.960Z"
+  },
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-20T19:03:27.219Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 0,
+    "totalClients": 0,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-20T19:03:27.222Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 0,
+    "totalServices": 0,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 0,
+  "updatedAt": {
+    "$date": "2025-11-20T19:03:27.222Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "691f65ff91309777f23f160b"
+  },
+  "date": {
+    "$date": "2025-11-16T19:03:26.964Z"
+  },
+  "period": "weekly",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-20T19:03:27.233Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 0,
+    "totalClients": 0,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-20T19:03:27.234Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 0,
+    "totalServices": 0,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 0,
+  "updatedAt": {
+    "$date": "2025-11-20T19:03:27.234Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "691f8f5891309777f23f1c77"
+  },
+  "date": {
+    "$date": "2025-11-16T21:59:51.966Z"
+  },
+  "period": "weekly",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-20T21:59:52.249Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 1,
+    "totalClients": 1,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-20T21:59:52.250Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 100,
+    "totalServices": 1,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 1,
+  "updatedAt": {
+    "$date": "2025-11-20T21:59:52.250Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "691f8f5891309777f23f1c78"
+  },
+  "date": {
+    "$date": "2025-11-16T21:59:51.971Z"
+  },
+  "period": "weekly",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-20T21:59:52.260Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 1,
+    "totalClients": 1,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-20T21:59:52.260Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 100,
+    "totalServices": 1,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 1,
+  "updatedAt": {
+    "$date": "2025-11-20T21:59:52.260Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "69209c135c3677e9b74b6dd8"
+  },
+  "date": {
+    "$date": "2025-11-16T17:06:27.020Z"
+  },
+  "period": "weekly",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-21T17:06:27.578Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 100,
+    "newClients": 1,
+    "totalClients": 1,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-21T17:06:27.579Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 22.22222222222222,
+    "totalServices": 2,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 2,
+  "updatedAt": {
+    "$date": "2025-11-21T17:06:27.579Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "69209c145c3677e9b74b6dd9"
+  },
+  "date": {
+    "$date": "2025-11-16T17:06:27.518Z"
+  },
+  "period": "weekly",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-21T17:06:28.065Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 100,
+    "newClients": 1,
+    "totalClients": 1,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-21T17:06:28.065Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 22.22222222222222,
+    "totalServices": 2,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 2,
+  "updatedAt": {
+    "$date": "2025-11-21T17:06:28.065Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "6925157a5c3677e9b74bdf4d"
+  },
+  "date": {
+    "$date": "2025-11-24T02:33:29.970Z"
+  },
+  "period": "weekly",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-25T02:33:30.408Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 100,
+    "newClients": 4,
+    "totalClients": 4,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-25T02:33:30.410Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 100,
+    "totalServices": 4,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 4,
+  "updatedAt": {
+    "$date": "2025-11-25T02:33:30.410Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "6925157a5c3677e9b74bdf4e"
+  },
+  "date": {
+    "$date": "2025-11-24T02:33:30.101Z"
+  },
+  "period": "weekly",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-25T02:33:30.506Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 100,
+    "newClients": 4,
+    "totalClients": 4,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-25T02:33:30.507Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 100,
+    "totalServices": 4,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 4,
+  "updatedAt": {
+    "$date": "2025-11-25T02:33:30.507Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "692515eb5c3677e9b74bdf5c"
+  },
+  "date": {
+    "$date": "2025-11-24T02:35:23.428Z"
+  },
+  "period": "weekly",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-25T02:35:23.664Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 100,
+    "newClients": 4,
+    "totalClients": 4,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-25T02:35:23.665Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 100,
+    "totalServices": 4,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 4,
+  "updatedAt": {
+    "$date": "2025-11-25T02:35:23.665Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "692515eb5c3677e9b74bdf5d"
+  },
+  "date": {
+    "$date": "2025-11-24T02:35:23.444Z"
+  },
+  "period": "weekly",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-25T02:35:23.693Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 100,
+    "newClients": 4,
+    "totalClients": 4,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-25T02:35:23.694Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 100,
+    "totalServices": 4,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 4,
+  "updatedAt": {
+    "$date": "2025-11-25T02:35:23.694Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "692517355c3677e9b74bdf6f"
+  },
+  "date": {
+    "$date": "2025-11-24T02:40:52.715Z"
+  },
+  "period": "weekly",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-25T02:40:53.116Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 100,
+    "newClients": 4,
+    "totalClients": 4,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-25T02:40:53.116Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 100,
+    "totalServices": 4,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 4,
+  "updatedAt": {
+    "$date": "2025-11-25T02:40:53.116Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "692517355c3677e9b74bdf70"
+  },
+  "date": {
+    "$date": "2025-11-24T02:40:52.728Z"
+  },
+  "period": "weekly",
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-25T02:40:53.118Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 100,
+    "newClients": 4,
+    "totalClients": 4,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-25T02:40:53.118Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 100,
+    "totalServices": 4,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 4,
+  "updatedAt": {
+    "$date": "2025-11-25T02:40:53.118Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "692656735c3677e9b74bfe4f"
+  },
+  "period": "weekly",
+  "date": {
+    "$date": "2025-11-24T01:22:58.999Z"
+  },
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-26T01:22:59.244Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 1,
+    "totalClients": 1,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-26T01:22:59.246Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 100,
+    "totalServices": 1,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 1,
+  "updatedAt": {
+    "$date": "2025-11-26T01:22:59.246Z"
+  }
+},
+{
+  "_id": {
+    "$oid": "692656735c3677e9b74bfe4e"
+  },
+  "period": "weekly",
+  "date": {
+    "$date": "2025-11-24T01:22:59.002Z"
+  },
+  "__v": 0,
+  "averageTransaction": 0,
+  "calculatedAt": {
+    "$date": "2025-11-26T01:22:59.253Z"
+  },
+  "clientPerformance": {
+    "satisfactionRate": 0,
+    "retentionRate": 0,
+    "newClients": 1,
+    "totalClients": 1,
+    "frequentNonRecurringClients": []
+  },
+  "createdAt": {
+    "$date": "2025-11-26T01:22:59.253Z"
+  },
+  "growthRate": "0%",
+  "orderPerformance": {
+    "averageCompletionTime": 0,
+    "completedOrders": 0,
+    "pendingOrders": 0,
+    "totalOrders": 0
+  },
+  "paymentMethods": [],
+  "serviceBreakdown": [],
+  "servicePerformance": {
+    "completionRate": 100,
+    "totalServices": 1,
+    "averageRating": 0
+  },
+  "targets": {
+    "acquisitionGoal": 30,
+    "completionGoal": 96,
+    "revenueGoal": 0,
+    "satisfactionGoal": 4.8
+  },
+  "totalRevenue": 0,
+  "totalTransactions": 1,
+  "updatedAt": {
+    "$date": "2025-11-26T01:22:59.253Z"
+  }
+}]

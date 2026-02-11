@@ -6,6 +6,7 @@ import {
   StyleSheet,
   Modal,
   Alert,
+  Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -14,6 +15,7 @@ import TouchableWeb from '../components/TouchableWeb';
 import { COLORS, GRADIENTS, SPACING } from '../constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '../context/AuthContext';
+import InvoiceService from '../services/InvoiceService';
 
 const ORDERS_STORAGE_KEY = '@care_store_orders';
 
@@ -192,7 +194,7 @@ export default function PatientStoreOrdersScreen({ navigation, route }) {
             <LinearGradient
               colors={GRADIENTS.header}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.activeTabGradient}
             >
               <Text style={styles.activeTabText}>Pending</Text>
@@ -212,7 +214,7 @@ export default function PatientStoreOrdersScreen({ navigation, route }) {
             <LinearGradient
               colors={GRADIENTS.header}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.activeTabGradient}
             >
               <Text style={styles.activeTabText}>Completed</Text>
@@ -232,7 +234,7 @@ export default function PatientStoreOrdersScreen({ navigation, route }) {
             <LinearGradient
               colors={GRADIENTS.header}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.activeTabGradient}
             >
               <Text style={styles.activeTabText}>Cancelled</Text>
@@ -347,17 +349,15 @@ export default function PatientStoreOrdersScreen({ navigation, route }) {
                           activeOpacity={0.7}
                         >
                           <View style={styles.invoiceInfo}>
-                            <MaterialCommunityIcons name="file-document" size={24} color={COLORS.primary} />
                             <View style={styles.invoiceDetails}>
                               <Text style={styles.invoiceNumber}>#{invoiceNumber}</Text>
-                              <Text style={styles.invoiceAmount}>J${selectedOrder.total.toFixed(2)}</Text>
+                              <Text style={styles.invoiceAmount}>{InvoiceService.formatCurrency(selectedOrder.total)}</Text>
                             </View>
                           </View>
                           <MaterialCommunityIcons name="chevron-right" size={24} color={COLORS.textLight} />
                         </TouchableWeb>
                       ) : (
                         <View style={styles.noInvoice}>
-                          <MaterialCommunityIcons name="file-document-outline" size={32} color={COLORS.border} />
                           <Text style={styles.noInvoiceText}>No invoice available</Text>
                         </View>
                       )}
@@ -373,15 +373,15 @@ export default function PatientStoreOrdersScreen({ navigation, route }) {
                           <View style={styles.itemInfo}>
                             <Text style={styles.itemName}>{item.name}</Text>
                             <Text style={styles.itemDetails}>
-                              Quantity: {item.quantity} × J${item.price.toFixed(2)}
+                              Quantity: {item.quantity} × {InvoiceService.formatCurrency(item.price)}
                             </Text>
                           </View>
-                          <Text style={styles.itemTotal}>J${(item.quantity * item.price).toFixed(2)}</Text>
+                          <Text style={styles.itemTotal}>{InvoiceService.formatCurrency(item.quantity * item.price)}</Text>
                         </View>
                       ))}
                       <View style={styles.totalSection}>
                         <Text style={styles.totalLabel}>Total Amount</Text>
-                        <Text style={styles.totalAmount}>J${selectedOrder.total.toFixed(2)}</Text>
+                        <Text style={styles.totalAmount}>{InvoiceService.formatCurrency(selectedOrder.total)}</Text>
                       </View>
                     </View>
                   )}
@@ -591,7 +591,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     width: '100%',
     maxWidth: 380,
-    maxHeight: '85%',
+    maxHeight: Platform.OS === 'android' ? '93%' : '85%',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.25,
@@ -641,7 +641,7 @@ const styles = StyleSheet.create({
   },
   detailValue: {
     fontSize: 14,
-    fontFamily: 'Poppins_600SemiBold',
+    fontFamily: 'Poppins_500Medium',
     color: COLORS.text,
   },
   statusBadgeInline: {

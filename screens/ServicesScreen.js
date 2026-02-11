@@ -5,17 +5,19 @@ import {
   Text,
   ScrollView,
   StyleSheet,
-
+  Image,
   Modal,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { useNavigation } from '@react-navigation/native';
 import { ServiceCard, SectionHeader } from '../components/Cards';
 import { COLORS, GRADIENTS, SPACING } from '../constants';
 import { useServices } from '../context/ServicesContext';
 
 export default function ServicesScreen() {
+  const navigation = useNavigation();
   const { services } = useServices();
   const [selectedService, setSelectedService] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
@@ -41,6 +43,13 @@ export default function ServicesScreen() {
         </Text>
       </LinearGradient>
 
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
+
       <ScrollView
         showsVerticalScrollIndicator={false}
         contentContainerStyle={styles.scrollContent}
@@ -51,7 +60,7 @@ export default function ServicesScreen() {
             <View style={styles.servicesGrid}>
               {services.filter(s => s.category === category).map((service) => (
                 <ServiceCard
-                  key={service.id}
+                  key={`${service.id}-${service.title}`}
                   service={service}
                   onPress={() => handleServicePress(service)}
                 />
@@ -73,7 +82,11 @@ export default function ServicesScreen() {
             <Text style={styles.ctaText}>
               Book an appointment and let our professional team take care of you
             </Text>
-            <TouchableWeb style={styles.ctaButton} activeOpacity={0.8}>
+            <TouchableWeb
+              style={styles.ctaButton}
+              activeOpacity={0.8}
+              onPress={() => navigation.navigate('Book')}
+            >
               <Text style={styles.ctaButtonText}>Book Appointment</Text>
             </TouchableWeb>
           </LinearGradient>
@@ -141,7 +154,7 @@ export default function ServicesScreen() {
                     style={styles.bookButton}
                     onPress={() => {
                       setModalVisible(false);
-                      // Navigate to booking screen
+                      navigation.navigate('Book');
                     }}
                     activeOpacity={0.8}
                   >
@@ -168,6 +181,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
   },
   header: {
     paddingHorizontal: SPACING.lg,

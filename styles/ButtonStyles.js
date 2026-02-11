@@ -153,4 +153,29 @@ export const buttonStyles = StyleSheet.create({
     borderRadius: 8,
     overflow: 'hidden',
   },
+
+  // Warning pill button (orange gradient look)
+  warningPillButton: {
+    borderRadius: 999,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.18,
+    shadowRadius: 4,
+    elevation: 4,
+  },
+  warningPillGradient: {
+    paddingVertical: 9,
+    paddingHorizontal: 14,
+    borderRadius: 999,
+    overflow: 'hidden',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 6,
+  },
+  warningPillText: {
+    fontSize: 13,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.white,
+  },
 });

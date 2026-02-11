@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import {
   View,
   Text,
@@ -45,7 +45,7 @@ const CATEGORY_OPTIONS = [
   'Medications',
 ];
 
-export default function InventoryManagementScreen({ navigation }) {
+export default function InventoryManagementScreen({ navigation, isEmbedded = false, onAddPress }) {
   const insets = useSafeAreaInsets();
   const [products, setProducts] = useState([]);
   const [modalVisible, setModalVisible] = useState(false);
@@ -125,6 +125,18 @@ export default function InventoryManagementScreen({ navigation }) {
     });
     setModalVisible(true);
   };
+
+  // Memoize the add function to prevent infinite re-renders
+  const handleAddInventory = useCallback(() => {
+    handleAddProduct();
+  }, []);
+
+  // Expose add function to parent component when embedded
+  useEffect(() => {
+    if (isEmbedded && onAddPress) {
+      onAddPress(handleAddInventory);
+    }
+  }, [isEmbedded, onAddPress, handleAddInventory]);
 
   const handleEditProduct = (product) => {
     setEditingProduct(product);
@@ -251,29 +263,37 @@ export default function InventoryManagementScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
-      {/* Header */}
-      <LinearGradient
-        colors={GRADIENTS.header}
-        style={[styles.header, { paddingTop: insets.top + 20 }]}
-      >
-        <View style={styles.headerContent}>
-          <TouchableWeb
-            style={styles.backButton}
-            onPress={() => navigation.goBack()}
-            activeOpacity={0.7}
-          >
-            <MaterialCommunityIcons name="arrow-left" size={24} color={COLORS.white} />
-          </TouchableWeb>
-          <Text style={styles.headerTitle}>Inventory Management</Text>
-          <TouchableWeb
-            style={styles.addButton}
-            onPress={handleAddProduct}
-            activeOpacity={0.7}
-          >
-            <MaterialCommunityIcons name="plus" size={24} color={COLORS.white} />
-          </TouchableWeb>
-        </View>
-      </LinearGradient>
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
+      
+      {!isEmbedded && (
+        <LinearGradient
+          colors={GRADIENTS.header}
+          style={[styles.header, { paddingTop: insets.top + 20 }]}
+        >
+          <View style={styles.headerContent}>
+            <TouchableWeb
+              style={styles.backButton}
+              onPress={() => navigation.goBack()}
+              activeOpacity={0.7}
+            >
+              <MaterialCommunityIcons name="arrow-left" size={24} color={COLORS.white} />
+            </TouchableWeb>
+            <Text style={styles.headerTitle}>Inventory Management</Text>
+            <TouchableWeb
+              style={styles.addButton}
+              onPress={handleAddProduct}
+              activeOpacity={0.7}
+            >
+              <MaterialCommunityIcons name="plus" size={24} color={COLORS.white} />
+            </TouchableWeb>
+          </View>
+        </LinearGradient>
+      )}
 
       {/* Filter Pills */}
       <View style={styles.filterPillContainer}>
@@ -293,7 +313,7 @@ export default function InventoryManagementScreen({ navigation }) {
                 <LinearGradient
                   colors={GRADIENTS.header}
                   start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
+                  end={{ x: 0, y: 1 }}
                   style={styles.filterPillGradient}
                 >
                   <Text style={styles.filterPillText}>{filter}</Text>
@@ -533,7 +553,7 @@ export default function InventoryManagementScreen({ navigation }) {
                 <LinearGradient
                   colors={GRADIENTS.header}
                   start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
+                  end={{ x: 0, y: 1 }}
                   style={styles.saveGradient}
                 >
                   <Text style={styles.saveButtonText}>
@@ -553,6 +573,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
   },
   header: {
     paddingHorizontal: 20,
@@ -593,37 +622,46 @@ const styles = StyleSheet.create({
     paddingHorizontal: -1,
     marginTop: 16,
     marginBottom: 20,
+    gap: 8,
   },
   filterPill: {
     flex: 1,
   },
   filterPillGradient: {
-    paddingHorizontal: 6,
-    paddingVertical: 6,
-    borderRadius: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 32,
+    minHeight: 36,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 2,
   },
   inactiveFilterPill: {
     backgroundColor: COLORS.white,
-    paddingHorizontal: 6,
-    paddingVertical: 6,
-    borderRadius: 16,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 20,
     alignItems: 'center',
     justifyContent: 'center',
-    minHeight: 32,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    minHeight: 36,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 1,
   },
   filterPillText: {
-    fontSize: 10,
+    fontSize: 11,
     fontFamily: 'Poppins_700Bold',
     color: COLORS.white,
     textAlign: 'center',
   },
   inactiveFilterPillText: {
-    fontSize: 10,
+    fontSize: 11,
     fontFamily: 'Poppins_700Bold',
     color: COLORS.textMuted,
     textAlign: 'center',

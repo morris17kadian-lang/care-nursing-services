@@ -1,6 +1,6 @@
-# CARE Mobile App
+# 876Nurses Mobile App
 
-A complete mobile application for CARE Nursing Services built with React Native and Expo. Features four main screens with bottom tab navigation, matching the brand's teal-to-blue gradient aesthetic.
+A complete mobile application for 876Nurses built with React Native and Expo.
 
 ## Features
 
@@ -19,7 +19,7 @@ A complete mobile application for CARE Nursing Services built with React Native 
 ## Installation
 
 ```bash
-cd care-mobile-app
+cd 876nurses
 npm install
 ```
 
@@ -48,7 +48,7 @@ npm run web       # Open in web browser
 ## Project Structure
 
 ```
-care-mobile-app/
+876nurses/
 ├── screens/
 │   ├── HomeScreen.js       # Main landing page
 │   ├── ServicesScreen.js   # Services catalog with details
@@ -121,4 +121,4 @@ For issues or questions about the app, contact:
 - Email: nursingservicesandmorecare@gmail.com
 - Phone: 876-288-7304
 - Instagram: @carenursingservices
-# CARE
+# 876Nurses

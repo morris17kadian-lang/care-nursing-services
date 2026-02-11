@@ -6,10 +6,10 @@ import { TouchableOpacity, Platform } from 'react-native';
  * Ensures all touchable elements work correctly on web platform
  */
 export const TouchableWeb = React.forwardRef((props, ref) => {
-  const { style, children, activeOpacity, ...otherProps } = props;
+  const { style, children, activeOpacity, disabled, ...otherProps } = props;
   
   const webStyle = Platform.OS === 'web' ? {
-    cursor: 'pointer',
+    cursor: disabled ? 'default' : 'pointer',
     userSelect: 'none',
     outline: 'none',
   } : {};
@@ -18,6 +18,7 @@ export const TouchableWeb = React.forwardRef((props, ref) => {
     <TouchableOpacity
       ref={ref}
       {...otherProps}
+      disabled={disabled}
       style={[style, webStyle]}
       activeOpacity={activeOpacity !== undefined ? activeOpacity : 0.7}
     >

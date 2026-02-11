@@ -1,2 +1,11 @@
+# Ignore node_modules
+node_modules/
+.expo/
+.expo 2/
+
+# EAS local signing credentials (DO NOT COMMIT)
+credentials.json
+credentials/
 node_modules
 node_modules
+.env

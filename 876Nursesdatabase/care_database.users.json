@@ -1,0 +1,269 @@
+[{
+  "_id": {
+    "$oid": "691e4d50380a42895fb3e238"
+  },
+  "username": "kadian red",
+  "email": "ref@care.com",
+  "password": "$2b$12$36dgEbyD8KelT0qaDQJjfeFwKnkxTZMsFdMQ8vO915x9/sZzd19Zm",
+  "role": "patient",
+  "firstName": "kadian",
+  "lastName": "red",
+  "phone": "54231846",
+  "address": {
+    "street": "Grafton road",
+    "city": "",
+    "parish": "",
+    "postalCode": "",
+    "country": "Jamaica"
+  },
+  "allergies": [],
+  "profilePhoto": null,
+  "isActive": true,
+  "emailVerified": false,
+  "lastLogin": {
+    "$date": "2025-11-25T23:20:21.855Z"
+  },
+  "isEmailVerified": false,
+  "ratings": {
+    "average": 0,
+    "count": 0
+  },
+  "medicalHistory": [],
+  "isAvailable": false,
+  "fcmTokens": [],
+  "createdAt": {
+    "$date": "2025-11-19T23:05:52.892Z"
+  },
+  "updatedAt": {
+    "$date": "2025-11-25T23:20:21.856Z"
+  },
+  "__v": 0
+},
+{
+  "_id": {
+    "$oid": "6923253146b614fac632f6aa"
+  },
+  "username": "kaddy.holmes",
+  "email": "kaddy@test.com",
+  "password": "$2b$12$1sfUxrXVurf6QJFe.cyzQOSplLdy3PiqwvRubbwnUtWpYmGNVsiVe",
+  "role": "patient",
+  "firstName": "Kaddy",
+  "lastName": "Holmes",
+  "phone": "18765550101",
+  "address": {
+    "country": "Jamaica"
+  },
+  "allergies": [],
+  "profilePhoto": null,
+  "isActive": true,
+  "emailVerified": false,
+  "lastLogin": null,
+  "isEmailVerified": false,
+  "fcmTokens": [],
+  "ratings": {
+    "average": 0,
+    "count": 0
+  },
+  "medicalHistory": [],
+  "isAvailable": false,
+  "createdAt": {
+    "$date": "2025-11-23T15:16:01.566Z"
+  },
+  "updatedAt": {
+    "$date": "2025-11-23T15:16:01.566Z"
+  },
+  "__v": 0
+},
+{
+  "_id": {
+    "$oid": "6923253246b614fac632f6b3"
+  },
+  "username": "karen.johnson",
+  "email": "karen@test.com",
+  "password": "$2b$12$TEAq5Jy7v5/3ctCtlzNyhugZt9Hz/CnYMWPOQ3NA9ig21S.m2/j5u",
+  "role": "patient",
+  "firstName": "Karen",
+  "lastName": "Johnson",
+  "phone": "18765550102",
+  "address": {
+    "country": "Jamaica"
+  },
+  "allergies": [],
+  "profilePhoto": null,
+  "isActive": true,
+  "emailVerified": false,
+  "lastLogin": null,
+  "isEmailVerified": false,
+  "fcmTokens": [],
+  "ratings": {
+    "average": 0,
+    "count": 0
+  },
+  "medicalHistory": [],
+  "isAvailable": false,
+  "createdAt": {
+    "$date": "2025-11-23T15:16:02.117Z"
+  },
+  "updatedAt": {
+    "$date": "2025-11-23T15:16:02.117Z"
+  },
+  "__v": 0
+},
+{
+  "_id": {
+    "$oid": "6923253246b614fac632f6ba"
+  },
+  "username": "kevin.williams",
+  "email": "kevin@test.com",
+  "password": "$2b$12$TW9N1MSGk.uG0FxJBGO0F.WB2UsfK2Ss0wJydtSU65cEggVCKQZym",
+  "role": "patient",
+  "firstName": "Kevin",
+  "lastName": "Williams",
+  "phone": "18765550103",
+  "address": {
+    "country": "Jamaica"
+  },
+  "allergies": [],
+  "profilePhoto": null,
+  "isActive": true,
+  "emailVerified": false,
+  "lastLogin": null,
+  "isEmailVerified": false,
+  "fcmTokens": [],
+  "ratings": {
+    "average": 0,
+    "count": 0
+  },
+  "medicalHistory": [],
+  "isAvailable": false,
+  "createdAt": {
+    "$date": "2025-11-23T15:16:02.750Z"
+  },
+  "updatedAt": {
+    "$date": "2025-11-23T15:16:02.750Z"
+  },
+  "__v": 0
+},
+{
+  "_id": {
+    "$oid": "6923253346b614fac632f6bf"
+  },
+  "username": "kayla.brown",
+  "email": "kayla@test.com",
+  "password": "$2b$12$hqJEqHt8EqmM49JxDZIG4e2rrtgUxu9lEl4vuMhNqdRiscs6lx4Mq",
+  "role": "patient",
+  "firstName": "Kayla",
+  "lastName": "Brown",
+  "phone": "18765550104",
+  "address": {
+    "country": "Jamaica"
+  },
+  "allergies": [],
+  "profilePhoto": null,
+  "isActive": true,
+  "emailVerified": false,
+  "lastLogin": null,
+  "isEmailVerified": false,
+  "fcmTokens": [],
+  "ratings": {
+    "average": 0,
+    "count": 0
+  },
+  "medicalHistory": [],
+  "isAvailable": false,
+  "createdAt": {
+    "$date": "2025-11-23T15:16:03.266Z"
+  },
+  "updatedAt": {
+    "$date": "2025-11-23T15:16:03.266Z"
+  },
+  "__v": 0
+},
+{
+  "_id": {
+    "$oid": "6923253346b614fac632f6c2"
+  },
+  "username": "michael.davis",
+  "email": "michael@test.com",
+  "password": "$2b$12$Kn226WuGCk97RuuqKZQQ7e6.aB8Wx3Nsa1xk7VnvjQs1jJo9ddpaq",
+  "role": "patient",
+  "firstName": "Michael",
+  "lastName": "Davis",
+  "phone": "18765550105",
+  "address": {
+    "country": "Jamaica"
+  },
+  "allergies": [],
+  "profilePhoto": null,
+  "isActive": true,
+  "emailVerified": false,
+  "lastLogin": null,
+  "isEmailVerified": false,
+  "fcmTokens": [],
+  "ratings": {
+    "average": 0,
+    "count": 0
+  },
+  "medicalHistory": [],
+  "isAvailable": false,
+  "createdAt": {
+    "$date": "2025-11-23T15:16:03.761Z"
+  },
+  "updatedAt": {
+    "$date": "2025-11-23T15:16:03.761Z"
+  },
+  "__v": 0
+},
+{
+  "_id": {
+    "$oid": "6928892aa9b254388c250999"
+  },
+  "username": "Andre Walker",
+  "email": "hiandre@yahoo.com",
+  "password": "$2b$12$kVjkPK7zZUcSvNP0sX5Jm.Yf3BynCra/ctR0jGNUZg0QBNO2vcjfi",
+  "role": "patient",
+  "firstName": "Andre",
+  "lastName": "Walker",
+  "phone": "87612453679",
+  "address": {
+    "street": "123 fair way kingston",
+    "city": "",
+    "parish": "",
+    "postalCode": "",
+    "country": "Jamaica"
+  },
+  "allergies": [],
+  "profilePhoto": null,
+  "isActive": true,
+  "emailVerified": false,
+  "lastLogin": {
+    "$date": "2025-11-27T17:45:02.018Z"
+  },
+  "isEmailVerified": false,
+  "ratings": {
+    "average": 0,
+    "count": 0
+  },
+  "medicalHistory": [],
+  "isAvailable": false,
+  "fcmTokens": [
+    {
+      "token": "ExponentPushToken[-9Dp2ILyzOBgycXR3Yz5yE]",
+      "device": "iPhone",
+      "platform": "ios",
+      "createdAt": {
+        "$date": "2025-11-27T17:45:02.786Z"
+      },
+      "_id": {
+        "$oid": "69288e1ecb76cec8e908e4db"
+      }
+    }
+  ],
+  "createdAt": {
+    "$date": "2025-11-27T17:23:54.366Z"
+  },
+  "updatedAt": {
+    "$date": "2025-11-27T17:45:02.792Z"
+  },
+  "__v": 4
+}]

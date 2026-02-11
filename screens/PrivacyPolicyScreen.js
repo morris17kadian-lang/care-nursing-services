@@ -5,6 +5,7 @@ import {
   Text,
   StyleSheet,
   ScrollView,
+  Image,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -15,7 +16,7 @@ export default function PrivacyPolicyScreen({ navigation }) {
   const insets = useSafeAreaInsets();
   
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <LinearGradient
         colors={GRADIENTS.header}
         start={{ x: 0, y: 0 }}
@@ -31,6 +32,13 @@ export default function PrivacyPolicyScreen({ navigation }) {
         </View>
       </LinearGradient>
 
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
+
       <ScrollView 
         style={styles.scrollView} 
         contentContainerStyle={styles.scrollContent}
@@ -42,7 +50,7 @@ export default function PrivacyPolicyScreen({ navigation }) {
           <View style={styles.introCard}>
             <MaterialCommunityIcons name="shield-lock" size={40} color={COLORS.primary} />
             <Text style={styles.introText}>
-              CARE Nursing Services is committed to protecting your privacy and personal information. 
+                876 Nurses Home Care Services Limited is committed to protecting your privacy and personal information. 
               This policy explains how we collect, use, and safeguard your data.
             </Text>
           </View>
@@ -188,9 +196,10 @@ export default function PrivacyPolicyScreen({ navigation }) {
             <Text style={styles.sectionTitle}>10. Contact Us{'\n'}</Text>
             <Text style={styles.bodyText}>
               For privacy-related questions or requests:{'\n\n'}
-              Email: care@nursingcareja.com{'\n'}
-              Phone: 876-288-7304{'\n'}
-              Instagram: @carenursingservices{'\n\n'}
+                Email: 876nurses@gmail.com{'\n'}
+                Phone: (876) 618-9876{'\n'}
+                Instagram: @876_nurses{'\n'}
+                Website: www.876nurses.com{'\n'}
               
               We will respond to all privacy inquiries within 30 days.
             </Text>
@@ -213,6 +222,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
   },
   header: {
     paddingHorizontal: 20,

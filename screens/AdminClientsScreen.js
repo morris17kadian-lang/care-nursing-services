@@ -1,5 +1,5 @@
 import TouchableWeb from "../components/TouchableWeb";
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { View, Text, StyleSheet, ScrollView, TextInput, Modal, Alert, Image, TouchableOpacity } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -7,13 +7,22 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { useFocusEffect } from '@react-navigation/native';
 import { COLORS, GRADIENTS, SPACING } from '../constants';
 import { useAuth } from '../context/AuthContext';
+import { collection, getDocs } from 'firebase/firestore';
+import { db } from '../config/firebase';
 import { useAppointments } from '../context/AppointmentContext';
+import { useNurses } from '../context/NurseContext';
+import { useShifts } from '../context/ShiftContext';
 import InvoiceService from '../services/InvoiceService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { getNurseName } from '../utils/formatters';
+import offlineUsers from '../876Nursesdatabase/care_database.users.json';
+import NotesAccordionList from '../components/NotesAccordionList';
 
-export default function AdminClientsScreen({ navigation, route }) {
+export default function AdminClientsScreen({ navigation, route, isEmbedded = false }) {
   const { logout } = useAuth();
-  const { appointments: allAppointments } = useAppointments();
+  const { appointments: allAppointments, getAppointmentsByStatus } = useAppointments();
+  const { nurses: nursesFromContext } = useNurses();
+  const { shiftRequests } = useShifts();
   const insets = useSafeAreaInsets();
   const [isAddClientModalVisible, setIsAddClientModalVisible] = useState(false);
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
@@ -21,7 +30,6 @@ export default function AdminClientsScreen({ navigation, route }) {
   const [fullInvoiceModalVisible, setFullInvoiceModalVisible] = useState(false);
   const [selectedClient, setSelectedClient] = useState(null);
   const [clientToDelete, setClientToDelete] = useState(null);
-  const [expandedNotes, setExpandedNotes] = useState({});
   const [currentInvoiceData, setCurrentInvoiceData] = useState(null);
   const [clients, setClients] = useState([]);
   const [clientForm, setClientForm] = useState({
@@ -34,13 +42,13 @@ export default function AdminClientsScreen({ navigation, route }) {
   
   // Company details and payment info for invoice display
   const [companyDetails, setCompanyDetails] = useState({
-    companyName: 'CARE Nursing Services and More',
-    fullName: 'NURSING SERVICES AND MORE',
-    address: 'Kingston, Jamaica',
-    phone: '876-288-7304',
-    email: 'care@nursingcareja.com',
+    companyName: '876 Nurses Home Care Services Limited',
+    fullName: '876 NURSES HOME CARE SERVICES LIMITED',
+    address: '60 Knutsford Blvd, Panjam Building, 9th Floor - Regus, Kingston 5, Jamaica, West Indies',
+    phone: '(876) 618-9876',
+    email: '876nurses@gmail.com',
     taxId: '',
-    website: '',
+    website: 'www.876nurses.com',
   });
 
   const [paymentInfo, setPaymentInfo] = useState({
@@ -62,12 +70,190 @@ export default function AdminClientsScreen({ navigation, route }) {
     posAvailable: false
   });
 
+  const sanitizeContactValue = (value) => {
+    if (!value && value !== 0) return '';
+    const trimmed = String(value).trim();
+    if (!trimmed) return '';
+    const lower = trimmed.toLowerCase();
+    if (['no email provided', 'no phone provided', 'not provided', 'n/a', 'na'].includes(lower)) {
+      return '';
+    }
+    return trimmed;
+  };
+
+  const sanitizeMediaValue = (value) => {
+    if (!value) return '';
+    const trimmed = String(value).trim();
+    if (!trimmed) return '';
+    const lower = trimmed.toLowerCase();
+    if (['n/a', 'na', 'none', 'null', 'undefined', 'no photo', 'no image'].includes(lower)) {
+      return '';
+    }
+    return trimmed;
+  };
+
+  const resolvePatientPhoto = (appointment) => {
+    if (!appointment) return '';
+    
+    const candidates = [
+      appointment.patientPhoto,
+      appointment.patientProfilePhoto,
+      appointment.patient?.photoUrl,
+      appointment.patient?.profilePhoto,
+      appointment.patient?.profileImage,
+      appointment.patient?.profilePicture,
+      appointment.patient?.photo,
+      appointment.patient?.avatar,
+      appointment.patient?.imageUrl,
+      appointment.patient?.photoURL,
+      appointment.profilePhoto,
+      appointment.clientPhoto,
+      appointment.clientAvatar,
+      appointment.client?.photoUrl,
+      appointment.client?.profilePhoto,
+      appointment.client?.profileImage,
+      appointment.client?.profilePicture,
+      appointment.client?.photo,
+      appointment.client?.avatar,
+      appointment.client?.imageUrl,
+      appointment.client?.photoURL,
+      appointment.avatarUrl,
+      appointment.photoUrl
+    ].map(sanitizeMediaValue);
+
+    return candidates.find(Boolean) || '';
+  };
+
+  const buildUserLookups = (usersList = []) => {
+    const byId = new Map();
+    const byEmail = new Map();
+    const byName = new Map();
+
+    usersList.forEach(profile => {
+      if (!profile) return;
+      const possibleIds = [profile.id, profile._id, profile.uid, profile.userId];
+      possibleIds.filter(Boolean).forEach(id => byId.set(String(id), profile));
+
+      if (profile.email) {
+        byEmail.set(profile.email.toLowerCase(), profile);
+      }
+      if (profile.contactEmail) {
+        byEmail.set(profile.contactEmail.toLowerCase(), profile);
+      }
+
+      const usernames = [profile.username, profile.code, profile.adminCode];
+      const fullName = `${profile.firstName || ''} ${profile.lastName || ''}`.trim();
+      usernames.filter(Boolean).forEach(name => byName.set(name.toLowerCase(), profile));
+      if (fullName) {
+        byName.set(fullName.toLowerCase(), profile);
+      }
+      if (profile.fullName) {
+        byName.set(profile.fullName.toLowerCase(), profile);
+      }
+    });
+
+    return { byId, byEmail, byName };
+  };
+
+  const resolveProfileForAppointment = (apt, lookup) => {
+    if (!apt || !lookup) return null;
+    const candidates = [];
+    const potentialIds = [
+      apt.patientId,
+      apt.patient?.id,
+      apt.patient?._id,
+      apt.patient,
+      apt.clientId,
+      apt.client?.id,
+      apt.client?._id
+    ];
+    potentialIds.filter(Boolean).forEach(id => candidates.push(lookup.byId.get(String(id))));
+
+    if (apt.patientEmail) {
+      candidates.push(lookup.byEmail.get(apt.patientEmail.toLowerCase()));
+    }
+    if (apt.email) {
+      candidates.push(lookup.byEmail.get(String(apt.email).toLowerCase()));
+    }
+
+    const possibleNames = [apt.patientName, apt.clientName];
+    possibleNames.filter(Boolean).forEach(name => {
+      candidates.push(lookup.byName.get(name.toLowerCase()));
+    });
+
+    return candidates.find(Boolean) || null;
+  };
+
+  const offlineUserProfiles = useMemo(() => {
+    if (Array.isArray(offlineUsers)) return offlineUsers;
+    if (offlineUsers && Array.isArray(offlineUsers.users)) return offlineUsers.users;
+    return [];
+  }, []);
+
+  const [firebaseUsers, setFirebaseUsers] = useState([]);
+  
+  // Fetch users from Firebase to get updated profile photos
+  useEffect(() => {
+    const fetchFirebaseUsers = async () => {
+      try {
+        const usersCollection = collection(db, 'users');
+        const usersSnapshot = await getDocs(usersCollection);
+        const usersData = usersSnapshot.docs.map(doc => ({
+          id: doc.id,
+          ...doc.data()
+        }));
+        setFirebaseUsers(usersData);
+      } catch (error) {
+        console.error('Error fetching Firebase users:', error);
+      }
+    };
+    
+    fetchFirebaseUsers();
+  }, []);
+
+  const offlineUserLookups = useMemo(() => {
+    // Merge offline and Firebase users, prioritizing Firebase data
+    const mergedUsers = [...offlineUserProfiles];
+    
+    firebaseUsers.forEach(fbUser => {
+      const existingIndex = mergedUsers.findIndex(u => 
+        String(u._id?.$oid || u.id || u._id) === String(fbUser.id)
+      );
+      
+      if (existingIndex >= 0) {
+        // Update existing user with Firebase data
+        mergedUsers[existingIndex] = {
+          ...mergedUsers[existingIndex],
+          ...fbUser,
+          profilePhoto: fbUser.profilePhoto || fbUser.photoUrl || mergedUsers[existingIndex].profilePhoto,
+        };
+      } else {
+        // Add new Firebase user
+        mergedUsers.push(fbUser);
+      }
+    });
+    
+    return buildUserLookups(mergedUsers);
+  }, [offlineUserProfiles, firebaseUsers]);
+
   // Build clients list from completed appointments - load on focus
   useFocusEffect(
     React.useCallback(() => {
       buildClientsFromAppointments();
     }, [allAppointments])
   );
+
+  // Handle reopening client details modal when returning from invoice
+  useEffect(() => {
+    if (route?.params?.openClientDetails && route?.params?.clientId) {
+      const clientToOpen = clients.find(c => c.id === route.params.clientId);
+      if (clientToOpen) {
+        handleShowClientDetails(clientToOpen);
+        // Clear the params after handling
+        navigation.setParams({ openClientDetails: undefined, clientId: undefined });
+      }
+    }
+  }, [route?.params?.openClientDetails, route?.params?.clientId, clients]);
 
   // Load company details and payment info
   useEffect(() => {
@@ -95,7 +281,7 @@ export default function AdminClientsScreen({ navigation, route }) {
         setCompanyDetails(JSON.parse(stored));
       }
     } catch (error) {
-      console.error('Error loading company details:', error);
+      // Error loading company details
     }
   };
 
@@ -106,48 +292,85 @@ export default function AdminClientsScreen({ navigation, route }) {
         setPaymentInfo(JSON.parse(stored));
       }
     } catch (error) {
-      console.error('Error loading payment info:', error);
+      // Error loading payment info
     }
   };
 
   const formatDate = (dateString) => {
     if (!dateString) return '';
     try {
+      // Handle Firestore Timestamp
+      if (typeof dateString === 'object' && dateString.seconds) {
+        return new Date(dateString.seconds * 1000).toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+      }
+      
       const date = new Date(dateString);
-      if (isNaN(date.getTime())) return dateString;
+      if (isNaN(date.getTime())) return String(dateString); // Convert to string to avoid object render error
       const options = { year: 'numeric', month: 'short', day: 'numeric' };
       return date.toLocaleDateString('en-US', options);
     } catch (error) {
-      return dateString;
+      return String(dateString); // Ensure we return a string
     }
   };
 
   const buildClientsFromAppointments = async () => {
-    console.log('🔍 Building clients from appointments...');
-    console.log('📊 Total appointments:', allAppointments.length);
+    // Build clients from the same completed set used on the Admin Dashboard
+    // (both completed appointments AND completed shift requests)
+    const completedAppointments = (getAppointmentsByStatus('completed') || []).filter(
+      (apt) => !apt.isShiftRequest
+    );
+
+    // Include completed shift requests (recurring and non-recurring)
+    const hasClockedOut = (shift) => {
+      const clockByNurse = shift?.clockByNurse;
+      if (!clockByNurse || typeof clockByNurse !== 'object') return false;
+      const entries = Object.values(clockByNurse);
+      return entries.some(entry => {
+        if (!entry || typeof entry !== 'object') return false;
+        const inTime = entry.lastClockInTime || entry.clockInTime || entry.startedAt;
+        const outTime = entry.lastClockOutTime || entry.clockOutTime || entry.completedAt;
+        if (!inTime || !outTime) return false;
+        const inMs = Date.parse(inTime);
+        const outMs = Date.parse(outTime);
+        return outMs > inMs;
+      });
+    };
     
-    // Get only completed appointments
-    const completedAppointments = allAppointments.filter(apt => apt.status === 'completed');
-    console.log('✅ Completed appointments:', completedAppointments.length);
-    console.log('✅ Completed appointment IDs:', completedAppointments.map(apt => apt.id));
+    const completedShifts = (shiftRequests || []).filter(request => 
+      request.status === 'completed' || (request.isRecurring && hasClockedOut(request))
+    );
+
+    // Combine both sources like the admin dashboard does
+    const allCompletedItems = [...completedAppointments, ...completedShifts];
+
+    // Debug logs removed
     
     // Get all invoices
     const allInvoices = await InvoiceService.getAllInvoices();
-    console.log('📄 Total invoices:', allInvoices.length);
-    console.log('📄 Invoice appointment IDs:', allInvoices.map(inv => inv.appointmentId));
+    // Debug logs removed
       
-      // Group by patientId
+      // Group by patientId (or clientId for shifts)
       const clientsMap = new Map();
       
-      completedAppointments.forEach(apt => {
-        if (!clientsMap.has(apt.patientId)) {
-          clientsMap.set(apt.patientId, {
-            id: apt.patientId,
-            name: apt.patientName,
-            email: apt.patientEmail || apt.email || 'No email provided',
-            phone: apt.patientPhone || apt.phone || 'No phone provided',
+      allCompletedItems.forEach(apt => {
+        // Normalize patient/client fields for shifts
+        const patientId = apt.patientId || apt.clientId;
+        const patientName = apt.patientName || apt.clientName;
+        const patientEmail = apt.patientEmail || apt.clientEmail || apt.email || '';
+        const patientPhone = apt.patientPhone || apt.clientPhone || apt.phone || '';
+        const appointmentEmail = sanitizeContactValue(patientEmail);
+        const appointmentPhone = sanitizeContactValue(patientPhone);
+
+        const photoFromAppointment = resolvePatientPhoto(apt);
+
+        if (!clientsMap.has(patientId)) {
+          clientsMap.set(patientId, {
+            id: patientId,
+            name: patientName,
+            email: appointmentEmail,
+            phone: appointmentPhone,
+            photoUrl: photoFromAppointment,
             address: apt.address || '6 Reece Road, Kingston 10',
-            emergencyContact: apt.emergencyContact || 'Not provided',
             serviceType: apt.service || 'General Care',
             paymentMethod: 'Insurance',
             isSubscriber: false,
@@ -163,47 +386,197 @@ export default function AdminClientsScreen({ navigation, route }) {
           });
         }
         
-        const client = clientsMap.get(apt.patientId);
+        const client = clientsMap.get(patientId);
         client.appointments.completed += 1;
+
+        // Keep contact info synced - prefer latest appointment data if available
+        // Sort appointments by date to ensure we get the latest info
+        const aptDate = new Date(apt.date);
+        if (!client.latestAptDate || aptDate > client.latestAptDate) {
+          client.latestAptDate = aptDate;
+          const email = sanitizeContactValue(patientEmail);
+          if (email) {
+            client.email = email;
+          }
+          const phone = sanitizeContactValue(patientPhone);
+          if (phone) {
+            client.phone = phone;
+          }
+          const latestPhoto = resolvePatientPhoto(apt);
+          if (latestPhoto) {
+            client.photoUrl = latestPhoto;
+          }
+          const address = apt.address || apt.clientAddress;
+          if (address && address !== 'No address provided' && address !== 'N/A') {
+            client.address = address;
+          }
+        }
+
+        const offlineProfile = resolveProfileForAppointment(apt, offlineUserLookups);
+        if (offlineProfile) {
+          const sanitizedClientEmail = sanitizeContactValue(client.email);
+          const offlineEmail = sanitizeContactValue(
+            offlineProfile.email || offlineProfile.contactEmail || offlineProfile.primaryEmail || ''
+          );
+          if (!sanitizedClientEmail && offlineEmail) {
+            client.email = offlineEmail;
+            client.contactSource = 'offline';
+          }
+
+          const sanitizedClientPhone = sanitizeContactValue(client.phone);
+          const offlinePhone = [
+            offlineProfile.phone,
+            offlineProfile.contactPhone,
+            offlineProfile.primaryPhone,
+            offlineProfile.phoneNumber,
+            offlineProfile.mobile
+          ].map(value => sanitizeContactValue(value)).find(Boolean);
+          if (!sanitizedClientPhone && offlinePhone) {
+            client.phone = offlinePhone;
+            client.contactSource = client.contactSource || 'offline';
+          }
+
+          if (!client.photoUrl) {
+            const offlinePhoto = sanitizeMediaValue(
+              offlineProfile.profilePhoto ||
+              offlineProfile.profileImage ||
+              offlineProfile.photoUrl ||
+              offlineProfile.imageUrl ||
+              offlineProfile.photo ||
+              offlineProfile.photoURL ||
+              offlineProfile.avatar ||
+              offlineProfile.profilePicture
+            );
+            if (offlinePhoto) {
+              client.photoUrl = offlinePhoto;
+            }
+          }
+        }
         
         // Store the completed appointment
         client.completedAppointments.push(apt);
         
         // Add medical notes from completed appointment
-        client.medicalNotes.push({
-          id: apt.id,
-          date: apt.date,
-          appointmentType: apt.service || 'General Care',
-          notes: apt.completionNotes || apt.notes || 'Service provided successfully',
-          nurseName: apt.nurseName || 'Care Professional',
-          nurseId: apt.nurseId
-        });
+        // Extract nurse name from multiple possible sources
+        let nurseName = apt.nurseName 
+          || apt.assignedNurseName 
+          || apt.nurse?.name
+          || apt.nurse?.fullName
+          || apt.assignedNurse?.name 
+          || apt.assignedNurse?.fullName
+          || getNurseName(apt.assignedNurse)
+          || getNurseName(apt.nurse);
+
+        // If nurseName is still missing but we have a nurseId, try NurseContext
+        const nurseIdCandidate = apt.nurseId || apt.assignedNurse?._id || apt.assignedNurse?.id;
+        if ((!nurseName || nurseName === 'Unassigned' || nurseName === 'Assigned Nurse' || nurseName === 'Staff Member') && nurseIdCandidate && Array.isArray(nursesFromContext)) {
+          const matchedNurse = nursesFromContext.find(n =>
+            String(n.id ?? n._id) === String(nurseIdCandidate)
+          );
+          if (matchedNurse?.name) {
+            nurseName = matchedNurse.name;
+          }
+        }
+        
+        // Only use fallback if we truly have no name
+        if (!nurseName || nurseName === 'Unassigned' || nurseName === 'Assigned Nurse' || nurseName === 'Staff Member') {
+          // Avoid showing "Staff Member"; prefer a nurse-specific fallback
+          if (nurseIdCandidate) {
+            nurseName = 'Assigned Nurse';
+          } else {
+            nurseName = 'Care Professional';
+          }
+        }
+        
+        // Only add medical notes if there are actual nurse notes (not patient booking notes).
+        // For shift requests, nurse notes often live in `notes`.
+        const isShiftLike = Boolean(apt.isShiftRequest || apt.isShift || apt.adminRecurring || apt.recurringPattern || apt.isRecurring);
+        const actualNurseNotes =
+          apt.completionNotes ||
+          apt.nurseNotes ||
+          (isShiftLike ? apt.notes : null);
+        if (actualNurseNotes && actualNurseNotes.trim()) {
+          client.medicalNotes.push({
+            id: apt.id,
+            date: apt.completionDate || apt.completedAt || apt.date,
+            appointmentType: apt.service || 'General Care',
+            notes: actualNurseNotes,
+            nurseName: nurseName,
+            nurseId: apt.nurseId || apt.assignedNurse?._id || apt.assignedNurse?.id
+          });
+        }
         
         // Find and link invoice for this appointment
-        const appointmentInvoice = allInvoices.find(inv => inv.appointmentId === apt.id);
+        const appointmentInvoice = allInvoices.find(inv => {
+          const relatedId = inv.relatedAppointmentId ?? inv.appointmentId;
+          if (relatedId === undefined || relatedId === null) return false;
+          return String(relatedId) === String(apt.id);
+        });
         if (appointmentInvoice) {
-          console.log(`✅ Found invoice ${appointmentInvoice.invoiceId} for appointment ${apt.id}`);
+          // Found invoice for appointment
           client.invoiceHistory.push({
             id: appointmentInvoice.invoiceId,
             date: appointmentInvoice.createdAt,
             amount: appointmentInvoice.total,
             status: appointmentInvoice.status || 'Pending',
             paidDate: appointmentInvoice.paidDate || null,
-            paymentMethod: appointmentInvoice.paymentMethod || null
+            paymentMethod: appointmentInvoice.paymentMethod || null,
+            invoiceRecord: appointmentInvoice
           });
         } else {
-          console.log(`❌ No invoice found for appointment ${apt.id}`);
-          console.log('Available invoice appointmentIds:', allInvoices.map(inv => inv.appointmentId));
+          // No invoice found for appointment
         }
       });
       
-      const clientsList = Array.from(clientsMap.values());
-      console.log('👥 Clients found:', clientsList.length);
-      
-      // Log invoice history for each client
-      clientsList.forEach(client => {
-        console.log(`📋 Client: ${client.name}, Invoices: ${client.invoiceHistory.length}`);
+      // Second pass: Add any remaining invoices that match by client name but weren't linked to specific appointments
+      clientsMap.forEach((client) => {
+        const clientInvoices = allInvoices.filter(inv => {
+          // Check if invoice belongs to this client by name
+          const invoiceClientName = (inv.clientName || inv.patientName || '').toLowerCase();
+          const clientName = (client.name || '').toLowerCase();
+          if (invoiceClientName !== clientName) return false;
+          
+          // Check if this invoice is already in the client's history
+          const alreadyAdded = client.invoiceHistory.some(existing => 
+            String(existing.id) === String(inv.invoiceId || inv.id)
+          );
+          return !alreadyAdded;
+        });
+        
+        clientInvoices.forEach(inv => {
+          client.invoiceHistory.push({
+            id: inv.invoiceId || inv.id,
+            date: inv.createdAt || inv.issueDate,
+            amount: inv.total,
+            status: inv.status || 'Pending',
+            paidDate: inv.paidDate || null,
+            paymentMethod: inv.paymentMethod || null,
+            invoiceRecord: inv
+          });
+        });
       });
+      
+      const clientsList = Array.from(clientsMap.values())
+        .filter(client => {
+          const name = client.name ? client.name.toLowerCase() : '';
+          const isFiltered = name.includes('unknown patient') || name.includes('unknown client');
+          if (isFiltered) {
+            // Filtered noisy client names
+          }
+          return !isFiltered;
+        });
+      
+      clientsList.forEach(client => {
+        client.email = sanitizeContactValue(client.email);
+        client.phone = sanitizeContactValue(client.phone);
+        client.photoUrl = sanitizeMediaValue(client.photoUrl);
+        if (client.photoUrl) {
+          client.profilePhoto = client.profilePhoto || client.photoUrl;
+          client.profileImage = client.profileImage || client.photoUrl;
+        }
+      });
+
+      // Debug invoice history logs removed
       
       setClients(clientsList);
   };
@@ -212,7 +585,7 @@ export default function AdminClientsScreen({ navigation, route }) {
     try {
       await logout();
     } catch (error) {
-      console.log('Error logging out:', error);
+      // Error logging out
     }
   };
 
@@ -256,41 +629,11 @@ export default function AdminClientsScreen({ navigation, route }) {
     setDeleteModalVisible(true);
   };
 
-  const handleShowClientDetails = async (client) => {
-    // Reload latest invoice data for this client
-    const allInvoices = await InvoiceService.getAllInvoices();
-    
-    // Find all invoices for this client and update the invoice history
-    const updatedInvoiceHistory = [];
-    client.completedAppointments?.forEach(apt => {
-      const appointmentInvoice = allInvoices.find(inv => inv.appointmentId === apt.id);
-      if (appointmentInvoice) {
-        updatedInvoiceHistory.push({
-          id: appointmentInvoice.invoiceId,
-          date: appointmentInvoice.createdAt,
-          amount: appointmentInvoice.total,
-          status: appointmentInvoice.status || 'Pending',
-          paidDate: appointmentInvoice.paidDate || null
-        });
-      }
-    });
-    
-    // Update the client with fresh invoice data
-    const updatedClient = {
-      ...client,
-      invoiceHistory: updatedInvoiceHistory
-    };
-    
-    setSelectedClient(updatedClient);
-    setExpandedNotes({});
+  const handleShowClientDetails = (client) => {
+    // Use the client object as built by buildClientsFromAppointments,
+    // which already includes completed appointments and invoiceHistory.
+    setSelectedClient(client);
     setClientDetailsModalVisible(true);
-  };
-
-  const toggleNoteExpansion = (noteId) => {
-    setExpandedNotes(prev => ({
-      ...prev,
-      [noteId]: !prev[noteId]
-    }));
   };
 
   // Enhanced invoice generation system
@@ -357,9 +700,9 @@ export default function AdminClientsScreen({ navigation, route }) {
         phone: client.phone
       },
       company: {
-        name: 'CARE Nursing Services & More',
-        phone: '8762887304',
-        email: 'care@nursingcareja.com'
+        name: '876 Nurses Home Care Services Limited',
+        phone: '8766189876',
+        email: '876nurses@gmail.com'
       },
       dates: {
         invoiceDate: formatDate(currentDate),
@@ -382,7 +725,7 @@ export default function AdminClientsScreen({ navigation, route }) {
       },
       paymentInstructions: {
         method: 'Bank Transfer',
-        payee: 'CARE.CARE',
+        payee: '876NURSES',
         bank: 'NCB Saving',
         accountNumber: 'JMD354756226 / USD354756234',
         branch: 'Knutsford Branch',
@@ -394,8 +737,6 @@ export default function AdminClientsScreen({ navigation, route }) {
   };
 
   const handleViewInvoice = async (client) => {
-    console.log('🚀🚀🚀 VIEW INVOICE CLICKED! 🚀🚀🚀');
-    console.log('🚀 Client:', client.name);
     
     // Close the client details modal before navigating
     setClientDetailsModalVisible(false);
@@ -403,7 +744,6 @@ export default function AdminClientsScreen({ navigation, route }) {
     try {
       // First, try to fetch existing invoice for this client from InvoiceService
       const allInvoices = await InvoiceService.getAllInvoices();
-      console.log('📋 Total invoices in system:', allInvoices.length);
       
       // Find most recent invoice for this client
       const clientInvoices = allInvoices.filter(inv => 
@@ -411,7 +751,6 @@ export default function AdminClientsScreen({ navigation, route }) {
         inv.clientEmail === client.email ||
         inv.clientId === client.id
       );
-      console.log('📋 Invoices found for client:', clientInvoices.length);
       
       if (clientInvoices.length > 0) {
         // Sort by creation date and get most recent
@@ -422,10 +761,6 @@ export default function AdminClientsScreen({ navigation, route }) {
         });
         const mostRecentInvoice = sortedInvoices[0];
         
-        console.log('✅ USING EXISTING INVOICE:', mostRecentInvoice.invoiceId);
-        console.log('📄 Invoice Status:', mostRecentInvoice.status);
-        console.log('📄 Payment Method:', mostRecentInvoice.paymentMethod);
-        
         // Navigate to invoice display - modal already closed
         navigation.navigate('InvoiceDisplay', {
           invoiceData: mostRecentInvoice,
@@ -435,13 +770,10 @@ export default function AdminClientsScreen({ navigation, route }) {
       }
       
       // If no existing invoice, generate new one
-      console.log('⚠️ No existing invoice found, generating new one');
       const completedAppointments = client.medicalNotes || [];
-      console.log('📋 Client medical notes found:', completedAppointments.length);
 
       if (completedAppointments.length === 0) {
         // If no completed appointments, create a sample invoice
-        console.log('🔥 CREATING SAMPLE INVOICE');
         const result = await InvoiceService.createSampleInvoice();
         
         if (result.success) {
@@ -461,7 +793,7 @@ export default function AdminClientsScreen({ navigation, route }) {
       
       // Create comprehensive appointment data for invoice
       const appointmentData = {
-        id: `appointment-${client.id}-${Date.now()}`,
+        id: recentAppointments[recentAppointments.length - 1]?.id || `appointment-${client.id}-${Date.now()}`,
         clientId: client.id,
         clientName: client.name,
         clientEmail: client.email,
@@ -491,13 +823,9 @@ export default function AdminClientsScreen({ navigation, route }) {
         totalSessions: recentAppointments.length
       };
 
-      console.log('🔥 GENERATING INVOICE WITH REAL APPOINTMENT DATA');
-      console.log('📊 Appointment data:', JSON.stringify(appointmentData, null, 2));
       const result = await InvoiceService.createInvoice(appointmentData);
       
       if (result.success) {
-        console.log('✅ INVOICE GENERATED SUCCESSFULLY');
-        console.log('📄 Invoice Data:', JSON.stringify(result.invoice, null, 2));
         
         // Modal already closed - just navigate
         navigation.navigate('InvoiceDisplay', {
@@ -505,23 +833,18 @@ export default function AdminClientsScreen({ navigation, route }) {
           clientName: client.name
         });
       } else {
-        console.log('❌ INVOICE GENERATION FAILED:', result.error);
         Alert.alert('Error', result.error || 'Failed to generate invoice');
       }
     } catch (error) {
-      console.log('❌ VIEW INVOICE ERROR:', error);
       Alert.alert('Error', 'Failed to generate invoice');
     }
   };
 
   const handleSendInvoice = async (client) => {
-    console.log('📧 SEND INVOICE CLICKED!');
-    console.log('📧 Client:', client.name);
     
     try {
       // Generate real appointment data from client's completed sessions (same as view invoice)
       const completedAppointments = client.medicalNotes || [];
-      console.log('📋 Client medical notes found:', completedAppointments.length);
 
       if (completedAppointments.length === 0) {
         Alert.alert('No Completed Services', 'This client has no completed appointments to generate an invoice for.');
@@ -533,7 +856,7 @@ export default function AdminClientsScreen({ navigation, route }) {
       
       // Create comprehensive appointment data for invoice (same structure as view)
       const appointmentData = {
-        id: `appointment-${client.id}-${Date.now()}`,
+        id: recentAppointments[recentAppointments.length - 1]?.id || `appointment-${client.id}-${Date.now()}`,
         clientId: client.id,
         clientName: client.name,
         clientEmail: client.email,
@@ -588,7 +911,6 @@ export default function AdminClientsScreen({ navigation, route }) {
                     `${client.hasRecurringAppointments ? 'Next invoice will be auto-generated for recurring services.' : ''}`
                   );
                 } catch (emailError) {
-                  console.log('❌ EMAIL SEND ERROR:', emailError);
                   Alert.alert('Error', 'Failed to send invoice email');
                 }
               }
@@ -596,11 +918,9 @@ export default function AdminClientsScreen({ navigation, route }) {
           ]
         );
       } else {
-        console.log('❌ INVOICE GENERATION FAILED:', result.error);
         Alert.alert('Error', result.error || 'Failed to generate invoice');
       }
     } catch (error) {
-      console.log('❌ SEND INVOICE ERROR:', error);
       Alert.alert('Error', 'Failed to generate invoice for emailing');
     }
   };
@@ -619,7 +939,6 @@ export default function AdminClientsScreen({ navigation, route }) {
           onPress: () => {
             recurringClients.forEach(client => {
               const invoiceData = generateInvoiceData(client);
-              console.log(`Auto-generated invoice #${invoiceData.invoiceNumber} for ${client.name}`);
             });
             
             Alert.alert(
@@ -634,31 +953,55 @@ export default function AdminClientsScreen({ navigation, route }) {
 
   const confirmDelete = () => {
     // In real app, this would delete from database
-    console.log('Deleting client:', clientToDelete);
     setDeleteModalVisible(false);
     setClientToDelete(null);
     Alert.alert('Success', `${clientToDelete?.name} has been removed from your clients.`);
   };
 
+  // Helper to get status styles for invoices
+  const getInvoiceStatusStyles = (status) => {
+    const s = status?.toLowerCase() || 'pending';
+    switch (s) {
+      case 'paid':
+        return { backgroundColor: COLORS.success + '15', textColor: COLORS.success, icon: 'check-circle' };
+      case 'overdue':
+        return { backgroundColor: COLORS.error + '15', textColor: COLORS.error, icon: 'alert-circle' };
+      case 'sent':
+      case 'pending':
+        return { backgroundColor: COLORS.warning + '15', textColor: COLORS.warning, icon: null };
+      default:
+        return { backgroundColor: COLORS.border + '30', textColor: COLORS.textLight, icon: 'file-document-outline' };
+    }
+  };
+
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
-      <LinearGradient
-        colors={GRADIENTS.header}
-        start={{ x: 0, y: 0 }}
-        end={{ x: 0, y: 1 }}
-        style={[styles.header, { paddingTop: insets.top + 20 }]}
-      >
-        <View style={styles.headerRow}>
-          <TouchableWeb
-            style={styles.iconButton}
-            onPress={() => {}}
-          >
-            <MaterialCommunityIcons name="magnify" size={24} color="#fff" />
-          </TouchableWeb>
-          
-          <Text style={styles.welcomeText}>Client Management</Text>
-        </View>
-      </LinearGradient>
+    <SafeAreaView style={styles.container} edges={[]}>
+      {!isEmbedded && (
+        <LinearGradient
+          colors={GRADIENTS.header}
+          start={{ x: 0, y: 0 }}
+          end={{ x: 0, y: 1 }}
+          style={[styles.header, { paddingTop: insets.top + 20 }]}
+        >
+          <View style={styles.headerRow}>
+            <TouchableWeb
+              style={styles.iconButton}
+              onPress={() => {}}
+            >
+              <MaterialCommunityIcons name="magnify" size={24} color="#fff" />
+            </TouchableWeb>
+            
+            <Text style={styles.welcomeText}>Client Management</Text>
+          </View>
+        </LinearGradient>
+      )}
+
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
 
       <View style={styles.content}>
         <ScrollView style={styles.scrollContent} showsVerticalScrollIndicator={false}>
@@ -672,17 +1015,23 @@ export default function AdminClientsScreen({ navigation, route }) {
             </View>
           ) : (
             <View style={styles.listContainer}>
-              {clients.map((client) => (
-                <View key={client.id} style={styles.compactCard}>
-                  <View style={styles.compactHeader}>
-                    {client.profilePhoto ? (
-                      <Image 
-                        source={{ uri: client.profilePhoto }} 
-                        style={styles.profilePhoto}
-                      />
-                    ) : (
-                      <MaterialCommunityIcons name="account" size={20} color={COLORS.primary} />
-                    )}
+              {clients.map((client, index) => {
+                const photoUri = client.profilePhoto || client.profileImage || client.photoUrl || client.avatar || client.photo || client.imageUrl || client.photoURL;
+                
+                return (
+                  <View key={client.id || `client-${index}`} style={styles.compactCard}>
+                    <View style={styles.compactHeader}>
+                      {photoUri ? (
+                        <Image 
+                          source={{ uri: photoUri }} 
+                          style={styles.clientProfilePhoto}
+                          resizeMode="cover"
+                        />
+                      ) : (
+                        <View style={styles.clientProfilePhotoPlaceholder}>
+                          <MaterialCommunityIcons name="account" size={20} color={COLORS.white} />
+                        </View>
+                      )}
                     <View style={styles.compactInfo}>
                       <View style={styles.clientNameRow}>
                         <Text style={styles.compactClient}>{client.name}</Text>
@@ -704,15 +1053,16 @@ export default function AdminClientsScreen({ navigation, route }) {
                       <LinearGradient
                         colors={GRADIENTS.header}
                         start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
+                        end={{ x: 0, y: 1 }}
                         style={styles.detailsButtonGradient}
                       >
-                        <Text style={styles.detailsButtonText}>Details</Text>
+                        <Text style={styles.detailsButtonText}>View</Text>
                       </LinearGradient>
                     </TouchableWeb>
                   </View>
                 </View>
-              ))}
+              );
+            })}
             </View>
           )}
           <View style={styles.bottomPadding} />
@@ -805,7 +1155,7 @@ export default function AdminClientsScreen({ navigation, route }) {
                   colors={GRADIENTS.header}
                   style={styles.submitButtonGradient}
                   start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
+                  end={{ x: 0, y: 1 }}
                 >
                   <MaterialCommunityIcons name="account-plus" size={20} color="#fff" />
                   <Text style={styles.submitButtonText}>Add Client</Text>
@@ -870,145 +1220,147 @@ export default function AdminClientsScreen({ navigation, route }) {
             <ScrollView style={styles.detailsModalContent} showsVerticalScrollIndicator={false}>
               {selectedClient && (
                 <>
-                  <View style={styles.clientHeader}>
-                    <View style={styles.clientAvatar}>
-                      <MaterialCommunityIcons name="account" size={40} color={COLORS.primary} />
-                    </View>
-                    <View style={styles.clientInfo}>
-                      <Text style={styles.clientName}>{selectedClient.name}</Text>
-                      <Text style={styles.clientEmail}>{selectedClient.email}</Text>
-                      {selectedClient.isSubscriber && (
-                        <View style={styles.subscriberBadge}>
-                          <MaterialCommunityIcons name="crown" size={12} color="#fff" />
-                          <Text style={styles.subscriberText}>Subscriber</Text>
-                        </View>
-                      )}
-                    </View>
-                  </View>
-
                   <View style={styles.detailsSection}>
-                    <Text style={styles.sectionTitle}>Contact Information</Text>
+                    <Text style={styles.sectionTitle}>Client Information</Text>
+                    <View style={styles.detailItem}>
+                      <MaterialCommunityIcons name="account" size={20} color={COLORS.primary} />
+                      <View style={styles.detailContent}>
+                        <Text style={styles.detailLabel}>Name</Text>
+                        <Text style={styles.detailValue}>{selectedClient.name}</Text>
+                      </View>
+                    </View>
+                    <View style={styles.detailItem}>
+                      <MaterialCommunityIcons name="email" size={20} color={COLORS.primary} />
+                      <View style={styles.detailContent}>
+                        <Text style={styles.detailLabel}>Email</Text>
+                        <Text style={styles.detailValue}>
+                          {selectedClient.email && selectedClient.email !== 'No email provided' && selectedClient.email !== 'N/A' 
+                            ? selectedClient.email 
+                            : 'Not provided'}
+                        </Text>
+                      </View>
+                    </View>
                     <View style={styles.detailItem}>
                       <MaterialCommunityIcons name="phone" size={20} color={COLORS.primary} />
                       <View style={styles.detailContent}>
                         <Text style={styles.detailLabel}>Phone</Text>
-                        <Text style={styles.detailValue}>{selectedClient.phone}</Text>
+                        <Text style={styles.detailValue}>
+                          {selectedClient.phone && selectedClient.phone !== 'No phone provided' && selectedClient.phone !== 'N/A' 
+                            ? selectedClient.phone 
+                            : 'Not provided'}
+                        </Text>
                       </View>
                     </View>
                     <View style={styles.detailItem}>
                       <MaterialCommunityIcons name="map-marker" size={20} color={COLORS.primary} />
                       <View style={styles.detailContent}>
                         <Text style={styles.detailLabel}>Address</Text>
-                        <Text style={styles.detailValue}>{selectedClient.address}</Text>
-                      </View>
-                    </View>
-                    <View style={styles.detailItem}>
-                      <MaterialCommunityIcons name="account-heart" size={20} color={COLORS.primary} />
-                      <View style={styles.detailContent}>
-                        <Text style={styles.detailLabel}>Emergency Contact</Text>
-                        <Text style={styles.detailValue}>{selectedClient.emergencyContact}</Text>
+                        <Text style={styles.detailValue}>{selectedClient.address || 'Not provided'}</Text>
                       </View>
                     </View>
                   </View>
 
                   <View style={styles.detailsSection}>
-                    <Text style={styles.sectionTitle}>Service Information</Text>
-                    <View style={styles.detailItem}>
-                      <MaterialCommunityIcons name="medical-bag" size={20} color={COLORS.primary} />
-                      <View style={styles.detailContent}>
-                        <Text style={styles.detailLabel}>Service Type</Text>
-                        <Text style={styles.detailValue}>{selectedClient.serviceType}</Text>
-                      </View>
-                    </View>
-                    
-                    {/* Billing Status Section - Only show for recurring clients */}
-                    {selectedClient.hasRecurringAppointments && (
-                      <View style={styles.billingSection}>
-                        <View style={styles.billingHeader}>
-                          <MaterialCommunityIcons 
-                            name="autorenew" 
-                            size={20} 
-                            color={COLORS.success} 
-                          />
-                          <Text style={styles.billingTitle}>
-                            Auto-Billing Active
-                          </Text>
-                        </View>
-                        
-                        <View style={styles.autoBillingInfo}>
-                          <Text style={styles.autoBillingText}>
-                            🔄 Invoices generated automatically based on completed sessions
-                          </Text>
-                          <Text style={styles.autoBillingSubText}>
-                            Next billing: {(() => {
-                              const nextBilling = new Date();
-                              nextBilling.setDate(nextBilling.getDate() + 7);
-                              return nextBilling.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
-                            })()}
-                          </Text>
-                        </View>
-                        
-                        <View style={styles.billingStats}>
-                          <View style={styles.billingStat}>
-                            <Text style={styles.billingStatLabel}>Total Sessions</Text>
-                            <Text style={styles.billingStatValue}>{selectedClient.appointments.completed}</Text>
-                          </View>
-                          <View style={styles.billingStat}>
-                            <Text style={styles.billingStatLabel}>Payment Method</Text>
-                            <Text style={styles.billingStatValue}>
-                              {(() => {
-                                // Get payment method from the latest paid invoice
-                                const paidInvoices = selectedClient.invoiceHistory?.filter(inv => inv.status === 'Paid' && inv.paymentMethod) || [];
-                                if (paidInvoices.length > 0) {
-                                  // Sort by date and get the most recent one
-                                  const latestPaidInvoice = paidInvoices.sort((a, b) => new Date(b.date) - new Date(a.date))[0];
-                                  return latestPaidInvoice.paymentMethod;
-                                }
-                                return 'Not set';
-                              })()}
-                            </Text>
-                          </View>
-                        </View>
-                      </View>
-                    )}
-                    
                     <View style={styles.invoiceSection}>
-                      <Text style={styles.invoiceLabel}>Invoice Management</Text>
+                      <View style={styles.invoiceHeaderRow}>
+                        <Text style={styles.invoiceLabel}>Recent Invoices</Text>
+                        <TouchableWeb 
+                          onPress={() => navigation.navigate('InvoiceManagement', { searchQuery: selectedClient.name })}
+                        >
+                          <Text style={styles.viewAllText}>View All</Text>
+                        </TouchableWeb>
+                      </View>
                       
                       {/* Invoice History */}
                       <View style={styles.invoiceHistorySection}>
-                        <Text style={styles.invoiceHistoryTitle}>Recent Invoices</Text>
                         {selectedClient.invoiceHistory && selectedClient.invoiceHistory.length > 0 ? (
-                          selectedClient.invoiceHistory.slice(0, 3).map((invoice, index) => (
-                            <TouchableWeb
-                              key={index}
-                              style={styles.invoiceHistoryItem}
-                              onPress={() => handleViewInvoice(selectedClient)}
-                              activeOpacity={0.7}
-                            >
-                              <View style={styles.invoiceHistoryInfo}>
-                                <Text style={styles.invoiceHistoryId}>#{invoice.id}</Text>
-                                {invoice.status === 'Paid' && invoice.paidDate && (
-                                  <Text style={styles.invoicePaidDate}>Paid: {invoice.paidDate}</Text>
-                                )}
+                          selectedClient.invoiceHistory.slice(0, 3).map((invoice, index) => {
+                            const statusStyles = getInvoiceStatusStyles(invoice.status);
+                            return (
+                              <View key={invoice.id || `invoice-${index}`} style={styles.invoiceItemContainer}>
+                                <TouchableWeb
+                                  style={styles.invoiceCard}
+                                  onPress={() => {
+                                    setClientDetailsModalVisible(false);
+                                    setTimeout(() => {
+                                      navigation.navigate('InvoiceDisplay', {
+                                        invoiceData: invoice.invoiceRecord,
+                                        clientName: selectedClient.name,
+                                        clientPhone: selectedClient.phone,
+                                        returnToClientModal: true,
+                                        clientId: selectedClient.id
+                                      });
+                                    }, 300);
+                                  }}
+                                  activeOpacity={0.7}
+                                >
+                                  <View style={styles.invoiceCardHeader}>
+                                    <View style={styles.invoiceCardLeft}>
+                                      <View style={styles.invoiceCardInfo}>
+                                        <Text style={styles.invoiceCardNumber}>
+                                          {String(invoice.id || '').replace('CARE-INV', 'NUR-INV')}
+                                        </Text>
+                                      </View>
+                                    </View>
+                                    <View style={styles.invoiceCardRight}>
+                                      {invoice.status?.toLowerCase() === 'pending' ? (
+                                        <View style={styles.invoiceStatusChip}>
+                                          <LinearGradient
+                                            colors={GRADIENTS.warning}
+                                            start={{ x: 0, y: 0 }}
+                                            end={{ x: 0, y: 1 }}
+                                            style={styles.invoiceStatusChipGradient}
+                                          >
+                                            <Text style={styles.invoiceStatusChipText}>Pending</Text>
+                                          </LinearGradient>
+                                        </View>
+                                      ) : invoice.status?.toLowerCase() === 'paid' ? (
+                                        <View style={styles.invoiceStatusChip}>
+                                          <LinearGradient
+                                            colors={['#10b981', '#059669']}
+                                            start={{ x: 0, y: 0 }}
+                                            end={{ x: 0, y: 1 }}
+                                            style={styles.invoiceStatusChipGradient}
+                                          >
+                                            <Text style={styles.invoiceStatusChipText}>Paid</Text>
+                                          </LinearGradient>
+                                        </View>
+                                      ) : invoice.status?.toLowerCase() === 'overdue' ? (
+                                        <View style={styles.invoiceStatusChip}>
+                                          <LinearGradient
+                                            colors={['#ef4444', '#dc2626']}
+                                            start={{ x: 0, y: 0 }}
+                                            end={{ x: 0, y: 1 }}
+                                            style={styles.invoiceStatusChipGradient}
+                                          >
+                                            <Text style={styles.invoiceStatusChipText}>Overdue</Text>
+                                          </LinearGradient>
+                                        </View>
+                                      ) : (
+                                        <View style={[
+                                          styles.invoiceCardStatus,
+                                          { backgroundColor: statusStyles.backgroundColor }
+                                        ]}>
+                                          <Text style={[
+                                            styles.invoiceCardStatusText,
+                                            { color: statusStyles.textColor }
+                                          ]}>
+                                            {invoice.status}
+                                          </Text>
+                                        </View>
+                                      )}
+                                    </View>
+                                  </View>
+                                </TouchableWeb>
                               </View>
-                              <View style={styles.invoiceHistoryRight}>
-                                <View style={[styles.invoiceHistoryStatus, { backgroundColor: invoice.status === 'Paid' ? '#4CAF50' : '#FF9800' }]}>
-                                  <Text style={styles.invoiceHistoryStatusText}>{invoice.status}</Text>
-                                </View>
-                              </View>
-                            </TouchableWeb>
-                          ))
+                            );
+                          })
                         ) : (
-                          <TouchableWeb
-                            style={styles.noInvoicesContainer}
-                            onPress={() => handleViewInvoice(selectedClient)}
-                            activeOpacity={0.7}
-                          >
+                          <View style={styles.noInvoicesContainer}>
                             <MaterialCommunityIcons name="file-document-outline" size={40} color={COLORS.border} />
                             <Text style={styles.noInvoicesText}>No invoices generated yet</Text>
                             <Text style={styles.noInvoicesSubText}>Tap to generate and view invoice</Text>
-                          </TouchableWeb>
+                          </View>
                         )}
                       </View>
                     </View>
@@ -1021,7 +1373,7 @@ export default function AdminClientsScreen({ navigation, route }) {
                         <LinearGradient
                           colors={GRADIENTS.header}
                           start={{ x: 0, y: 0 }}
-                          end={{ x: 1, y: 1 }}
+                          end={{ x: 0, y: 1 }}
                           style={styles.statPillGradient}
                         >
                           <Text style={styles.statPillNumber}>{selectedClient.appointments.upcoming}</Text>
@@ -1032,7 +1384,7 @@ export default function AdminClientsScreen({ navigation, route }) {
                         <LinearGradient
                           colors={GRADIENTS.header}
                           start={{ x: 0, y: 0 }}
-                          end={{ x: 1, y: 1 }}
+                          end={{ x: 0, y: 1 }}
                           style={styles.statPillGradient}
                         >
                           <Text style={styles.statPillNumber}>{selectedClient.appointments.completed}</Text>
@@ -1043,39 +1395,71 @@ export default function AdminClientsScreen({ navigation, route }) {
                   </View>
 
                   <View style={styles.detailsSection}>
-                    <Text style={styles.sectionTitle}>Medical Notes ({selectedClient.medicalNotes.length})</Text>
-                    {selectedClient.medicalNotes.map((note) => (
-                      <View key={note.id} style={styles.compactNoteItem}>
-                        <TouchableWeb
-                          style={styles.noteToggleHeader}
-                          onPress={() => toggleNoteExpansion(note.id)}
-                          activeOpacity={0.7}
-                        >
-                          <View style={styles.noteMainInfo}>
-                            <MaterialCommunityIcons name="note-text" size={16} color={COLORS.primary} />
-                            <Text style={styles.compactNoteDate}>{note.date}</Text>
-                            <Text style={styles.compactNurseName}>By: {note.nurseName}</Text>
-                          </View>
-                          <MaterialCommunityIcons 
-                            name={expandedNotes[note.id] ? "chevron-up" : "chevron-down"} 
-                            size={20} 
-                            color={COLORS.textLight} 
+                    {(() => {
+                      const nurseNoteItems = (selectedClient.medicalNotes || []).map((note, index) => ({
+                        id: note?.id || `nurse-note-${index}`,
+                        date: note?.date || null,
+                        title: note?.nurseName || 'Assigned Nurse',
+                        subtitle: note?.appointmentType || '',
+                        body: note?.notes || '',
+                      }));
+
+                      const patientNoteItems = (selectedClient.completedAppointments || []).map((apt, index) => {
+                        const candidates = [
+                          apt?.patientNotes,
+                          apt?.bookingNotes,
+                          apt?.clientNotes,
+                          apt?.specialInstructions,
+                        ];
+                        const raw = candidates.find((value) => {
+                          if (value === null || value === undefined) return false;
+                          const text = String(value).trim();
+                          return Boolean(text);
+                        });
+                        const legacyNotes = (apt?.notes && String(apt.notes).trim()) || '';
+                        const hasNurseNotes = Boolean(
+                          apt?.nurseNotes && String(apt.nurseNotes).trim().length
+                        );
+                        const text = raw === null || raw === undefined
+                          ? (!hasNurseNotes ? legacyNotes : '')
+                          : String(raw).trim();
+
+                        if (!text) return null;
+
+                        return {
+                          id: `patient-note-${apt?.id || apt?._id || apt?.appointmentId || index}`,
+                          date: apt?.createdAt || apt?.updatedAt || apt?.date || apt?.scheduledDate || null,
+                          title: apt?.patientName || apt?.clientName || selectedClient.name || 'Patient',
+                          subtitle: apt?.service || apt?.appointmentType || 'From booking',
+                          body: text,
+                        };
+                      }).filter(Boolean);
+
+                      const allNoteItems = [...nurseNoteItems, ...patientNoteItems].sort((a, b) => {
+                        const aTime = a?.date ? Date.parse(a.date) : 0;
+                        const bTime = b?.date ? Date.parse(b.date) : 0;
+                        if (!Number.isFinite(aTime) && !Number.isFinite(bTime)) return 0;
+                        if (!Number.isFinite(aTime)) return 1;
+                        if (!Number.isFinite(bTime)) return -1;
+                        return bTime - aTime;
+                      });
+
+                      return (
+                        <>
+                          <Text style={styles.sectionTitle}>Medical Notes ({allNoteItems.length})</Text>
+                          <NotesAccordionList
+                            items={allNoteItems}
+                            emptyText="No medical notes available yet"
                           />
-                        </TouchableWeb>
-                        {expandedNotes[note.id] && (
-                          <View style={styles.expandedNoteContent}>
-                            <Text style={styles.noteTypeLabel}>{note.appointmentType}</Text>
-                            <Text style={styles.expandedNoteText}>{note.notes}</Text>
-                          </View>
-                        )}
-                      </View>
-                    ))}
-                    {selectedClient.medicalNotes.length === 0 && (
+                          {allNoteItems.length === 0 && (
                       <View style={styles.noNotesContainer}>
                         <MaterialCommunityIcons name="note-outline" size={24} color={COLORS.textLight} />
                         <Text style={styles.noNotesText}>No medical notes available yet</Text>
                       </View>
-                    )}
+                          )}
+                        </>
+                      );
+                    })()}
                   </View>
                 </>
               )}
@@ -1110,16 +1494,16 @@ export default function AdminClientsScreen({ navigation, route }) {
                   <View style={styles.pdfHeaderTop}>
                     <View style={styles.pdfCompanyInfo}>
                       <Image 
-                        source={require('../assets/Images/CARElogo.png')} 
-                        style={styles.careLogoHeader}
+                        source={require('../assets/Images/Nurses-logo.png')} 
+                        style={styles.nursesLogoHeader}
                         resizeMode="cover"
                       />
                     </View>
                     <View style={styles.pdfInvoiceInfo}>
                       <Text style={styles.pdfInvoiceTitle}>INVOICE</Text>
-                      <Text style={styles.pdfInvoiceNumber}>{currentInvoiceData.invoiceId}</Text>
-                      <Text style={styles.pdfInvoiceDate}>Issue Date: {formatDate(currentInvoiceData.issueDate)}</Text>
-                      <Text style={styles.pdfInvoiceDate}>Due Date: {formatDate(currentInvoiceData.dueDate)}</Text>
+                      <Text style={styles.pdfInvoiceNumber}>{currentInvoiceData.invoiceId?.replace('CARE-INV', 'NUR-INV')}</Text>
+                      <Text style={styles.pdfInvoiceDate}>Issue Date: {InvoiceService.formatDateForInvoice(currentInvoiceData.issueDate)}</Text>
+                      <Text style={styles.pdfInvoiceDate}>Due Date: {InvoiceService.formatDateForInvoice(currentInvoiceData.dueDate)}</Text>
                     </View>
                   </View>
                   <View style={styles.pdfBlueLine} />
@@ -1132,7 +1516,7 @@ export default function AdminClientsScreen({ navigation, route }) {
                       <Text style={styles.pdfSectionTitle}>BILL TO:</Text>
                       <Text style={styles.pdfClientName}>{currentInvoiceData.clientName}</Text>
                       <Text style={styles.pdfClientInfo}>{currentInvoiceData.clientEmail}</Text>
-                      <Text style={styles.pdfClientInfo}>{currentInvoiceData.clientPhone}</Text>
+                      <Text style={styles.pdfClientInfo}>{selectedClient?.phone || currentInvoiceData.clientPhone || 'N/A'}</Text>
                       <Text style={styles.pdfClientInfo}>{currentInvoiceData.clientAddress || '123 Main Street, Anytown, State 12345'}</Text>
                     </View>
                     <View style={styles.pdfServiceProvider}>
@@ -1158,10 +1542,10 @@ export default function AdminClientsScreen({ navigation, route }) {
                     </View>
                     <View style={styles.pdfTableRow}>
                       <Text style={[styles.pdfTableCell, { flex: 2 }]}>{currentInvoiceData.service}</Text>
-                      <Text style={styles.pdfTableCell}>{formatDate(currentInvoiceData.date)}</Text>
+                      <Text style={styles.pdfTableCell}>{InvoiceService.formatDateForInvoice(currentInvoiceData.date)}</Text>
                       <Text style={styles.pdfTableCell}>{currentInvoiceData.hours}</Text>
-                      <Text style={styles.pdfTableCell}>${currentInvoiceData.rate}</Text>
-                      <Text style={styles.pdfTableCellAmount}>${currentInvoiceData.total}</Text>
+                      <Text style={styles.pdfTableCell}>{InvoiceService.formatCurrency(currentInvoiceData.rate)}</Text>
+                      <Text style={styles.pdfTableCellAmount}>{InvoiceService.formatCurrency(currentInvoiceData.total)}</Text>
                     </View>
                   </View>
 
@@ -1169,8 +1553,8 @@ export default function AdminClientsScreen({ navigation, route }) {
                   <View style={styles.pdfBottomSection}>
                     <View style={styles.pdfPaymentSection}>
                       <Text style={styles.pdfPaymentTitle}>Payment Information</Text>
-                      {paymentInfo.bankAccounts.map((account) => (
-                        <View key={account.id} style={styles.bankAccountGroup}>
+                      {paymentInfo.bankAccounts.map((account, index) => (
+                        <View key={account.id || `account-${index}`} style={styles.bankAccountGroup}>
                           <Text style={styles.pdfPaymentInfo}>{account.bankName}</Text>
                           {account.payee && (
                             <Text style={styles.pdfPaymentInfo}>Payee: {account.payee}</Text>
@@ -1178,8 +1562,8 @@ export default function AdminClientsScreen({ navigation, route }) {
                           {account.branch && (
                             <Text style={styles.pdfPaymentInfo}>Branch: {account.branch}</Text>
                           )}
-                          {account.accountNumbers.map((accNum) => (
-                            <Text key={accNum.id} style={styles.pdfPaymentInfo}>
+                          {account.accountNumbers.map((accNum, idx) => (
+                            <Text key={accNum.id || `accNum-${idx}`} style={styles.pdfPaymentInfo}>
                               {accNum.currency}: {accNum.number}
                             </Text>
                           ))}
@@ -1198,8 +1582,8 @@ export default function AdminClientsScreen({ navigation, route }) {
 
                     <View style={styles.pdfTotalsSection}>
                       <View style={styles.pdfTotalRow}>
-                        <Text style={styles.pdfTotalLabel}>Subtotal:</Text>
-                        <Text style={styles.pdfTotalValue}>${currentInvoiceData.total}</Text>
+                        <Text style={styles.pdfTotalLabel}>Deposit:</Text>
+                        <Text style={styles.pdfTotalValue}>{InvoiceService.formatCurrency(currentInvoiceData.total)}</Text>
                       </View>
                       <View style={styles.pdfBlueLine} />
                       <View style={styles.pdfFinalTotalRow}>
@@ -1222,6 +1606,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
   },
   header: {
     paddingHorizontal: 20,
@@ -1336,6 +1729,22 @@ const styles = StyleSheet.create({
     borderRadius: 10,
     backgroundColor: COLORS.lightGray,
   },
+  clientProfilePhoto: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.lightGray,
+    marginRight: 10,
+  },
+  clientProfilePhotoPlaceholder: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginRight: 10,
+  },
   compactInfo: {
     flex: 1,
     marginLeft: 8,
@@ -1370,19 +1779,27 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
   },
   detailsButton: {
-    borderRadius: 8,
+    borderRadius: 20,
     overflow: 'hidden',
+    shadowColor: COLORS.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
   },
   detailsButtonGradient: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    gap: 4,
   },
   detailsButtonText: {
-    fontSize: 11,
-    fontFamily: 'Poppins_600SemiBold',
     color: COLORS.white,
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
   },
   subscriberBadge: {
     backgroundColor: COLORS.accent,
@@ -1579,17 +1996,23 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 24,
     padding: 16,
-    backgroundColor: COLORS.lightGray,
+    backgroundColor: '#FFE7CC',
     borderRadius: 12,
   },
   clientAvatar: {
     width: 60,
     height: 60,
     borderRadius: 30,
-    backgroundColor: COLORS.white,
+    backgroundColor: '#FFD7B0',
     alignItems: 'center',
     justifyContent: 'center',
     marginRight: 16,
+  },
+  clientAvatarImage: {
+    width: '100%',
+    height: '100%',
+    borderRadius: 30,
+    resizeMode: 'cover',
   },
   clientInfo: {
     flex: 1,
@@ -1599,12 +2022,6 @@ const styles = StyleSheet.create({
     fontFamily: 'Poppins_700Bold',
     color: COLORS.text,
     marginBottom: 4,
-  },
-  clientEmail: {
-    fontSize: 14,
-    fontFamily: 'Poppins_400Regular',
-    color: COLORS.textLight,
-    marginBottom: 8,
   },
   subscriberText: {
     fontSize: 10,
@@ -1852,23 +2269,49 @@ const styles = StyleSheet.create({
   invoiceHistorySection: {
     marginTop: 15,
   },
-  invoiceHistoryTitle: {
-    fontSize: 14,
-    fontFamily: 'Poppins_600SemiBold',
-    color: COLORS.text,
-    marginBottom: 10,
-  },
-  invoiceHistoryItem: {
+  invoiceHeaderRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 15,
-    backgroundColor: COLORS.background,
-    borderRadius: 8,
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    marginBottom: 10,
+  },
+  viewAllText: {
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.primary,
+  },
+  invoiceHistoryLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  invoiceHistoryActions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  viewButtonSmall: {
+    borderRadius: 20,
+    overflow: 'hidden',
+    shadowColor: COLORS.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  viewButtonGradientSmall: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    gap: 4,
+  },
+  viewButtonTextSmall: {
+    color: COLORS.white,
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
   },
   invoiceHistoryInfo: {
     flex: 1,
@@ -1882,7 +2325,22 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: 'Poppins_400Regular',
     color: COLORS.textLight,
+  },
+  invoiceHistorySubInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     marginTop: 2,
+  },
+  statusBadgeSmall: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  statusTextSmall: {
+    fontSize: 10,
+    fontFamily: 'Poppins_600SemiBold',
+    textTransform: 'uppercase',
   },
   invoiceHistoryRight: {
     alignItems: 'flex-end',
@@ -1924,28 +2382,6 @@ const styles = StyleSheet.create({
     color: COLORS.textLight,
     textAlign: 'center',
     marginTop: 4,
-  },
-  // Invoice History Styles
-  invoiceHistorySection: {
-    marginTop: 15,
-  },
-  invoiceHistoryTitle: {
-    fontSize: 14,
-    fontFamily: 'Poppins_600SemiBold',
-    color: COLORS.text,
-    marginBottom: 10,
-  },
-  invoiceHistoryItem: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: 12,
-    paddingHorizontal: 15,
-    backgroundColor: COLORS.background,
-    borderRadius: 8,
-    marginBottom: 8,
-    borderWidth: 1,
-    borderColor: COLORS.border,
   },
   invoiceHistoryInfo: {
     flex: 1,
@@ -2050,39 +2486,6 @@ const styles = StyleSheet.create({
     color: COLORS.textLight,
     marginTop: 8,
   },
-  // Invoice Modal Styles
-  invoiceModalContainer: {
-    flex: 1,
-    backgroundColor: COLORS.background,
-  },
-  invoiceModalHeader: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
-    paddingHorizontal: 20,
-    paddingVertical: 16,
-    backgroundColor: COLORS.white,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-  },
-  invoiceModalTitle: {
-    fontSize: 18,
-    fontFamily: 'Poppins_700Bold',
-    color: COLORS.text,
-    flex: 1,
-    textAlign: 'center',
-  },
-  invoiceCloseButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: COLORS.lightGray,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  invoiceScrollView: {
-    flex: 1,
-  },
   invoicePreviewCard: {
     backgroundColor: COLORS.white,
     borderRadius: 12,
@@ -2094,41 +2497,6 @@ const styles = StyleSheet.create({
     elevation: 5,
     margin: 16,
   },
-  pdfHeader: {
-    backgroundColor: COLORS.white,
-    paddingTop: SPACING.md,
-  },
-  pdfHeaderTop: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingHorizontal: SPACING.md,
-    paddingBottom: SPACING.sm,
-  },
-  pdfCompanyInfo: {
-    flex: 1,
-    marginRight: SPACING.sm,
-  },
-  careLogoHeader: {
-    width: 200,
-    height: 80,
-    marginLeft: -40,
-  },
-  pdfInvoiceInfo: {
-    alignItems: 'flex-end',
-  },
-  pdfInvoiceTitle: {
-    fontSize: 20,
-    fontWeight: 'bold',
-    color: COLORS.text,
-    marginBottom: 4,
-  },
-  pdfInvoiceNumber: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: COLORS.text,
-    marginBottom: 2,
-  },
   pdfInvoiceDate: {
     fontSize: 10,
     color: COLORS.textLight,
@@ -2136,7 +2504,7 @@ const styles = StyleSheet.create({
   },
   pdfBlueLine: {
     height: 2,
-    backgroundColor: '#00B8D4',
+    backgroundColor: COLORS.primary,
     marginHorizontal: SPACING.md,
     marginVertical: SPACING.xs,
   },
@@ -2255,6 +2623,11 @@ const styles = StyleSheet.create({
   pdfTotalsSection: {
     alignItems: 'flex-end',
     minWidth: 160,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 8,
+    padding: 12,
+    backgroundColor: '#F9F9F9',
   },
   pdfTotalRow: {
     flexDirection: 'row',
@@ -2287,5 +2660,77 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontWeight: 'bold',
     color: COLORS.text,
+  },
+  // Invoice Card Styles (Synced with Patient Modal)
+  invoiceItemContainer: {
+    marginBottom: 16,
+  },
+  invoiceCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  invoiceCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  invoiceCardLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  invoiceCardInfo: {
+    gap: 2,
+  },
+  invoiceCardNumber: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+  },
+  invoiceCardRight: {
+    alignItems: 'flex-end',
+  },
+  invoiceCardStatus: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  invoiceCardStatusText: {
+    fontSize: 11,
+    fontFamily: 'Poppins_600SemiBold',
+  },
+  invoiceStatusChip: {
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  invoiceStatusChipGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+  },
+  invoiceStatusChipText: {
+    marginLeft: 0,
+    color: COLORS.white,
+    fontWeight: '600',
+    fontSize: 12,
+  },
+  noNotesContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 24,
+    backgroundColor: COLORS.lightGray,
+    borderRadius: 12,
+  },
+  noNotesText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.textLight,
+    marginTop: 8,
   },
 });

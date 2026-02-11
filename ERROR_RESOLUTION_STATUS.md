@@ -4,7 +4,7 @@
 
 ### 1. **Notification Icon Asset Missing**
 - **Problem:** `Unable to resolve asset "./assets/notification-icon.png"`
-- **Solution:** ✅ Created notification-icon.png from existing CARElogo.png
+- **Solution:** ✅ Created notification-icon.png from existing Nurses-logo.png
 - **Status:** RESOLVED
 
 ### 2. **Duplicate Variable Declarations**

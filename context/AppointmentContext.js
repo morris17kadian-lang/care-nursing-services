@@ -5,6 +5,7 @@ import { useNotifications } from './NotificationContext';
 import { useNurses } from './NurseContext';
 import InvoiceService from '../services/InvoiceService';
 import ApiService from '../services/ApiService';
+import { getNurseName, formatAddress } from '../utils/formatters';
 
 const AppointmentContext = createContext();
 
@@ -24,24 +25,14 @@ export const AppointmentProvider = ({ children }) => {
   const [appointments, setAppointments] = useState([]);
   const [nurses, setNurses] = useState([]);
   const [isLoading, setIsLoading] = useState(false);
+  const [refreshInProgress, setRefreshInProgress] = useState(false); // Prevent concurrent refreshes
+  const [lastRefreshTime, setLastRefreshTime] = useState(0); // Track last refresh time
 
-  const STORAGE_KEYS = {
-    APPOINTMENTS: '@care_appointments',
-    NURSES: '@care_nurses',
-  };
+  const getAppointmentsStorageKey = () => `@care_appointments_${user?.id || 'guest'}`;
+  const getNursesStorageKey = () => `@care_nurses_${user?.id || 'guest'}`;
 
-  // Sample nurses data
-  const initialNurses = [
-    {
-      id: '1', // Match the NurseContext ID
-      name: 'Sarah Johnson',
-      specialty: 'General Care',
-      rating: 4.8,
-      experience: '5 years',
-      status: 'available',
-      isActive: true
-    }
-  ];
+  // No initial nurses - load from backend only
+  const initialNurses = [];
 
   // Sample appointments data for client search functionality - cleared for testing with John Smith
   const sampleAppointments = [];  // Load data from storage
@@ -50,24 +41,32 @@ export const AppointmentProvider = ({ children }) => {
       setIsLoading(true);
       
       const [storedAppointments, storedNurses] = await Promise.all([
-        AsyncStorage.getItem(STORAGE_KEYS.APPOINTMENTS),
-        AsyncStorage.getItem(STORAGE_KEYS.NURSES),
+        AsyncStorage.getItem(getAppointmentsStorageKey()),
+        AsyncStorage.getItem(getNursesStorageKey()),
       ]);
 
       if (storedAppointments) {
-        setAppointments(JSON.parse(storedAppointments));
+        const parsedAppointments = JSON.parse(storedAppointments);
+        const migratedAppointments = Array.isArray(parsedAppointments)
+          ? parsedAppointments.map(migrateLegacyNotes)
+          : [];
+        setAppointments(migratedAppointments);
+        const hasChanges = Array.isArray(parsedAppointments)
+          && migratedAppointments.some((apt, index) => apt !== parsedAppointments[index]);
+        if (hasChanges) {
+          await saveAppointments(migratedAppointments);
+        }
       } else {
         // Initialize with sample appointments for client search functionality
         setAppointments(sampleAppointments);
-        await AsyncStorage.setItem(STORAGE_KEYS.APPOINTMENTS, JSON.stringify(sampleAppointments));
+        await AsyncStorage.setItem(getAppointmentsStorageKey(), JSON.stringify(sampleAppointments));
       }
 
       if (storedNurses) {
         setNurses(JSON.parse(storedNurses));
       } else {
-        // Initialize with default nurses
-        setNurses(initialNurses);
-        await AsyncStorage.setItem(STORAGE_KEYS.NURSES, JSON.stringify(initialNurses));
+        // Start with empty nurses - load from backend only
+        setNurses([]);
       }
     } catch (error) {
       console.error('Failed to load appointment data:', error);
@@ -79,7 +78,7 @@ export const AppointmentProvider = ({ children }) => {
   // Save appointments to storage
   const saveAppointments = async (updatedAppointments) => {
     try {
-      await AsyncStorage.setItem(STORAGE_KEYS.APPOINTMENTS, JSON.stringify(updatedAppointments));
+      await AsyncStorage.setItem(getAppointmentsStorageKey(), JSON.stringify(updatedAppointments));
     } catch (error) {
       console.error('Failed to save appointments:', error);
     }
@@ -88,106 +87,531 @@ export const AppointmentProvider = ({ children }) => {
   // Save nurses to storage
   const saveNurses = async (updatedNurses) => {
     try {
-      await AsyncStorage.setItem(STORAGE_KEYS.NURSES, JSON.stringify(updatedNurses));
+      await AsyncStorage.setItem(getNursesStorageKey(), JSON.stringify(updatedNurses));
     } catch (error) {
       console.error('Failed to save nurses:', error);
     }
   };
 
+  const normalizeText = (value) => (typeof value === 'string' ? value.trim() : '');
+  const hasText = (value) => normalizeText(value).length > 0;
+
+  const migrateLegacyNotes = (appointment) => {
+    if (!appointment || typeof appointment !== 'object') return appointment;
+    const patientNotes = normalizeText(appointment.patientNotes) ||
+      normalizeText(appointment.bookingNotes) ||
+      normalizeText(appointment.clientNotes) ||
+      normalizeText(appointment.specialInstructions);
+    const nurseNotes = normalizeText(appointment.nurseNotes);
+    const legacyNotes = normalizeText(appointment.notes);
+
+    if (!patientNotes && !nurseNotes && legacyNotes) {
+      return {
+        ...appointment,
+        patientNotes: legacyNotes,
+        notes: ''
+      };
+    }
+
+    return appointment;
+  };
+
+  useEffect(() => {
+    if (!Array.isArray(appointments) || appointments.length === 0) return;
+    let hasChanges = false;
+    const migrated = appointments.map((appointment) => {
+      const migratedAppointment = migrateLegacyNotes(appointment);
+      if (migratedAppointment !== appointment) {
+        hasChanges = true;
+      }
+      return migratedAppointment;
+    });
+    if (hasChanges) {
+      setAppointments(migrated);
+      saveAppointments(migrated);
+    }
+  }, [appointments]);
+
   // Refresh appointments from API
   const refreshAppointments = async () => {
+    if (!user) {
+      setAppointments([]);
+      return;
+    }
+    
+    // Prevent concurrent refresh calls
+    if (refreshInProgress) {
+      // Refresh already in progress
+      return;
+    }
+    
     try {
-      console.log('🔄 Refreshing appointments from API...');
+      // Refreshing appointments from backend
+      setRefreshInProgress(true);
       setIsLoading(true);
-      
-      const response = await ApiService.getAppointments();
-      
-      if (response.success && response.appointments) {
-        console.log(`✅ Fetched ${response.appointments.length} appointments from API`);
-        
-        // Transform API appointments to local format
-        const transformedAppointments = response.appointments.map(apt => ({
-          id: apt._id,
-          appointmentId: apt.appointmentId,
-          patientId: apt.patient?._id || apt.patient,
-          patientName: apt.patient?.firstName && apt.patient?.lastName 
-            ? `${apt.patient.firstName} ${apt.patient.lastName}`
-            : 'Unknown Patient',
-          patientEmail: apt.patient?.email || '',
-          patientPhone: apt.patient?.phone || '',
-          service: apt.appointmentType || apt.service,
-          date: apt.scheduledDate,
-          time: apt.scheduledTime,
-          address: typeof apt.location?.address === 'string'
-            ? apt.location.address
-            : apt.location?.address?.street
-              ? `${apt.location.address.street}, ${apt.location.address.city}, ${apt.location.address.parish}`
-              : apt.address || '',
-          notes: apt.notes || '', // Patient booking notes
-          nurseNotes: apt.nurseNotes || '', // Nurse notes (separate from patient notes)
-          completionNotes: apt.completionNotes || '', // Completion notes for completed appointments
-          status: apt.status,
-          nurseId: apt.assignedNurse?._id || apt.assignedNurse,
-          nurseName: apt.assignedNurse?.firstName && apt.assignedNurse?.lastName
-            ? `${apt.assignedNurse.firstName} ${apt.assignedNurse.lastName}`
-            : null,
-          createdAt: apt.createdAt,
-          updatedAt: apt.updatedAt || apt.createdAt,
-        }));
 
-        setAppointments(transformedAppointments);
-        await saveAppointments(transformedAppointments);
-        console.log('💾 Appointments saved to local storage');
+      // Primary source: backend endpoint.
+      // Fallback: Firestore (ApiService.getAppointments) because some flows (e.g. assigning
+      // patient-created recurring requests) update Firestore directly.
+      let rawAppointments = null;
+      try {
+        const response = await ApiService.makeRequest('/appointments');
+        if (response?.success && Array.isArray(response.data)) {
+          rawAppointments = response.data;
+        }
+      } catch (e) {
+        rawAppointments = null;
+      }
+
+      if (!Array.isArray(rawAppointments)) {
+        const firestoreAppointments = await ApiService.getAppointments();
+        rawAppointments = Array.isArray(firestoreAppointments) ? firestoreAppointments : [];
+      }
+
+      if (Array.isArray(rawAppointments) && rawAppointments.length > 0) {
+        const cachedAppointments = Array.isArray(appointments) ? appointments : [];
+
+        // If a nurse saved notes locally (older builds) but they never reached Firestore,
+        // we backfill them here so admins (and other devices) can see them.
+        const shouldBackfillNurseNotes =
+          (user?.role === 'nurse' || user?.role === 'nurses') && cachedAppointments.length > 0;
+        const nurseNotesBackfillQueue = [];
+
+        // Transform appointments to local format
+        const transformedAppointments = rawAppointments.map(apt => {
+          const patientFullName = apt.patientName || apt.clientName || (apt.patient?.firstName && apt.patient?.lastName
+            ? `${apt.patient.firstName} ${apt.patient.lastName}`
+            : 'Unknown Patient');
+
+          // Resolve nurse ID from various possible fields
+          const nurseId = apt.assignedNurse?.id || apt.assignedNurse?._id || (typeof apt.assignedNurse === 'string' ? apt.assignedNurse : null) || apt.nurseId || apt.nurse?.id || apt.nurse?._id || apt.nurse || null;
+
+          const resolvedPatientId = apt.patientId || apt.patient?.id || apt.patient?._id || apt.patient || apt.clientId || null;
+          const resolvedClientId = apt.clientId || apt.client?.id || apt.client?._id || resolvedPatientId;
+
+          // Resolve nurse name with fallback to context lookup
+          let assignedNurseName = apt.nurseName;
+          
+          if (!assignedNurseName) {
+            // Try to get name from assignedNurse object
+            if (apt.assignedNurse && typeof apt.assignedNurse === 'object') {
+               assignedNurseName = getNurseName(apt.assignedNurse);
+            }
+            
+            // If still no valid name (or it was 'Unassigned'), try looking up by ID
+            if ((!assignedNurseName || assignedNurseName === 'Unassigned') && nurseId) {
+               const foundNurse = nursesFromContext.find(n => n.id === nurseId || n._id === nurseId) || 
+                                  nurses.find(n => n.id === nurseId || n._id === nurseId);
+               if (foundNurse) {
+                   assignedNurseName = getNurseName(foundNurse);
+               }
+            }
+          }
+
+          const locationAddress = apt.location?.address || apt.address || null;
+
+          const cachedMatch = cachedAppointments.find((cached) => {
+            if (!cached) return false;
+            const apiId = apt.id || apt._id || apt.appointmentId;
+            if (apiId && (cached.id === apiId || cached.appointmentId === apiId)) return true;
+            if (cached.seriesId && apt.seriesId && cached.seriesId === apt.seriesId) {
+              const cachedDate = cached.date || cached.startDate;
+              const apiDate = apt.scheduledDate || apt.date || apt.startDate;
+              const cachedTime = cached.time || cached.startTime;
+              const apiTime = apt.scheduledTime || apt.time || apt.startTime;
+              if (cachedDate === apiDate && cachedTime === apiTime) return true;
+            }
+            return false;
+          });
+
+          if (shouldBackfillNurseNotes) {
+            const apiNotes = typeof apt?.nurseNotes === 'string' ? apt.nurseNotes.trim() : '';
+            const cachedNotes = typeof cachedMatch?.nurseNotes === 'string' ? cachedMatch.nurseNotes.trim() : '';
+            const backendId = apt?.id || apt?._id || null;
+            if (!apiNotes && cachedNotes && backendId) {
+              nurseNotesBackfillQueue.push({ appointmentId: backendId, nurseNotes: cachedNotes });
+            }
+          }
+
+          return {
+            id: apt.id || apt._id,
+            appointmentId: apt.appointmentId,
+            patientId: resolvedPatientId,
+            clientId: resolvedClientId,
+            patient: typeof apt.patient === 'object' ? apt.patient : null,
+            patientName: patientFullName,
+            patientEmail: apt.patientEmail || apt.patient?.email || apt.clientEmail || '',
+            patientPhone: apt.patientPhone || apt.patient?.phone || apt.clientPhone || '',
+            clientName: apt.clientName || patientFullName,
+            clientEmail: apt.clientEmail || apt.patient?.email || '',
+            clientPhone: apt.clientPhone || apt.patient?.phone || '',
+            service: apt.serviceType || apt.appointmentType || apt.service || 'General Care',
+            appointmentType: apt.appointmentType || null,
+            serviceType: apt.serviceType || null,
+            date: apt.scheduledDate || apt.date,
+            time: apt.scheduledTime || apt.time,
+            address: formatAddress(locationAddress),
+            locationDetails: apt.location || null,
+            notes: apt.notes || '',
+            patientNotes: apt.patientNotes || '',
+            bookingNotes: apt.bookingNotes || '',
+            clientNotes: apt.clientNotes || '',
+            specialInstructions: apt.specialInstructions || '',
+            nurseNotes: apt.nurseNotes || cachedMatch?.nurseNotes || '',
+            completionNotes: apt.completionNotes || '',
+            status: apt.status || 'pending',
+            nurseId: nurseId,
+            nurseName: assignedNurseName,
+            isShiftRequest: Boolean(apt.isShiftRequest),
+            clientLocation: apt.clientLocation || locationAddress || null,
+            billingCycle: apt.billingCycle || null,
+            assignedAt: apt.assignedAt || null,
+            actualStartTime: apt.actualStartTime || null,
+            actualEndTime: apt.actualEndTime || null,
+            clockInLocation: apt.clockInLocation || null,
+            clockOutLocation: apt.clockOutLocation || null,
+            hoursWorked: apt.hoursWorked || null,
+            createdAt: apt.createdAt,
+            updatedAt: apt.updatedAt || apt.createdAt,
+            // Preserve recurring appointment fields
+            startDate: apt.startDate || apt.recurringPeriodStart || cachedMatch?.startDate || null,
+            startTime: apt.startTime || apt.scheduledStartTime || apt.appointmentStartTime || cachedMatch?.startTime || null,
+            endDate: apt.endDate || apt.recurringPeriodEnd || cachedMatch?.endDate || null,
+            endTime: apt.endTime || apt.scheduledEndTime || apt.appointmentEndTime || apt.end || apt.end_time || cachedMatch?.endTime || null,
+            isRecurring: apt.isRecurring || false,
+            isRecurringInstance: apt.isRecurringInstance || false,
+            recurringFrequency: apt.recurringFrequency || null,
+            recurringDuration: apt.recurringDuration || null,
+            seriesId: apt.seriesId || null,
+            instanceNumber: apt.instanceNumber || null,
+            totalInstances: apt.totalInstances || null,
+            daysOfWeek: apt.daysOfWeek || apt.recurringDaysOfWeek || apt.recurringDaysOfWeekList || cachedMatch?.daysOfWeek || null,
+            selectedDays: apt.selectedDays || apt.daysOfWeek || apt.recurringDaysOfWeek || apt.recurringDaysOfWeekList || cachedMatch?.selectedDays || null,
+            preferredNurseId: apt.preferredNurseId || apt.requestedNurseId || cachedMatch?.preferredNurseId || null,
+            preferredNurseName: apt.preferredNurseName || apt.requestedNurseName || cachedMatch?.preferredNurseName || null,
+            preferredNurseCode: apt.preferredNurseCode || apt.requestedNurseCode || cachedMatch?.preferredNurseCode || null,
+            requestedNurseId: apt.requestedNurseId || cachedMatch?.requestedNurseId || null,
+            requestedNurseName: apt.requestedNurseName || cachedMatch?.requestedNurseName || null,
+            requestedNurseCode: apt.requestedNurseCode || cachedMatch?.requestedNurseCode || null,
+
+            // Preserve backup nurse fields (used by admin/nurse details modals)
+            backupNurses:
+              apt.backupNurses ||
+              apt.shift?.backupNurses ||
+              apt.shiftDetails?.backupNurses ||
+              apt.emergencyBackupNurses ||
+              cachedMatch?.backupNurses ||
+              null,
+            emergencyBackupNurses:
+              apt.emergencyBackupNurses ||
+              apt.shift?.emergencyBackupNurses ||
+              apt.shiftDetails?.emergencyBackupNurses ||
+              cachedMatch?.emergencyBackupNurses ||
+              null,
+            coverageRequests:
+              apt.coverageRequests ||
+              apt.shift?.coverageRequests ||
+              apt.shiftDetails?.coverageRequests ||
+              cachedMatch?.coverageRequests ||
+              null,
+          };
+        });
+
+        // DEBUG: Log completed appointments with notes
+        const completedWithNotes = transformedAppointments.filter(apt => apt.status === 'completed' && (apt.completionNotes || apt.nurseNotes));
+        if (completedWithNotes.length > 0) {
+          // Processing completed appointments with notes
+          completedWithNotes.forEach(apt => {
+            // Completed appointment item
+          });
+        }
+
+        const migratedAppointments = transformedAppointments.map(migrateLegacyNotes);
+        setAppointments(migratedAppointments);
+        await saveAppointments(migratedAppointments);
+
+        if (shouldBackfillNurseNotes && nurseNotesBackfillQueue.length > 0) {
+          const unique = new Map();
+          nurseNotesBackfillQueue.forEach((item) => {
+            if (!item?.appointmentId) return;
+            const text = typeof item.nurseNotes === 'string' ? item.nurseNotes.trim() : '';
+            if (!text) return;
+            if (!unique.has(item.appointmentId)) {
+              unique.set(item.appointmentId, text);
+            }
+          });
+
+          const entries = Array.from(unique.entries()).slice(0, 15);
+          if (entries.length > 0) {
+            await Promise.allSettled(
+              entries.map(([id, nurseNotes]) =>
+                ApiService.updateAppointment(id, { nurseNotes })
+              )
+            );
+          }
+        }
+
+      } else {
+        // No appointments returned from API - set empty (avoid stale cached data)
+        setAppointments([]);
+        await saveAppointments([]);
       }
     } catch (error) {
-      console.error('⚠️ Failed to refresh appointments from API:', error.message);
+      console.error('❌ Failed to refresh appointments from API:', error.message);
+      // On error, clear local cache rather than showing stale data from another user
+      setAppointments([]);
+      await saveAppointments([]);
     } finally {
       setIsLoading(false);
+      setRefreshInProgress(false); // Mark refresh as complete
     }
   };
 
   // Book new appointment (Patient action)
+  // Map service names to valid serviceType enum values
+  const mapServiceType = (service) => {
+    const serviceMap = {
+      // Mobile app services to backend enum values
+      'Dressings': 'Wound Care',
+      'Medication Administration': 'Medication Administration',
+      'NG Tubes': 'Wound Care', // No direct match, use Wound Care
+      'Urinary Catheter': 'Wound Care', // No direct match, use Wound Care
+      'IV Access': 'Medication Administration', // No direct match, use Medication Administration
+      'Tracheostomy Care': 'Post-Surgery Care', // No direct match, use Post-Surgery Care
+      'Physiotherapy': 'Physiotherapy',
+      'Home Nursing': 'Home Nursing',
+      'Hospital Sitter': 'Elder Care', // Hospital sitter is similar to elderly care support
+      'Blood Draw': 'Blood Draw',
+      'Wound Care': 'Wound Care',
+      'Chronic Disease Monitoring': 'Chronic Disease Monitoring',
+      'Post-Surgery Care': 'Post-Surgery Care',
+      'Pediatric Care': 'Pediatric Care',
+      'Mental Health Support': 'Mental Health Support',
+      'Health Assessment': 'Health Assessment',
+      'Palliative Care': 'Palliative Care',
+      'Elder Care': 'Elder Care',
+      // Aliases
+      'General Care': 'Home Nursing',
+      'Medication': 'Medication Administration',
+      'Chronic Disease': 'Chronic Disease Monitoring',
+      'Post-Surgery': 'Post-Surgery Care',
+      'Pediatric': 'Pediatric Care',
+      'Mental Health': 'Mental Health Support'
+    };
+    return serviceMap[service] || 'Home Nursing'; // Default to Home Nursing
+  };
+
+  // Convert 12-hour time format (e.g., "6:16 PM") to 24-hour format (e.g., "18:16")
+  const convertTo24HourFormat = (time12) => {
+    if (!time12) return '00:00';
+    
+    // Trim whitespace and normalize
+    time12 = time12.trim().replace(/\s+/g, ' ');
+
+    
+    // Check if already in 24-hour format (HH:MM)
+    const timeRegex24 = /^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$/;
+    if (timeRegex24.test(time12)) {
+
+      return time12;
+    }
+
+    // Handle 12-hour format (e.g., "6:16 PM" or "6:16 AM")
+    const timeParts = time12.split(' ').filter(p => p.length > 0);
+    if (timeParts.length < 2) {
+      console.warn('⚠️ Invalid time format (no AM/PM found), attempting to parse:', time12);
+      // Try extracting the time and period with regex
+      const match = time12.match(/(\d{1,2}):(\d{2})\s*(AM|PM|am|pm)/i);
+      if (match) {
+        let hours = parseInt(match[1], 10);
+        const minutes = parseInt(match[2], 10);
+        const period = match[3].toUpperCase();
+        
+        if (period === 'PM' && hours !== 12) {
+          hours += 12;
+        } else if (period === 'AM' && hours === 12) {
+          hours = 0;
+        }
+        
+        const result = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+
+        return result;
+      }
+      
+      console.warn('⚠️ Could not parse time format, returning as-is:', time12);
+      return time12;
+    }
+
+    const [timeStr, period] = [timeParts[0], timeParts[1]];
+    let [hours, minutes] = timeStr.split(':').map(Number);
+
+    if (isNaN(hours) || isNaN(minutes)) {
+      console.warn('⚠️ Could not parse hours/minutes:', { timeStr, hours, minutes });
+      return time12;
+    }
+
+    if (period === 'PM' && hours !== 12) {
+      hours += 12;
+    } else if (period === 'AM' && hours === 12) {
+      hours = 0;
+    }
+
+    const result = `${String(hours).padStart(2, '0')}:${String(minutes).padStart(2, '0')}`;
+
+    return result;
+  };
+
   const bookAppointment = async (appointmentData) => {
     try {
       // Try to create appointment via API first
-      const apiData = {
-        appointmentType: appointmentData.service,
-        scheduledDate: appointmentData.date,
-        scheduledTime: appointmentData.time,
-        location: appointmentData.address,
-        notes: appointmentData.notes || '',
-        priority: 'medium'
-      };
+      const convertedTime = convertTo24HourFormat(appointmentData.time);
 
-      const response = await ApiService.createAppointment(apiData);
+      const preferredNurseId =
+        appointmentData?.preferredNurseId ||
+        appointmentData?.requestedNurseId ||
+        appointmentData?.primaryNurseId ||
+        appointmentData?.nurseId ||
+        null;
+
+      const preferredNurseName =
+        appointmentData?.preferredNurseName ||
+        appointmentData?.requestedNurseName ||
+        appointmentData?.nurseName ||
+        null;
+
+      const preferredNurseCode =
+        appointmentData?.preferredNurseCode ||
+        appointmentData?.requestedNurseCode ||
+        appointmentData?.nurseCode ||
+        null;
+
+      const preferredNursePhoto = appointmentData?.preferredNursePhoto || null;
+
+      const apiData = {
+        patientId: user?.id,
+        patientName: appointmentData.patientName || appointmentData.name || user?.fullName || user?.name, // Ensure patient name is sent
+        clientName: appointmentData.patientName || appointmentData.name || user?.fullName || user?.name, // Add clientName for compatibility
+        appointmentType: appointmentData.service,
+        service: appointmentData.service, // Add service field for compatibility
+        scheduledDate: appointmentData.date,
+        appointmentDate: appointmentData.date, // Add appointmentDate for compatibility
+        scheduledTime: convertedTime,
+        appointmentTime: convertedTime, // Add appointmentTime for compatibility
+        location: appointmentData.address,
+        address: appointmentData.address, // Add address field for compatibility
+        notes: appointmentData.notes || '',
+        status: 'pending', // Ensure status is set so it appears in Admin dashboard
+        priority: 'medium',
+        estimatedDuration: 60, // Default 1 hour (60 minutes)
+
+        // Preferred/requested nurse (patient-selected at booking)
+        preferredNurseId: preferredNurseId,
+        preferredNurseName: preferredNurseName,
+        preferredNurseCode: preferredNurseCode,
+        // Some backends use requestedNurse*; send both for compatibility.
+        requestedNurseId: preferredNurseId,
+        requestedNurseName: preferredNurseName,
+        requestedNurseCode: preferredNurseCode,
+      };
+      const response = await ApiService.makeRequest('/appointments', {
+        method: 'POST',
+        body: JSON.stringify(apiData),
+      });
+      
+      console.log('📍 Booking response:', response);
       
       if (response.success) {
-        console.log('✅ Appointment created via API:', response.appointment);
-        
+        // Handle response based on backend format
+        let created;
+        if (response.appointment) {
+          created = response.appointment;
+        } else if (response.data && response.data.length > 0) {
+          created = response.data[0]; // Take first appointment if array
+        } else if (response.data && !Array.isArray(response.data)) {
+          created = response.data; // Direct object
+        } else {
+          // Backend created successfully but didn't return appointment data
+          // Use the original appointment data with generated ID
+          created = {
+            _id: `apt_${Date.now()}`,
+            patientId: user?.id,
+            service: appointmentData.service,
+            scheduledDate: appointmentData.date,
+            scheduledTime: convertedTime,
+            address: appointmentData.address,
+            notes: appointmentData.notes || '',
+            status: 'pending',
+            createdAt: new Date().toISOString(),
+            preferredNurseId,
+            preferredNurseName,
+            preferredNurseCode,
+            preferredNursePhoto,
+          };
+        }
         // Also save locally for offline support
         const newAppointment = {
-          id: response.appointment._id || `apt_${Date.now()}`,
-          patientId: user?.id || 'PATIENT001',
-          patientName: user?.name || 'John Smith',
-          patientEmail: user?.email || 'john@example.com',
-          patientPhone: user?.phone || '876-555-0123',
-          service: appointmentData.service,
-          date: appointmentData.date,
-          time: appointmentData.time,
-          address: appointmentData.address,
-          notes: appointmentData.notes || '',
-          status: response.appointment.status || 'pending',
-          nurseId: null,
-          nurseName: null,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
+          id: created._id || created.id || `apt_${Date.now()}`,
+          patientId: created.patientId || user?.id || 'PATIENT001',
+          patientName: created.patientName || user?.fullName || `${user?.firstName || ''} ${user?.lastName || ''}`.trim() || 'Patient',
+          patientEmail: created.patientEmail || user?.email || 'patient@care.com',
+          patientPhone: created.patientPhone || user?.phone || '',
+          service: created.service || appointmentData.service,
+          date: created.scheduledDate || appointmentData.date,
+          time: created.scheduledTime || appointmentData.time,
+          address: created.address || appointmentData.address,
+          notes: created.notes || appointmentData.notes || '',
+          status: created.status || 'pending',
+          nurseId: created.nurseId || null,
+          nurseName: created.nurseName || null,
+          // Preserve preferred/requested nurse selection for Pending details modal.
+          preferredNurseId:
+            created.preferredNurseId ||
+            created.requestedNurseId ||
+            preferredNurseId ||
+            null,
+          preferredNurseName:
+            created.preferredNurseName ||
+            created.requestedNurseName ||
+            preferredNurseName ||
+            null,
+          preferredNurseCode:
+            created.preferredNurseCode ||
+            created.requestedNurseCode ||
+            preferredNurseCode ||
+            null,
+          preferredNursePhoto:
+            created.preferredNursePhoto ||
+            preferredNursePhoto ||
+            null,
+          requestedNurseId:
+            created.requestedNurseId ||
+            created.preferredNurseId ||
+            preferredNurseId ||
+            null,
+          requestedNurseName:
+            created.requestedNurseName ||
+            created.preferredNurseName ||
+            preferredNurseName ||
+            null,
+          requestedNurseCode:
+            created.requestedNurseCode ||
+            created.preferredNurseCode ||
+            preferredNurseCode ||
+            null,
+          createdAt: created.createdAt || new Date().toISOString(),
+          updatedAt: created.updatedAt || created.createdAt || new Date().toISOString(),
         };
 
         const updatedAppointments = [...appointments, newAppointment];
         setAppointments(updatedAppointments);
         await saveAppointments(updatedAppointments);
 
-        console.log('� Appointment notification sent to admins via backend');
+        // Refresh appointments from backend to get the latest state
+        setTimeout(() => {
+          console.log('📍 Triggering appointment refresh after booking...');
+          refreshAppointments();
+        }, 1000);
+
         return newAppointment;
       }
     } catch (error) {
@@ -213,7 +637,7 @@ export const AppointmentProvider = ({ children }) => {
       };
 
       const updatedAppointments = [...appointments, newAppointment];
-      console.log('💾 Saving new appointment locally:', newAppointment);
+
       setAppointments(updatedAppointments);
       await saveAppointments(updatedAppointments);
 
@@ -244,17 +668,76 @@ export const AppointmentProvider = ({ children }) => {
     const nurse = nursesFromContext.find(n => n.id === nurseId);
     
     if (!nurse) {
-      console.error('Nurse assignment failed - Nurse not found with ID:', nurseId);
+      console.error('❌ Nurse assignment failed - Nurse not found with ID:', nurseId);
+      console.error('Available nurses:', nursesFromContext.map(n => ({ id: n.id, name: n.name, code: n.code })));
       throw new Error('Nurse not found');
     }
 
+    console.log('✅ Assigning appointment', appointmentId, 'to nurse:', { id: nurse.id, name: nurse.name, code: nurse.code || nurse.nurseCode });
+    
+    // First, call backend API to persist the assignment
+    try {
+      console.log('📡 Calling backend to assign nurse...');
+      const response = await ApiService.makeRequest(`/appointments/${appointmentId}/assign`, {
+        method: 'POST',
+        body: JSON.stringify({ nurseId, status: 'assigned' })
+      });
+      
+      if (response.success) {
+        console.log('✅ Backend assignment successful:', response);
+        
+        // Get appointment data from the backend response
+        const backendAppointment = response.data || response.appointment;
+        console.log('📋 Backend appointment data:', backendAppointment);
+        
+        const appointmentData = {
+          patientName: backendAppointment?.patientName || backendAppointment?.clientName || (backendAppointment?.patient?.firstName && backendAppointment?.patient?.lastName
+            ? `${backendAppointment.patient.firstName} ${backendAppointment.patient.lastName}`
+            : 'Patient'),
+          service: backendAppointment?.serviceType || backendAppointment?.service || 'Service'
+        };
+        
+        console.log('📧 Sending notification to nurse...');
+        
+        // Send notification to specific nurse about assignment
+        await sendNotificationToUser(
+          nurseId,
+          'nurse',
+          'New Assignment',
+          `You have been assigned to ${appointmentData.patientName} for ${appointmentData.service}`,
+          {
+            appointmentId,
+            type: 'appointment_assigned',
+            patientName: appointmentData.patientName,
+            service: appointmentData.service
+          }
+        );
+
+        // Note: Admin will be notified when nurse accepts/declines, not on assignment
+        console.log('🔄 Refreshing appointments...');
+        
+        // Refresh appointments in background (don't wait for it)
+        refreshAppointments().catch(err => {
+          console.error('Failed to refresh appointments:', err);
+        });
+        
+        return;
+      } else {
+        console.warn('⚠️ Backend assignment response:', response);
+      }
+    } catch (error) {
+      console.error('❌ Backend assignment failed:', error.message);
+      // Continue with local update anyway for offline support
+    }
+
+    // Update local state
     const updatedAppointments = appointments.map(appointment => 
       appointment.id === appointmentId 
         ? {
             ...appointment,
             nurseId,
             nurseName: nurse.name,
-            status: 'nurse_assigned', // Waiting for nurse to accept
+            status: 'assigned', // Nurse assigned, waiting for acceptance
             assignedAt: new Date().toISOString(),
             updatedAt: new Date().toISOString()
           }
@@ -280,8 +763,9 @@ export const AppointmentProvider = ({ children }) => {
     );
 
     // Send confirmation notification to admin about successful assignment
+    const adminTargetId = user?.id || user?._id || 'admin-001';
     await sendNotificationToUser(
-      'admin-001',
+      adminTargetId,
       'admin',
       'Nurse Assigned',
       `${nurse.name} has been assigned to ${appointment.patientName} for ${appointment.service}`,
@@ -297,220 +781,269 @@ export const AppointmentProvider = ({ children }) => {
 
   // Accept assignment (Nurse action)
   const acceptAppointment = async (appointmentId) => {
-    const updatedAppointments = appointments.map(appointment => 
-      appointment.id === appointmentId 
-        ? {
-            ...appointment,
-            status: 'confirmed', // Now active
-            acceptedAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          }
-        : appointment
-    );
-
-    setAppointments(updatedAppointments);
-    await saveAppointments(updatedAppointments);
-
-    const appointment = updatedAppointments.find(apt => apt.id === appointmentId);
-
-    // Send notification to admin about acceptance
-    await sendNotificationToUser(
-      'admin-001', // Correct admin user ID
-      'admin',
-      'Assignment Accepted',
-      `${appointment.nurseName} has accepted the appointment with ${appointment.patientName}`,
-      {
-        appointmentId,
-        type: 'assignment_accepted'
-      }
-    );
-
-    // Send notification to patient about confirmation
-    await sendNotificationToUser(
-      appointment.patientId,
-      'patient',
-      'Appointment Confirmed',
-      `Your appointment for ${appointment.service} has been confirmed with ${appointment.nurseName}`,
-      {
-        appointmentId,
-        type: 'appointment_confirmed'
-      }
-    );
-
-    // Schedule appointment reminder notification (30 minutes before appointment)
     try {
-      const appointmentDateTime = new Date(`${appointment.date}T${appointment.time}`);
-      await scheduleAppointmentReminder(
-        `${appointment.service} Appointment`,
-        appointmentDateTime,
-        30 // 30 minutes before
-      );
-      console.log('✅ Appointment reminder scheduled for:', appointmentDateTime);
-    } catch (error) {
-      console.error('Failed to schedule appointment reminder:', error);
-    }
 
-    return appointment;
+      
+      // Call backend to update status
+      const response = await ApiService.makeRequest(`/appointments/${appointmentId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ status: 'confirmed' })
+      });
+
+      if (response.success) {
+
+        
+        // Update local state IMMEDIATELY for instant UI feedback
+        const updatedAppointments = appointments.map(appointment => 
+          appointment.id === appointmentId 
+            ? {
+                ...appointment,
+                status: 'confirmed',
+                acceptedAt: new Date().toISOString(),
+                updatedAt: new Date().toISOString()
+              }
+            : appointment
+        );
+
+        setAppointments(updatedAppointments);
+        await saveAppointments(updatedAppointments);
+        
+        const appointment = updatedAppointments.find(apt => apt.id === appointmentId);
+
+        // Refresh from backend to ensure all users see the update
+        setTimeout(() => {
+          refreshAppointments().catch(err => console.error('Failed to refresh after accept:', err));
+        }, 500);
+
+        // Send notifications (non-blocking)
+        Promise.all([
+          sendNotificationToUser(
+            'admin-001',
+            'admin',
+            'Assignment Accepted',
+            `${appointment.nurseName} has accepted the appointment with ${appointment.patientName}`,
+            {
+              appointmentId,
+              type: 'assignment_accepted'
+            }
+          ),
+          sendNotificationToUser(
+            appointment.patientId,
+            'patient',
+            'Appointment Confirmed',
+            `Your appointment for ${appointment.service} has been confirmed with ${appointment.nurseName}`,
+            {
+              appointmentId,
+              type: 'appointment_confirmed'
+            }
+          )
+        ]).catch(err => console.error('Notification error:', err));
+
+        // Schedule reminder (non-blocking)
+        try {
+          const appointmentDateTime = new Date(`${appointment.date}T${appointment.time}`);
+          await scheduleAppointmentReminder(
+            `${appointment.service} Appointment`,
+            appointmentDateTime,
+            30
+          );
+        } catch (error) {
+          console.error('Failed to schedule appointment reminder:', error);
+        }
+
+        return appointment;
+      } else {
+        console.error('❌ Failed to accept appointment:', response.error);
+        throw new Error(response.error || 'Failed to accept appointment');
+      }
+    } catch (error) {
+      console.error('❌ Error accepting appointment:', error.message);
+      throw error;
+    }
   };
 
   // Decline assignment (Nurse action)
   const declineAppointment = async (appointmentId, reason = '') => {
-    const updatedAppointments = appointments.map(appointment => 
-      appointment.id === appointmentId 
-        ? {
-            ...appointment,
-            status: 'pending', // Back to pending for admin to reassign
-            nurseId: null,
-            nurseName: null,
-            declinedAt: new Date().toISOString(),
-            declineReason: reason,
-            updatedAt: new Date().toISOString()
-          }
-        : appointment
-    );
+    try {
+      // Call backend to update status
+      const response = await ApiService.makeRequest(`/appointments/${appointmentId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ 
+          status: 'pending',
+          assignedNurse: null,
+          notes: reason
+        })
+      });
 
-    setAppointments(updatedAppointments);
-    await saveAppointments(updatedAppointments);
+      if (response.success) {
+        const updatedAppointments = appointments.map(appointment => 
+          appointment.id === appointmentId 
+            ? {
+                ...appointment,
+                status: 'pending',
+                nurseId: null,
+                nurseName: null,
+                declinedAt: new Date().toISOString(),
+                declineReason: reason,
+                updatedAt: new Date().toISOString()
+              }
+            : appointment
+        );
 
-    const appointment = updatedAppointments.find(apt => apt.id === appointmentId);
+        setAppointments(updatedAppointments);
+        await saveAppointments(updatedAppointments);
+        
+        const appointment = updatedAppointments.find(apt => apt.id === appointmentId);
 
-    // Send notification to admin about decline
-    await sendNotificationToUser(
-      'admin-001', // Correct admin user ID
-      'admin',
-      'Assignment Declined',
-      `Assignment declined for ${appointment.patientName}. ${reason ? 'Reason: ' + reason : ''}`,
-      {
-        appointmentId,
-        type: 'assignment_declined'
+        // Refresh from backend to ensure all users see the update
+        setTimeout(() => {
+          refreshAppointments().catch(err => console.error('Failed to refresh after decline:', err));
+        }, 500);
+
+        // Send notifications (non-blocking)
+        Promise.all([
+          sendNotificationToUser(
+            'admin-001',
+            'admin',
+            'Assignment Declined',
+            `Assignment declined for ${appointment.patientName}. ${reason ? 'Reason: ' + reason : ''}`,
+            {
+              appointmentId,
+              type: 'assignment_declined'
+            }
+          ),
+          sendNotificationToUser(
+            appointment.patientId,
+            'patient',
+            'Appointment Needs Reassignment',
+            `Your appointment for ${appointment.service} needs to be reassigned to another nurse. We'll notify you once a new nurse is assigned.`,
+            {
+              appointmentId,
+              type: 'appointment_declined'
+            }
+          )
+        ]).catch(err => console.error('Notification error:', err));
+
+        return appointment;
+      } else {
+        console.error('❌ Failed to decline appointment:', response.error);
+        throw new Error(response.error || 'Failed to decline appointment');
       }
-    );
+    } catch (error) {
+      console.error('❌ Error declining appointment:', error.message);
+      throw error;
+    }
+  };
 
-    // Send notification to patient about decline
-    await sendNotificationToUser(
-      appointment.patientId,
-      'patient',
-      'Appointment Needs Reassignment',
-      `Your appointment for ${appointment.service} needs to be reassigned to another nurse. We'll notify you once a new nurse is assigned.`,
-      {
-        appointmentId,
-        type: 'appointment_declined'
+  // Clock-in appointment (Nurse action)
+  const clockInAppointment = async (appointmentId, { startTime, clockInLocation } = {}) => {
+    try {
+      const clockInTimestamp = startTime || new Date().toISOString();
+      const response = await ApiService.makeRequest(`/appointments/${appointmentId}`, {
+        method: 'PUT',
+        body: JSON.stringify({
+          status: 'clocked-in',
+          actualStartTime: clockInTimestamp,
+          clockInLocation: clockInLocation || null,
+        })
+      });
+
+      if (response.success) {
+        const updatedAppointments = appointments.map(appointment =>
+          appointment.id === appointmentId
+            ? {
+                ...appointment,
+                status: 'clocked-in',
+                actualStartTime: clockInTimestamp,
+                clockInLocation: clockInLocation || appointment.clockInLocation,
+                updatedAt: new Date().toISOString(),
+              }
+            : appointment
+        );
+
+        setAppointments(updatedAppointments);
+        await saveAppointments(updatedAppointments);
+
+        return { success: true, clockInTime: clockInTimestamp };
+      } else {
+        console.error('❌ Failed to clock in appointment:', response.error);
+        throw new Error(response.error || 'Failed to clock in appointment');
       }
-    );
-
-    return appointment;
+    } catch (error) {
+      console.error('❌ Error clocking in appointment:', error.message);
+      throw error;
+    }
   };
 
   // Complete appointment (Nurse action)
-  const completeAppointment = async (appointmentId, notes = '') => {
-    const updatedAppointments = appointments.map(appointment => 
-      appointment.id === appointmentId 
-        ? {
-            ...appointment,
-            status: 'completed',
-            completedAt: new Date().toISOString(),
-            completionNotes: notes,
-            updatedAt: new Date().toISOString()
-          }
-        : appointment
-    );
+  const completeAppointment = async (appointmentId, notes = '', extraData = {}) => {
+    try {
+      const completionTimestamp = extraData.actualEndTime || new Date().toISOString();
+      // Call backend to update status
+      const response = await ApiService.makeRequest(`/appointments/${appointmentId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ 
+          status: 'completed',
+          completionNotes: notes,
+          actualEndTime: completionTimestamp,
+          ...extraData,
+        })
+      });
 
-    setAppointments(updatedAppointments);
-    await saveAppointments(updatedAppointments);
-
-    const appointment = updatedAppointments.find(apt => apt.id === appointmentId);
-
-    // Increment the nurse's assigned clients count
-    if (appointment.nurseId) {
-      incrementAssignedClients(appointment.nurseId);
-    }
-
-    // Auto-generate and email invoice for non-recurring appointments
-    if (!appointment.isRecurring) {
-      try {
-        console.log('📄 Auto-generating invoice for completed appointment:', appointmentId);
-        
-        // Create invoice
-        const invoiceResult = await InvoiceService.createInvoice(appointment);
-        
-        if (invoiceResult.success) {
-          console.log('✅ Invoice generated:', invoiceResult.invoice.invoiceId);
-          
-          // Auto-email the invoice (simulated - in production, this would use an email service)
-          console.log('📧 Auto-emailing invoice to:', appointment.patientEmail || appointment.email);
-          console.log('📧 Invoice details:', {
-            invoiceId: invoiceResult.invoice.invoiceId,
-            patientName: appointment.patientName,
-            service: appointment.service,
-            amount: invoiceResult.invoice.total
-          });
-          
-          // Simulate email success
-          const emailSuccess = true; // In production: await EmailService.sendInvoice(invoiceResult.invoice)
-          
-          if (emailSuccess) {
-            console.log('✅ Invoice emailed successfully to patient');
-            
-            // Notify admin about successful invoice generation and email
-            await sendNotificationToUser(
-              'admin-001',
-              'admin',
-              'Invoice Auto-Generated & Emailed',
-              `Invoice ${invoiceResult.invoice.invoiceId} created and emailed to ${appointment.patientName}`,
-              {
-                appointmentId,
-                invoiceId: invoiceResult.invoice.invoiceId,
-                type: 'invoice_generated'
+      if (response.success) {
+        const updatedAppointments = appointments.map(appointment => 
+          appointment.id === appointmentId 
+            ? {
+                ...appointment,
+                status: 'completed',
+                completedAt: completionTimestamp,
+                completionNotes: notes,
+                nurseNotes: notes, // Also set nurseNotes for consistent display
+                actualEndTime: completionTimestamp,
+                actualStartTime: extraData.actualStartTime || appointment.actualStartTime,
+                clockOutLocation: extraData.clockOutLocation || appointment.clockOutLocation,
+                updatedAt: new Date().toISOString()
               }
-            );
-          } else {
-            console.warn('⚠️ Invoice created but email failed');
-            // Notify admin that invoice was created but email failed
-            await sendNotificationToUser(
-              'admin-001',
-              'admin',
-              'Invoice Generated (Email Pending)',
-              `Invoice ${invoiceResult.invoice.invoiceId} created for ${appointment.patientName}. Manual email required.`,
-              {
-                appointmentId,
-                invoiceId: invoiceResult.invoice.invoiceId,
-                type: 'invoice_generated_email_failed'
-              }
-            );
-          }
-        }
-      } catch (invoiceError) {
-        console.error('Failed to auto-generate invoice:', invoiceError);
-        // Notify admin about invoice generation failure
-        await sendNotificationToUser(
-          'admin-001',
-          'admin',
-          'Invoice Generation Failed',
-          `Failed to generate invoice for completed appointment with ${appointment.patientName}`,
-          {
-            appointmentId,
-            type: 'invoice_generation_failed'
-          }
+            : appointment
         );
+
+        setAppointments(updatedAppointments);
+        await saveAppointments(updatedAppointments);
+        
+        const appointment = updatedAppointments.find(apt => apt.id === appointmentId);
+
+        // Increment the nurse's assigned clients count (safely, without breaking if context unavailable)
+        try {
+          if (appointment.nurseId) {
+            incrementAssignedClients(appointment.nurseId);
+          }
+        } catch (err) {
+          console.warn('⚠️ Could not update nurse stats:', err.message);
+        }
+
+        // Send notification to admin (non-blocking)
+        Promise.all([
+          sendNotificationToUser(
+            'admin-001',
+            'admin',
+            'Appointment Completed',
+            `${appointment.nurseName} has completed the appointment with ${appointment.patientName}`,
+            {
+              appointmentId,
+              type: 'appointment_completed'
+            }
+          )
+        ]).catch(err => console.error('Notification error:', err));
+
+        return appointment;
+      } else {
+        console.error('❌ Failed to complete appointment:', response.error || response.details);
+        throw new Error(response.error || response.details || 'Failed to complete appointment');
       }
-    } else {
-      // For recurring patients, just log that invoice will be sent on schedule
-      console.log('📅 Recurring patient - invoice will be sent according to schedule');
+    } catch (error) {
+      console.error('❌ Error completing appointment:', error.message);
+      throw error;
     }
-
-    // Send notification to admin about completion
-    await sendNotificationToUser(
-      'admin-001', // Correct admin user ID
-      'admin',
-      'Appointment Completed',
-      `${appointment.nurseName} has completed the appointment with ${appointment.patientName}`,
-      {
-        appointmentId,
-        type: 'appointment_completed'
-      }
-    );
-
-    return appointment;
   };
 
   // Clear all completed appointments (for testing)
@@ -523,72 +1056,174 @@ export const AppointmentProvider = ({ children }) => {
   // Clear ALL appointments (for testing)
   const clearAllAppointments = async () => {
     setAppointments([]);
-    await AsyncStorage.setItem(STORAGE_KEYS.APPOINTMENTS, JSON.stringify([]));
-    console.log('🗑️ All appointments cleared');
+    await AsyncStorage.setItem(getAppointmentsStorageKey(), JSON.stringify([]));
   };
 
   // Cancel appointment
   const cancelAppointment = async (appointmentId, reason = '') => {
-    const updatedAppointments = appointments.map(apt => 
-      apt.id === appointmentId 
-        ? { 
-            ...apt, 
-            status: 'cancelled',
-            cancelledAt: new Date().toISOString(),
-            cancellationReason: reason,
-            updatedAt: new Date().toISOString(),
-          }
-        : apt
-    );
+    try {
+      // Call backend to update status
+      const response = await ApiService.makeRequest(`/appointments/${appointmentId}`, {
+        method: 'PUT',
+        body: JSON.stringify({ 
+          status: 'cancelled',
+          notes: reason
+        })
+      });
 
-    setAppointments(updatedAppointments);
-    await saveAppointments(updatedAppointments);
+      if (response.success) {
+        const updatedAppointments = appointments.map(apt => 
+          apt.id === appointmentId 
+            ? { 
+                ...apt, 
+                status: 'cancelled',
+                cancelledAt: new Date().toISOString(),
+                cancellationReason: reason,
+                updatedAt: new Date().toISOString(),
+              }
+            : apt
+        );
 
-    return updatedAppointments.find(apt => apt.id === appointmentId);
+        setAppointments(updatedAppointments);
+        await saveAppointments(updatedAppointments);
+        
+        const appointment = updatedAppointments.find(apt => apt.id === appointmentId);
+
+        // Send notifications (non-blocking)
+        Promise.all([
+          sendNotificationToUser(
+            appointment.patientId,
+            'patient',
+            'Appointment Cancelled',
+            `Your appointment on ${new Date(appointment.appointmentDate).toLocaleDateString()} has been cancelled${reason ? ': ' + reason : ''}`,
+            {
+              appointmentId,
+              type: 'appointment_cancelled'
+            }
+          ),
+          sendNotificationToUser(
+            'admin-001',
+            'admin',
+            'Appointment Cancelled',
+            `Appointment with ${appointment.patientName} has been cancelled${reason ? ': ' + reason : ''}`,
+            {
+              appointmentId,
+              type: 'appointment_cancelled'
+            }
+          )
+        ]).catch(err => console.error('Notification error:', err));
+
+        return appointment;
+      } else {
+        console.error('❌ Failed to cancel appointment:', response.error);
+        throw new Error(response.error || 'Failed to cancel appointment');
+      }
+    } catch (error) {
+      console.error('❌ Error cancelling appointment:', error.message);
+      throw error;
+    }
   };
 
   // Get appointments by patient ID (for patient screens)
   const getPatientAppointments = (patientId = null) => {
     const targetPatientId = patientId || user?.id;
-    return appointments.filter(apt => apt.patientId === targetPatientId)
+    return appointments
+      .filter((apt) => {
+        if (!apt) return false;
+        return (
+          apt.patientId === targetPatientId ||
+          String(apt.patientId) === String(targetPatientId) ||
+          apt.clientId === targetPatientId ||
+          String(apt.clientId) === String(targetPatientId) ||
+          apt.userId === targetPatientId ||
+          String(apt.userId) === String(targetPatientId) ||
+          (apt.patientName && user?.name && String(apt.patientName).toLowerCase() === String(user.name).toLowerCase())
+        );
+      })
       .sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
   };
 
-  // Get upcoming appointments for patient (confirmed or nurse_assigned status)
+  // Get upcoming appointments for patient (confirmed, scheduled, or assigned status)
   const getUpcomingAppointments = (patientId = null) => {
     const targetPatientId = patientId || user?.id;
     const now = new Date();
     now.setHours(0, 0, 0, 0); // Set to start of today for comparison
-    
-    const filtered = appointments.filter(apt => {
-      const matches = apt.patientId === targetPatientId;
-      const statusMatch = apt.status === 'confirmed' || apt.status === 'nurse_assigned';
+
+    const coerceToDateSafe = (value) => {
+      if (!value) return null;
+      if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
       
-      // Parse the date safely
-      let dateValid = true; // Default to true if we can't parse
-      try {
-        // Check if date string matches "MMM DD, YYYY" format
-        const dateStr = apt.date;
-        if (typeof dateStr === 'string') {
-          // For formatted strings like "Nov 04, 2025"
-          if (dateStr.match(/^\w{3}\s\d{1,2},\s\d{4}$/)) {
-            const aptDate = new Date(dateStr);
-            if (!isNaN(aptDate.getTime())) {
-              aptDate.setHours(0, 0, 0, 0);
-              dateValid = aptDate >= now;
-            }
-          } else {
-            // Try parsing as-is for ISO or other formats
-            const aptDate = new Date(dateStr);
-            if (!isNaN(aptDate.getTime())) {
-              aptDate.setHours(0, 0, 0, 0);
-              dateValid = aptDate >= now;
+      // Handle formatted date strings like "Feb 10, 2026"
+      if (typeof value === 'string') {
+        const dateMatch = value.match(/([A-Z][a-z]{2})\s+(\d{1,2}),?\s+(\d{4})/);
+        if (dateMatch) {
+          const [_, monthStr, dayStr, yearStr] = dateMatch;
+          const monthIndex = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'].indexOf(monthStr);
+          if (monthIndex >= 0) {
+            const d = new Date(parseInt(yearStr, 10), monthIndex, parseInt(dayStr, 10));
+            if (!Number.isNaN(d.getTime())) {
+              return d;
             }
           }
         }
+      }
+      
+      if (typeof value === 'string' || typeof value === 'number') {
+        const d = new Date(value);
+        return Number.isNaN(d.getTime()) ? null : d;
+      }
+      if (typeof value === 'object') {
+        // Firestore Timestamp
+        if (typeof value.toDate === 'function') {
+          const d = value.toDate();
+          return d instanceof Date && !Number.isNaN(d.getTime()) ? d : null;
+        }
+        // Serialized timestamp-like { seconds }
+        if (typeof value.seconds === 'number') {
+          const d = new Date(value.seconds * 1000);
+          return Number.isNaN(d.getTime()) ? null : d;
+        }
+      }
+      return null;
+    };
+    
+    const filtered = appointments.filter(apt => {
+      const matches =
+        apt.patientId === targetPatientId ||
+        String(apt.patientId) === String(targetPatientId) ||
+        apt.clientId === targetPatientId ||
+        String(apt.clientId) === String(targetPatientId) ||
+        apt.userId === targetPatientId ||
+        String(apt.userId) === String(targetPatientId) ||
+        (apt.patientName && user?.name && String(apt.patientName).toLowerCase() === String(user.name).toLowerCase());
+      
+      // Only show confirmed/scheduled and in-progress states in Upcoming (not 'assigned' - nurse hasn't accepted yet)
+      const statusMatch =
+        apt.status === 'confirmed' ||
+        apt.status === 'scheduled' ||
+        apt.status === 'active' ||
+        apt.status === 'clocked-in' ||
+        apt.status === 'in-progress';
+      
+      // Parse the date safely - default to false to exclude unparseable dates from upcoming
+      let dateValid = false;
+      try {
+        const rawDate =
+          apt.date ||
+          apt.scheduledDate ||
+          apt.startDate ||
+          apt.appointmentDate ||
+          null;
+        const aptDate = coerceToDateSafe(rawDate);
+        if (aptDate) {
+          aptDate.setHours(0, 0, 0, 0);
+          // Appointment is upcoming if it's today or in the future
+          dateValid = aptDate >= now;
+        }
       } catch (e) {
-        console.log('Date parse error for:', apt.date, e);
-        // Keep dateValid as true on error to show the appointment
+        console.log('Date parse error for upcoming appointment:', apt.date, e);
+        // Default to false - don't show appointments we can't parse dates for
+        dateValid = false;
       }
       
       return matches && statusMatch && dateValid;
@@ -596,8 +1231,11 @@ export const AppointmentProvider = ({ children }) => {
     
     return filtered.sort((a, b) => {
       try {
-        const dateA = new Date(a.date);
-        const dateB = new Date(b.date);
+        const dateA = coerceToDateSafe(a.date || a.scheduledDate || a.startDate || a.appointmentDate || null);
+        const dateB = coerceToDateSafe(b.date || b.scheduledDate || b.startDate || b.appointmentDate || null);
+        if (!dateA && !dateB) return 0;
+        if (!dateA) return 1;
+        if (!dateB) return -1;
         return dateA - dateB;
       } catch (e) {
         return 0;
@@ -610,7 +1248,7 @@ export const AppointmentProvider = ({ children }) => {
     const targetPatientId = patientId || user?.id;
     
     return appointments.filter(apt => 
-      apt.patientId === targetPatientId && 
+      (apt.patientId === targetPatientId || String(apt.patientId) === String(targetPatientId)) && 
       apt.status === 'completed'
     ).sort((a, b) => new Date(b.completedAt) - new Date(a.completedAt));
   };
@@ -694,32 +1332,152 @@ export const AppointmentProvider = ({ children }) => {
 
   // Update nurse availability status
   const updateNurseAvailability = async (nurseId, isAvailable) => {
-    const status = isAvailable ? 'available' : 'busy';
-    await updateNurseStatus(nurseId, status);
+    const status = isAvailable ? 'available' : 'offline';
+    const updatedNurses = nurses.map(nurse =>
+      nurse.id === nurseId
+        ? {
+            ...nurse,
+            status,
+            isAvailable,
+            isActive: isAvailable,
+            updatedAt: new Date().toISOString(),
+          }
+        : nurse
+    );
+
+    setNurses(updatedNurses);
+    await saveNurses(updatedNurses);
   };
 
   // Update appointment notes
   const updateAppointmentNotes = async (appointmentId, notes) => {
-    const updatedAppointments = appointments.map(appointment =>
-      appointment.id === appointmentId
-        ? {
-            ...appointment,
-            nurseNotes: notes, // Save as nurseNotes to keep separate from patient booking notes
-            updatedAt: new Date().toISOString()
-          }
-        : appointment
-    );
+    const sanitizedNotes = typeof notes === 'string' ? notes : '';
+    const updatedAppointments = appointments.map(appointment => {
+      const matches = appointment.id === appointmentId
+        || appointment._id === appointmentId
+        || appointment.appointmentId === appointmentId;
+      if (!matches) {
+        return appointment;
+      }
+
+      return {
+        ...appointment,
+        notes: sanitizedNotes,
+        updatedAt: new Date().toISOString()
+      };
+    });
 
     setAppointments(updatedAppointments);
     await saveAppointments(updatedAppointments);
-    return updatedAppointments.find(apt => apt.id === appointmentId);
+    return updatedAppointments.find(apt => apt.id === appointmentId || apt._id === appointmentId || apt.appointmentId === appointmentId);
+  };
+
+  const updateNurseNotes = async (appointmentId, notes) => {
+    const sanitizedNotes = typeof notes === 'string' ? notes : '';
+
+    const existingAppointment = appointments.find((appointment) => {
+      if (!appointment) return false;
+      return (
+        appointment.id === appointmentId ||
+        appointment._id === appointmentId ||
+        appointment.appointmentId === appointmentId
+      );
+    });
+
+    const backendAppointmentId =
+      existingAppointment?.id || existingAppointment?._id || appointmentId;
+
+    const updatedAppointments = appointments.map(appointment => {
+      const matches = appointment.id === appointmentId
+        || appointment._id === appointmentId
+        || appointment.appointmentId === appointmentId;
+      if (!matches) {
+        return appointment;
+      }
+
+      return {
+        ...appointment,
+        nurseNotes: sanitizedNotes,
+        updatedAt: new Date().toISOString()
+      };
+    });
+
+    setAppointments(updatedAppointments);
+    await saveAppointments(updatedAppointments);
+
+    // Persist nurse notes to backend so admins (and other devices) can see them.
+    // If this fails, keep the local save but surface the error so the UI can prompt retry.
+    try {
+      await ApiService.updateAppointment(backendAppointmentId, {
+        nurseNotes: sanitizedNotes,
+      });
+    } catch (error) {
+      const err = new Error('Failed to sync nurse notes to the server. Notes were saved locally; please try again.');
+      err.cause = error;
+      throw err;
+    }
+
+    return updatedAppointments.find(apt => apt.id === appointmentId || apt._id === appointmentId || apt.appointmentId === appointmentId);
+  };
+
+  // Add completed appointment from shift (for patient history)
+  const addCompletedAppointmentFromShift = async (shiftData) => {
+    const completedAppointment = {
+      id: `appointment-${shiftData.id}-${Date.now()}`,
+      patientId: shiftData.clientId || 'PATIENT001',
+      patientName: shiftData.clientName || shiftData.patientName || 'Patient',
+      patientEmail: shiftData.clientEmail || shiftData.patientEmail || 'patient@care.com',
+      patientPhone: shiftData.clientPhone || shiftData.patientPhone || 'N/A',
+      address: shiftData.clientAddress || shiftData.address || 'N/A',
+      service: shiftData.service,
+      date: shiftData.date,
+      time: shiftData.startTime,
+      actualStartTime: shiftData.actualStartTime,
+      actualEndTime: shiftData.actualEndTime || new Date().toISOString(),
+      duration: `${shiftData.hoursWorked || '0'} hours`,
+      hoursWorked: shiftData.hoursWorked,
+      nurseId: shiftData.nurseId,
+      nurseName: shiftData.nurseName,
+      status: 'completed',
+      completedAt: shiftData.completedAt || new Date().toISOString(),
+      notes: shiftData.completionNotes || shiftData.notes || '',
+      isFromShift: true,
+      shiftId: shiftData.id
+    };
+
+    const updatedAppointments = [...appointments, completedAppointment];
+    setAppointments(updatedAppointments);
+    await saveAppointments(updatedAppointments);
+    
+    return completedAppointment;
   };
 
   // Load data on mount and refresh from API
   // Load data on mount
   useEffect(() => {
-    loadData();
-  }, []);
+    if (user) {
+      // Clear any stale data from previous sessions first
+      setAppointments([]);
+      
+      // Then fetch fresh data from API
+      refreshAppointments();
+      
+      // Set up periodic refresh every 30 seconds to catch assignment updates
+      const refreshInterval = setInterval(() => {
+        // 30-second auto-refresh interval
+        refreshAppointments();
+      }, 30000);
+      
+      return () => clearInterval(refreshInterval);
+    } else {
+      // Clear appointments if no user
+      setAppointments([]);
+      // Also clear from storage
+      AsyncStorage.removeItem(getAppointmentsStorageKey()).catch(err => 
+        console.error('Failed to clear appointments storage:', err)
+      );
+    }
+  }, [user?.id]); // Only trigger when user ID changes, not on every user object change
 
   const value = {
     appointments,
@@ -729,6 +1487,7 @@ export const AppointmentProvider = ({ children }) => {
     assignNurse,
     acceptAppointment,
     declineAppointment,
+    clockInAppointment,
     completeAppointment,
     cancelAppointment,
     clearCompletedAppointments,
@@ -744,7 +1503,9 @@ export const AppointmentProvider = ({ children }) => {
     updateNurseStatus,
     updateNurseAvailability,
     updateAppointmentNotes,
+    updateNurseNotes,
     getAppointmentStats,
+    addCompletedAppointmentFromShift,
   };
 
   return (

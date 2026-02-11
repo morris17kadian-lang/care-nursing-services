@@ -5,7 +5,7 @@ import {
   Text,
   ScrollView,
   StyleSheet,
-
+  Image,
   Linking,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -16,26 +16,34 @@ import { COLORS, GRADIENTS, SPACING, CONTACT_INFO } from '../constants';
 
 export default function ContactScreen() {
   const handleCall = () => {
-    Linking.openURL(`tel:${CONTACT_INFO.phone}`);
+    Linking.openURL(`tel:${String(CONTACT_INFO.phoneWeekday || CONTACT_INFO.phone).replace(/\D/g, '')}`);
   };
 
   const handleEmail = () => {
     Linking.openURL(`mailto:${CONTACT_INFO.email}`);
   };
 
-  const handleInstagram = () => {
-    Linking.openURL(
-      `https://instagram.com/${CONTACT_INFO.instagram.replace('@', '')}`
-    );
+  const handleWebsite = () => {
+    const url = CONTACT_INFO.website?.startsWith('http')
+      ? CONTACT_INFO.website
+      : `https://${CONTACT_INFO.website}`;
+    Linking.openURL(url);
   };
 
   const handleMaps = () => {
-    // Update with actual address when available
-    Linking.openURL('https://maps.google.com/?q=Jamaica');
+    const query = encodeURIComponent(CONTACT_INFO.address || 'Jamaica');
+    Linking.openURL(`https://maps.google.com/?q=${query}`);
   };
 
   return (
     <SafeAreaView style={styles.container} edges={['top']}>
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
+      
       {/* Header */}
       <LinearGradient
         colors={GRADIENTS.header}
@@ -104,21 +112,21 @@ export default function ContactScreen() {
 
           <TouchableWeb
             style={styles.contactCard}
-            onPress={handleInstagram}
+            onPress={handleWebsite}
             activeOpacity={0.7}
           >
             <LinearGradient
-              colors={['#E1306C', '#C13584', '#833AB4']}
+              colors={[COLORS.primary, COLORS.primaryLight]}
               start={{ x: 0, y: 0 }}
               end={{ x: 1, y: 1 }}
               style={styles.contactGradient}
             >
               <View style={styles.contactIcon}>
-                <MaterialCommunityIcons name="instagram" size={24} color={COLORS.white} />
+                <MaterialCommunityIcons name="web" size={24} color={COLORS.white} />
               </View>
               <View style={styles.contactContent}>
-                <Text style={styles.contactLabel}>Follow Us</Text>
-                <Text style={styles.contactValue}>{CONTACT_INFO.instagram}</Text>
+                <Text style={styles.contactLabel}>Visit Our Website</Text>
+                <Text style={styles.contactValue}>{CONTACT_INFO.website}</Text>
               </View>
               <MaterialCommunityIcons name="chevron-right" size={24} color={COLORS.white} />
             </LinearGradient>
@@ -133,8 +141,8 @@ export default function ContactScreen() {
             <View style={styles.hourRow}>
               <MaterialCommunityIcons name="calendar-month" size={24} color={COLORS.primary} />
               <View style={styles.hourContent}>
-                <Text style={styles.hourDay}>Monday - Friday</Text>
-                <Text style={styles.hourTime}>9:00 AM - 5:00 PM</Text>
+                <Text style={styles.hourDay}>Weekdays (9:00am - 5:00pm)</Text>
+                <Text style={styles.hourTime}>{CONTACT_INFO.phoneWeekday || CONTACT_INFO.phone}</Text>
               </View>
             </View>
 
@@ -143,25 +151,17 @@ export default function ContactScreen() {
             <View style={styles.hourRow}>
               <MaterialCommunityIcons name="calendar-weekend" size={24} color={COLORS.primary} />
               <View style={styles.hourContent}>
-                <Text style={styles.hourDay}>Saturday</Text>
-                <Text style={styles.hourTime}>10:00 AM - 2:00 PM</Text>
-              </View>
-            </View>
-
-            <View style={styles.hourDivider} />
-
-            <View style={styles.hourRow}>
-              <MaterialCommunityIcons name="calendar-remove" size={24} color={COLORS.textMuted} />
-              <View style={styles.hourContent}>
-                <Text style={styles.hourDay}>Sunday</Text>
-                <Text style={[styles.hourTime, styles.closedText]}>Closed</Text>
+                <Text style={styles.hourDay}>Weekends & weekdays (after 5:00pm)</Text>
+                <Text style={styles.hourTime}>
+                  {(CONTACT_INFO.phoneAfterHours || []).join(' / ') || CONTACT_INFO.emergency}
+                </Text>
               </View>
             </View>
           </View>
 
           {/* Emergency Banner */}
           <LinearGradient
-            colors={[COLORS.error, '#ff6b6b']}
+            colors={[COLORS.error, COLORS.errorLight]}
             start={{ x: 0, y: 0 }}
             end={{ x: 1, y: 0 }}
             style={styles.emergencyBanner}
@@ -170,7 +170,7 @@ export default function ContactScreen() {
             <View style={styles.emergencyContent}>
               <Text style={styles.emergencyTitle}>24/7 Emergency Service</Text>
               <Text style={styles.emergencyText}>
-                For urgent care needs, call us anytime
+                For urgent needs, call {CONTACT_INFO.emergency}
               </Text>
             </View>
           </LinearGradient>
@@ -189,9 +189,9 @@ export default function ContactScreen() {
               <MaterialCommunityIcons name="map-marker" size={32} color={COLORS.accent} />
             </View>
             <View style={styles.locationContent}>
-              <Text style={styles.locationTitle}>Jamaica</Text>
+              <Text style={styles.locationTitle}>Business Address</Text>
               <Text style={styles.locationSubtitle}>
-                Serving clients across Jamaica
+                {CONTACT_INFO.address}
               </Text>
               <View style={styles.viewMapButton}>
                 <Text style={styles.viewMapText}>View on Map</Text>
@@ -247,6 +247,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
   },
   header: {
     paddingHorizontal: 20,

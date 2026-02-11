@@ -1,0 +1,53 @@
+[{
+  "_id": {
+    "$oid": "6920ec02c4a71a364d9ecef9"
+  },
+  "userId": {
+    "$oid": "691d0f464864ce7fd74ce458"
+  },
+  "userRole": "superAdmin",
+  "dataCollection": true,
+  "shareWithPartners": false,
+  "locationTracking": false,
+  "twoFactorAuth": false,
+  "biometric": true,
+  "profileVisibility": "private",
+  "allowMessageRequests": true,
+  "allowProfileSearch": true,
+  "rememberLogin": true,
+  "sessionTimeout": 3600,
+  "securityQuestions": [],
+  "createdAt": {
+    "$date": "2025-11-21T22:47:30.875Z"
+  },
+  "updatedAt": {
+    "$date": "2025-11-21T22:47:30.875Z"
+  },
+  "__v": 0
+},
+{
+  "_id": {
+    "$oid": "692620a1e8d50fb48fd5a2f4"
+  },
+  "userId": {
+    "$oid": "691e5a9aab82c2fff5c525ea"
+  },
+  "userRole": "nurse",
+  "dataCollection": true,
+  "shareWithPartners": false,
+  "locationTracking": false,
+  "twoFactorAuth": false,
+  "profileVisibility": "private",
+  "allowMessageRequests": true,
+  "allowProfileSearch": true,
+  "rememberLogin": true,
+  "sessionTimeout": 3600,
+  "securityQuestions": [],
+  "createdAt": {
+    "$date": "2025-11-25T21:33:21.651Z"
+  },
+  "updatedAt": {
+    "$date": "2025-11-25T21:33:21.651Z"
+  },
+  "__v": 0
+}]

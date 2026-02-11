@@ -1,5 +1,6 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import PushNotificationService from './PushNotificationService';
+import ApiService from './ApiService';
 
 /**
  * Service to handle recurring appointment logic
@@ -9,7 +10,19 @@ import PushNotificationService from './PushNotificationService';
  */
 class RecurringAppointmentService {
   static STORAGE_KEY = '@care_recurring_appointments';
-  static APPOINTMENTS_KEY = '@care_appointments';
+  static getAppointmentsStorageKey(patientId) {
+    return `@care_appointments_${patientId || 'guest'}`;
+  }
+
+  static async getAllAppointmentStorageKeys() {
+    try {
+      const keys = await AsyncStorage.getAllKeys();
+      return keys.filter(key => key.startsWith('@care_appointments_'));
+    } catch (error) {
+      // console.error('Error listing appointment storage keys:', error);
+      return [];
+    }
+  }
 
   /**
    * Calculate next appointment date based on frequency
@@ -51,6 +64,13 @@ class RecurringAppointmentService {
   static generateRecurringInstances(appointmentData, frequency, duration) {
     const instances = [];
     const baseDate = this.parseAppointmentDate(appointmentData.date, appointmentData.time);
+
+    const normalizeTimeString = (value) => {
+      if (typeof value !== 'string') return null;
+      return value.replace(/\u202F|\u00A0/g, ' ').replace(/\s+/g, ' ').trim();
+    };
+
+    const sourceTime = normalizeTimeString(appointmentData.startTime || appointmentData.time);
     
     // Generate the specified number of instances
     for (let i = 0; i < duration; i++) {
@@ -59,6 +79,12 @@ class RecurringAppointmentService {
         frequency
       );
       
+      // Validate instance date
+      if (isNaN(instanceDate.getTime())) {
+        // console.error(`❌ Invalid date generated for instance ${i+1}. Skipping.`);
+        continue;
+      }
+
       // Format date and time
       const formattedDate = instanceDate.toLocaleDateString('en-US', {
         month: 'short',
@@ -66,11 +92,16 @@ class RecurringAppointmentService {
         year: 'numeric'
       });
       
-      const formattedTime = instanceDate.toLocaleTimeString('en-US', {
-        hour: 'numeric',
-        minute: '2-digit',
-        hour12: true
-      });
+      // Format time as HH:MM with 12-hour format (e.g., "2:24 PM")
+      // Ensure we use standard ASCII space (U+0020) and remove any non-breaking spaces
+      const hour = instanceDate.getHours();
+      const minute = instanceDate.getMinutes();
+      const ampm = hour >= 12 ? 'PM' : 'AM';
+      const displayHour = hour % 12 || 12; // Convert to 12-hour format
+      const formattedTime = `${displayHour}:${String(minute).padStart(2, '0')} ${ampm}`;
+      const timeValue = sourceTime && /\d{1,2}:\d{2}\s*(AM|PM)$/i.test(sourceTime)
+        ? sourceTime
+        : formattedTime;
       
       // Create instance with unique ID but linked to series
       const instance = {
@@ -80,10 +111,18 @@ class RecurringAppointmentService {
         instanceNumber: i + 1,
         totalInstances: duration,
         date: formattedDate,
-        time: formattedTime,
+        time: timeValue,
         preferredDate: formattedDate,
-        preferredTime: formattedTime,
+        preferredTime: timeValue,
+        startDate: appointmentData.startDate || formattedDate,
+        startTime: appointmentData.startTime || timeValue,
+        endDate: appointmentData.endDate || formattedDate,
+        endTime: appointmentData.endTime || timeValue,
         recurringFrequency: frequency,
+        recurringDuration: duration,
+        selectedDays: appointmentData.selectedDays || appointmentData.daysOfWeek || [],
+        daysOfWeek: appointmentData.daysOfWeek || appointmentData.selectedDays || [],
+        isRecurring: true,
         isRecurringInstance: true,
         isFirstInstance: i === 0,
         isLastInstance: i === duration - 1,
@@ -104,79 +143,86 @@ class RecurringAppointmentService {
    */
   static parseAppointmentDate(dateStr, timeStr) {
     try {
-      // Parse date
-      const dateParts = dateStr.match(/(\w+)\s+(\d+),\s+(\d+)/);
-      if (!dateParts) {
-        return new Date();
+      // Parsing date and time
+      
+      // Handle case where dateStr might be ISO or other format
+      if (!dateStr) return new Date();
+
+      // Try parsing date with regex for "Month DD, YYYY" or "Month DD YYYY"
+      // Allow for optional comma and dot (e.g. "Nov. 20, 2025")
+      const dateParts = dateStr.match(/([a-zA-Z]+)\.?\s+(\d+),?\s+(\d+)/);
+      
+      let year, monthIndex, day;
+
+      if (dateParts) {
+        const [, month, d, y] = dateParts;
+        day = parseInt(d);
+        year = parseInt(y);
+        
+        // Try to parse month name
+        const monthDate = new Date(`${month} 1, 2000`);
+        if (!isNaN(monthDate.getTime())) {
+          monthIndex = monthDate.getMonth();
+        } else {
+          // console.warn(`Could not parse month: "${month}"`);
+          // Fallback: try to parse the whole string
+          const fallbackDate = new Date(dateStr);
+          if (!isNaN(fallbackDate.getTime())) {
+            return this.applyTimeToDate(fallbackDate, timeStr);
+          }
+          return new Date(); // Fail safe
+        }
+      } else {
+        // Try parsing as standard date string
+        const d = new Date(dateStr);
+        if (!isNaN(d.getTime())) {
+          year = d.getFullYear();
+          monthIndex = d.getMonth();
+          day = d.getDate();
+        } else {
+          // console.warn(`Could not parse date string: "${dateStr}"`);
+          return new Date();
+        }
       }
       
-      const [, month, day, year] = dateParts;
-      const monthIndex = new Date(`${month} 1, 2000`).getMonth();
-      
-      // Parse time
-      const timeParts = timeStr.match(/(\d+):(\d+)\s*(AM|PM)/i);
-      if (!timeParts) {
-        return new Date(year, monthIndex, day);
-      }
-      
-      let [, hours, minutes, period] = timeParts;
-      hours = parseInt(hours);
-      minutes = parseInt(minutes);
-      
-      // Convert to 24-hour format
-      if (period.toUpperCase() === 'PM' && hours !== 12) {
-        hours += 12;
-      } else if (period.toUpperCase() === 'AM' && hours === 12) {
-        hours = 0;
-      }
-      
-      return new Date(year, monthIndex, day, hours, minutes);
+      const baseDate = new Date(year, monthIndex, day);
+      return this.applyTimeToDate(baseDate, timeStr);
+
     } catch (error) {
-      console.error('Error parsing appointment date:', error);
+      // console.error('Error parsing appointment date:', error);
       return new Date();
     }
   }
 
   /**
-   * Schedule reminder notifications for all instances
-   * @param {Array} instances - Array of appointment instances
-   * @param {string} patientName - Patient name for notification
-   * @returns {Promise<void>}
+   * Helper to apply time string to a date object
    */
-  static async scheduleReminders(instances, patientName) {
-    try {
-      for (const instance of instances) {
-        const appointmentDate = this.parseAppointmentDate(instance.date, instance.time);
-        
-        // Schedule reminder 24 hours before appointment
-        const reminderTime = new Date(appointmentDate);
-        reminderTime.setHours(reminderTime.getHours() - 24);
-        
-        // Only schedule if reminder time is in the future
-        if (reminderTime > new Date()) {
-          await PushNotificationService.scheduleNotification(
-            'Upcoming Appointment Reminder',
-            `Your appointment for ${instance.service} is scheduled for tomorrow at ${instance.time}`,
-            reminderTime,
-            {
-              type: 'appointment_reminder',
-              appointmentId: instance.id,
-              seriesId: instance.seriesId,
-              service: instance.service,
-              date: instance.date,
-              time: instance.time,
-              isRecurring: true,
-              instanceNumber: instance.instanceNumber,
-            }
-          );
-          
-          console.log(`✅ Reminder scheduled for appointment ${instance.instanceNumber}/${instance.totalInstances} on ${instance.date}`);
-        }
-      }
-    } catch (error) {
-      console.error('Error scheduling reminders:', error);
-      throw error;
+  static applyTimeToDate(dateObj, timeStr) {
+    if (!timeStr) return dateObj;
+
+    // Parse time - handle unicode spaces and various separators
+    // Matches "10:00 AM", "10:00AM", "10:00 PM", "10:00 PM"
+    const timeParts = timeStr.match(/(\d+):(\d+)[^\d\w]*([AP]M)/i);
+    
+    if (!timeParts) {
+      // console.warn(`Could not parse time string: "${timeStr}"`);
+      return dateObj;
     }
+    
+    let [, hours, minutes, period] = timeParts;
+    hours = parseInt(hours);
+    minutes = parseInt(minutes);
+    
+    // Convert to 24-hour format
+    if (period.toUpperCase() === 'PM' && hours !== 12) {
+      hours += 12;
+    } else if (period.toUpperCase() === 'AM' && hours === 12) {
+      hours = 0;
+    }
+    
+    const newDate = new Date(dateObj);
+    newDate.setHours(hours, minutes, 0, 0);
+    return newDate;
   }
 
   /**
@@ -196,9 +242,9 @@ class RecurringAppointmentService {
       };
       
       await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(series));
-      console.log(`✅ Recurring series ${seriesId} saved`);
+      // Recurring series saved
     } catch (error) {
-      console.error('Error saving recurring series:', error);
+      // console.error('Error saving recurring series:', error);
       throw error;
     }
   }
@@ -210,14 +256,25 @@ class RecurringAppointmentService {
    */
   static async saveAppointmentInstances(instances) {
     try {
-      const existingData = await AsyncStorage.getItem(this.APPOINTMENTS_KEY);
-      const appointments = existingData ? JSON.parse(existingData) : [];
-      
-      // Add all instances to appointments array
-      appointments.push(...instances);
-      
-      await AsyncStorage.setItem(this.APPOINTMENTS_KEY, JSON.stringify(appointments));
-      console.log(`✅ Saved ${instances.length} recurring appointment instances`);
+      const groupedByPatient = instances.reduce((acc, instance) => {
+        const patientIdentifier = instance.patientId || instance.clientId || instance.patientEmail || instance.email;
+        const key = this.getAppointmentsStorageKey(patientIdentifier);
+        if (!acc[key]) {
+          acc[key] = [];
+        }
+        acc[key].push(instance);
+        return acc;
+      }, {});
+
+      await Promise.all(
+        Object.entries(groupedByPatient).map(async ([storageKey, patientInstances]) => {
+          const existingData = await AsyncStorage.getItem(storageKey);
+          const appointments = existingData ? JSON.parse(existingData) : [];
+          appointments.push(...patientInstances);
+          await AsyncStorage.setItem(storageKey, JSON.stringify(appointments));
+        })
+      );
+      // Saved recurring appointment instances
     } catch (error) {
       console.error('Error saving appointment instances:', error);
       throw error;
@@ -233,7 +290,7 @@ class RecurringAppointmentService {
    */
   static async createRecurringAppointments(appointmentData, frequency, duration) {
     try {
-      console.log(`🔄 Creating recurring appointments: ${frequency} for ${duration} occurrences`);
+      // Creating recurring appointments
       
       // Generate unique series ID
       const seriesId = `SERIES-${Date.now()}`;
@@ -254,6 +311,66 @@ class RecurringAppointmentService {
       
       // Save instances to appointments storage
       await this.saveAppointmentInstances(instances);
+
+      // Sync to backend
+      try {
+        // Syncing recurring appointments to backend
+        const apiPromises = instances.map(instance => {
+          // Convert time to 24h format if needed, or let backend handle it
+          // Backend handles "10:00 AM" format
+          
+          // Convert date to ISO format for backend (YYYY-MM-DD)
+          // instance.date is in "Nov 20, 2025" format
+          const dateObj = new Date(instance.date);
+          const isoDate = !isNaN(dateObj.getTime()) 
+            ? dateObj.toISOString().split('T')[0] 
+            : instance.date;
+
+          const apiPayload = {
+            patientId: instance.patientId,
+            patientName: instance.patientName || instance.name,
+            name: instance.name || instance.patientName,
+            email: instance.email,
+            phone: instance.phone,
+            appointmentType: instance.service,
+            scheduledDate: isoDate,
+            scheduledTime: instance.time, // Time is already formatted cleanly as "HH:MM AM/PM"
+            scheduledEndTime: instance.endTime || instance.appointmentEndTime || null,
+            startDate: instance.startDate || instance.date || null,
+            endDate: instance.endDate || null,
+            location: instance.address,
+            address: instance.address,
+            notes: instance.notes,
+            isRecurring: true,
+            seriesId: seriesId,
+            recurringFrequency: frequency,
+            recurringDuration: duration,
+            daysOfWeek: instance.daysOfWeek || instance.selectedDays || [],
+            preferredNurseId: instance.preferredNurseId || null,
+            preferredNurseName: instance.preferredNurseName || null,
+            preferredNurseCode: instance.preferredNurseCode || null
+          };
+          
+          return ApiService.createAppointment(apiPayload)
+            .then(response => {
+              if (response.success && response.appointment) {
+                // Update local instance with backend ID if needed
+                // For now, we just ensure it's created on backend
+                // Synced instance to backend
+              }
+            })
+            .catch(err => console.error(`Failed to sync instance ${instance.instanceNumber} to backend:`, err.message));
+        });
+        
+        // We don't await all of them to block the UI, but we start them
+        // Or we can await if we want to ensure they are created
+        // Let's await to be safe for this "test"
+        await Promise.all(apiPromises);
+        // Recurring appointments sync completed
+      } catch (apiError) {
+        console.error('Error syncing to backend:', apiError);
+        // Don't fail the whole process if backend sync fails, as we have local storage
+      }
       
       // Save series metadata
       await this.saveRecurringSeries(seriesId, {
@@ -267,10 +384,10 @@ class RecurringAppointmentService {
         endDate: instances[instances.length - 1].date,
       });
       
-      // Schedule reminder notifications
-      await this.scheduleReminders(instances, appointmentData.name);
+      // NOTE: Reminders are now managed by the backend via ReminderService
+      // No need to schedule them locally anymore
       
-      console.log(`✅ Successfully created ${instances.length} recurring appointments`);
+      // Successfully created recurring appointments
       
       return {
         success: true,
@@ -291,10 +408,30 @@ class RecurringAppointmentService {
    */
   static async getSeriesInstances(seriesId) {
     try {
-      const existingData = await AsyncStorage.getItem(this.APPOINTMENTS_KEY);
-      const appointments = existingData ? JSON.parse(existingData) : [];
+      const keys = await this.getAllAppointmentStorageKeys();
+      if (keys.length === 0) {
+        return [];
+      }
+
+      const entries = await AsyncStorage.multiGet(keys);
+      const matches = [];
+      entries.forEach(([key, value]) => {
+        if (!value) {
+          return;
+        }
+        try {
+          const appointments = JSON.parse(value);
+          appointments.forEach(apt => {
+            if (apt.seriesId === seriesId) {
+              matches.push(apt);
+            }
+          });
+        } catch (error) {
+          console.error('Error parsing appointments for key:', key, error);
+        }
+      });
       
-      return appointments.filter(apt => apt.seriesId === seriesId);
+      return matches;
     } catch (error) {
       console.error('Error getting series instances:', error);
       return [];
@@ -308,24 +445,39 @@ class RecurringAppointmentService {
    */
   static async cancelRecurringSeries(seriesId) {
     try {
-      const existingData = await AsyncStorage.getItem(this.APPOINTMENTS_KEY);
-      const appointments = existingData ? JSON.parse(existingData) : [];
-      
+      const keys = await this.getAllAppointmentStorageKeys();
+      if (keys.length === 0) {
+        return;
+      }
+
       const now = new Date();
-      
-      // Filter out future instances of this series
-      const updatedAppointments = appointments.map(apt => {
-        if (apt.seriesId === seriesId) {
-          const aptDate = this.parseAppointmentDate(apt.date, apt.time);
-          if (aptDate > now) {
-            return { ...apt, status: 'cancelled', cancelledAt: new Date().toISOString() };
+
+      await Promise.all(
+        keys.map(async storageKey => {
+          const existingData = await AsyncStorage.getItem(storageKey);
+          if (!existingData) {
+            return;
           }
-        }
-        return apt;
-      });
-      
-      await AsyncStorage.setItem(this.APPOINTMENTS_KEY, JSON.stringify(updatedAppointments));
-      console.log(`✅ Cancelled future instances of series ${seriesId}`);
+
+          let updated = false;
+          const appointments = JSON.parse(existingData);
+          const updatedAppointments = appointments.map(apt => {
+            if (apt.seriesId === seriesId) {
+              const aptDate = this.parseAppointmentDate(apt.date, apt.time);
+              if (aptDate > now) {
+                updated = true;
+                return { ...apt, status: 'cancelled', cancelledAt: new Date().toISOString() };
+              }
+            }
+            return apt;
+          });
+
+          if (updated) {
+            await AsyncStorage.setItem(storageKey, JSON.stringify(updatedAppointments));
+          }
+        })
+      );
+      // Cancelled future instances of series
     } catch (error) {
       console.error('Error cancelling recurring series:', error);
       throw error;

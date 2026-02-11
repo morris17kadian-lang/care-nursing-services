@@ -20,23 +20,197 @@ import * as ImagePicker from 'expo-image-picker';
 import * as FileSystem from 'expo-file-system';
 import { COLORS, GRADIENTS, SPACING } from '../constants';
 import { useAuth } from '../context/AuthContext';
+import { useNurses } from '../context/NurseContext';
+import FirebaseService from '../services/FirebaseService';
 
 export default function ProfileScreen({ navigation }) {
   const { user, updateUser } = useAuth();
+  const { nurses } = useNurses();
   const insets = useSafeAreaInsets();
   const [isEditing, setIsEditing] = useState(false);
   const [transactionModalVisible, setTransactionModalVisible] = useState(false);
   const [analyticsModalVisible, setAnalyticsModalVisible] = useState(false);
   const [settingsModalVisible, setSettingsModalVisible] = useState(false);
   const [profilePhoto, setProfilePhoto] = useState(user?.profilePhoto || null);
+  const [staffData, setStaffData] = useState(null);
+  const [profileRecord, setProfileRecord] = useState(null);
   const [formData, setFormData] = useState({
-    fullName: user?.username || '',
+    fullName: user?.fullName || user?.username || '',
     email: user?.email || '',
     phone: user?.phone || '',
-    address: user?.address || '',
-    emergencyContact: user?.emergencyContact || '',
-    emergencyPhone: user?.emergencyPhone || '',
+    address: typeof user?.address === 'object' && user?.address?.street 
+      ? user.address.street 
+      : (typeof user?.address === 'string' ? user.address : ''),
   });
+
+  const resolveStaffCode = React.useCallback((source) => {
+    const v =
+      source?.adminCode ||
+      source?.nurseCode ||
+      source?.code ||
+      source?.staffCode ||
+      source?.employeeId ||
+      source?.username ||
+      source?.email ||
+      '';
+    return typeof v === 'string' ? v.trim() : String(v || '').trim();
+  }, []);
+
+  const resolveAddressText = React.useCallback((source) => {
+    const address = source?.address;
+    if (typeof address === 'string' && address.trim()) return address.trim();
+    if (address && typeof address === 'object') {
+      const parts = [
+        address.street,
+        address.line1,
+        address.line2,
+        address.city,
+        address.town,
+        address.parish,
+        address.state,
+        address.country,
+        address.postalCode,
+      ]
+        .filter((p) => typeof p === 'string' && p.trim())
+        .map((p) => p.trim());
+      if (parts.length) return parts.join(', ');
+    }
+
+    const candidates = [
+      source?.streetAddress,
+      source?.homeAddress,
+      source?.clientAddress,
+      source?.location,
+      source?.addressLine1,
+      source?.locationDetails?.address,
+      source?.locationDetails?.street,
+      source?.locationDetails?.location,
+    ]
+      .filter((p) => typeof p === 'string' && p.trim())
+      .map((p) => p.trim());
+
+    return candidates[0] || '';
+  }, []);
+
+  const resolveCreatedDateDisplay = React.useCallback((source) => {
+    const raw =
+      source?.createdAt ||
+      source?.createdDate ||
+      source?.dateCreated ||
+      source?.dateAdded ||
+      source?.createdOn ||
+      source?.timestamp ||
+      null;
+
+    if (!raw) return '';
+
+    let dateValue = null;
+
+    if (raw instanceof Date) {
+      dateValue = raw;
+    } else if (typeof raw === 'string') {
+      // Handle "Feb 19, 2026" format from BookScreen
+      const match = raw.match(/^([A-Za-z]{3})\s+(\d{1,2}),?\s+(\d{4})$/);
+      if (match) {
+        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const monthIndex = monthNames.findIndex(m => m === match[1]);
+        if (monthIndex !== -1) {
+          const d = new Date(parseInt(match[3]), monthIndex, parseInt(match[2]));
+          if (!isNaN(d.getTime())) {
+            dateValue = d;
+          }
+        }
+      }
+      
+      if (!dateValue) {
+        const d = new Date(raw);
+        if (!Number.isNaN(d.getTime())) dateValue = d;
+      }
+    } else if (typeof raw === 'number') {
+      const d = new Date(raw);
+      if (!Number.isNaN(d.getTime())) dateValue = d;
+    } else if (typeof raw === 'object') {
+      // Firestore Timestamp-like
+      if (typeof raw.toDate === 'function') {
+        try {
+          const d = raw.toDate();
+          if (d && !Number.isNaN(d.getTime())) dateValue = d;
+        } catch {
+          // ignore
+        }
+      } else if (typeof raw.seconds === 'number') {
+        const d = new Date(raw.seconds * 1000);
+        if (!Number.isNaN(d.getTime())) dateValue = d;
+      }
+    }
+
+    if (!dateValue) return '';
+    return dateValue.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+  }, []);
+
+  const getProfileSource = React.useCallback(() => profileRecord || user || {}, [profileRecord, user]);
+
+  // Fetch canonical profile record (admins/nurses/users) so fields like staff code + address are available.
+  useEffect(() => {
+    let isCancelled = false;
+
+    const fetchProfile = async () => {
+      if (!user) {
+        setProfileRecord(null);
+        return;
+      }
+
+      try {
+        let result = null;
+
+        if (user?.id) {
+          result = await FirebaseService.getUser(user.id);
+        }
+
+        if ((!result || !result.success) && user?.username) {
+          result = await FirebaseService.getUserByUsername(user.username);
+        }
+
+        if ((!result || !result.success) && user?.email) {
+          result = await FirebaseService.getUserByEmail(user.email);
+        }
+
+        if (!isCancelled) {
+          setProfileRecord(result && result.success ? result.user : null);
+        }
+      } catch (e) {
+        if (!isCancelled) setProfileRecord(null);
+      }
+    };
+
+    fetchProfile();
+    return () => {
+      isCancelled = true;
+    };
+  }, [user?.id, user?.username, user?.email, user]);
+
+  // Load staff data if user is a nurse or admin
+  useEffect(() => {
+    // First update from user context data (API login response)
+    setFormData(prev => ({
+      ...prev,
+      fullName: user?.fullName || user?.username || prev.fullName || '',
+    }));
+
+    if (user?.role === 'nurse' && user?.id) {
+      const staffRecord = nurses.find(
+        n => n.id === user.id || n.email === user.email || n.code === user.nurseCode
+      );
+      if (staffRecord) {
+        setStaffData(staffRecord);
+        // Update fullName from staff record if available
+        setFormData(prev => ({
+          ...prev,
+          fullName: staffRecord.name || staffRecord.username || staffRecord.fullName || user?.fullName || user?.username || prev.fullName || '',
+        }));
+      }
+    }
+  }, [user, nurses]);
 
   // Sync profile photo when user data changes
   useEffect(() => {
@@ -44,6 +218,29 @@ export default function ProfileScreen({ navigation }) {
       setProfilePhoto(user.profilePhoto);
     }
   }, [user?.profilePhoto]);
+
+  // Sync email, phone and address when user data changes
+  useEffect(() => {
+    if (!isEditing) {
+      const source = getProfileSource();
+      const addressValue = resolveAddressText(source);
+      const nameValue =
+        source?.fullName ||
+        source?.name ||
+        source?.username ||
+        user?.fullName ||
+        user?.username ||
+        '';
+      
+      setFormData(prev => ({
+        ...prev,
+        fullName: nameValue || prev.fullName || '',
+        email: source?.email || user?.email || '',
+        phone: source?.phone || user?.phone || '',
+        address: addressValue,
+      }));
+    }
+  }, [user?.email, user?.phone, user?.address, profileRecord, isEditing, resolveAddressText, getProfileSource]);
 
   const handleSave = async () => {
     try {
@@ -57,13 +254,14 @@ export default function ProfileScreen({ navigation }) {
   };
 
   const handleCancel = () => {
+    const source = getProfileSource();
+    const addressValue = resolveAddressText(source);
+    
     setFormData({
-      fullName: user?.username || '',
-      email: user?.email || '',
-      phone: user?.phone || '',
-      address: user?.address || '',
-      emergencyContact: user?.emergencyContact || '',
-      emergencyPhone: user?.emergencyPhone || '',
+      fullName: source?.fullName || source?.name || source?.username || user?.fullName || user?.username || '',
+      email: source?.email || user?.email || '',
+      phone: source?.phone || user?.phone || '',
+      address: addressValue,
     });
     setProfilePhoto(user?.profilePhoto || null);
     setIsEditing(false);
@@ -152,6 +350,15 @@ export default function ProfileScreen({ navigation }) {
     </View>
   );
 
+  const SectionDivider = () => (
+    <LinearGradient
+      colors={GRADIENTS.header}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 0 }}
+      style={styles.sectionDivider}
+    />
+  );
+
   return (
     <SafeAreaView style={styles.container} edges={[]}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
@@ -212,7 +419,7 @@ export default function ProfileScreen({ navigation }) {
                 <LinearGradient
                   colors={GRADIENTS.primary}
                   start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
+                  end={{ x: 0, y: 1 }}
                   style={styles.defaultAvatarGradient}
                 >
                   <MaterialCommunityIcons name="shield-account" size={64} color={COLORS.white} />
@@ -230,8 +437,26 @@ export default function ProfileScreen({ navigation }) {
             )}
           </View>
           
-          <Text style={styles.adminName}>{formData.fullName || 'Admin'}</Text>
+          <Text style={styles.adminName}>{formData.fullName || 'User'}</Text>
+
+          {(() => {
+            const staffCode = resolveStaffCode(getProfileSource());
+            if (!staffCode) return null;
+            return (
+              <LinearGradient
+                colors={GRADIENTS.primary}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 0, y: 1 }}
+                style={styles.adminBadge}
+              >
+                <MaterialCommunityIcons name="badge-account" size={16} color={COLORS.white} />
+                <Text style={styles.adminBadgeText}>ID: {staffCode}</Text>
+              </LinearGradient>
+            );
+          })()}
         </View>
+
+        <SectionDivider />
 
         {/* Simple Info Cards - Stacked Vertically */}
         <View style={styles.infoCardsContainer}>
@@ -293,12 +518,12 @@ export default function ProfileScreen({ navigation }) {
           </View>
 
           <View style={styles.infoCard}>
-            <MaterialCommunityIcons name="map-marker-outline" size={24} color={COLORS.primary} />
+            <MaterialCommunityIcons name="home-outline" size={24} color={COLORS.primary} />
             <View style={styles.infoCardContent}>
               <Text style={styles.infoLabel}>Address</Text>
               {isEditing ? (
                 <TextInput
-                  style={[styles.infoInput, styles.multilineInfoInput]}
+                  style={styles.infoInput}
                   value={formData.address}
                   onChangeText={(text) => setFormData({...formData, address: text})}
                   placeholder="Enter address"
@@ -312,42 +537,67 @@ export default function ProfileScreen({ navigation }) {
             </View>
           </View>
 
-          <View style={styles.infoCard}>
-            <MaterialCommunityIcons name="account-heart" size={24} color={COLORS.primary} />
-            <View style={styles.infoCardContent}>
-              <Text style={styles.infoLabel}>Emergency Contact</Text>
-              {isEditing ? (
-                <TextInput
-                  style={styles.infoInput}
-                  value={formData.emergencyContact}
-                  onChangeText={(text) => setFormData({...formData, emergencyContact: text})}
-                  placeholder="Enter emergency contact name"
-                  placeholderTextColor={COLORS.textLight}
-                />
-              ) : (
-                <Text style={styles.infoValue}>{formData.emergencyContact || 'Not set'}</Text>
+          {/* Staff-specific details - READ ONLY */}
+          {staffData && (
+            <>
+              {staffData.specialization && (
+                <View style={styles.infoCard}>
+                  <MaterialCommunityIcons name="briefcase-outline" size={24} color={COLORS.primary} />
+                  <View style={styles.infoCardContent}>
+                    <Text style={styles.infoLabel}>Specialization</Text>
+                    <Text style={styles.infoValue}>{staffData.specialization}</Text>
+                  </View>
+                </View>
               )}
-            </View>
-          </View>
 
-          <View style={styles.infoCard}>
-            <MaterialCommunityIcons name="phone-alert" size={24} color={COLORS.primary} />
-            <View style={styles.infoCardContent}>
-              <Text style={styles.infoLabel}>Emergency Phone</Text>
-              {isEditing ? (
-                <TextInput
-                  style={styles.infoInput}
-                  value={formData.emergencyPhone}
-                  onChangeText={(text) => setFormData({...formData, emergencyPhone: text})}
-                  placeholder="Enter emergency phone number"
-                  placeholderTextColor={COLORS.textLight}
-                  keyboardType="phone-pad"
-                />
-              ) : (
-                <Text style={styles.infoValue}>{formData.emergencyPhone || 'Not set'}</Text>
+              {(staffData.bankName || staffData.accountNumber || staffData.accountHolderName || staffData.bankBranch) && (
+                <>
+                  <SectionDivider />
+                  <Text style={styles.sectionTitle}>Banking Details</Text>
+                  
+                  {staffData.bankName && (
+                    <View style={styles.infoCard}>
+                      <MaterialCommunityIcons name="bank" size={24} color={COLORS.primary} />
+                      <View style={styles.infoCardContent}>
+                        <Text style={styles.infoLabel}>Bank Name</Text>
+                        <Text style={styles.infoValue}>{staffData.bankName}</Text>
+                      </View>
+                    </View>
+                  )}
+
+                  {staffData.accountHolderName && (
+                    <View style={styles.infoCard}>
+                      <MaterialCommunityIcons name="account-outline" size={24} color={COLORS.primary} />
+                      <View style={styles.infoCardContent}>
+                        <Text style={styles.infoLabel}>Account Holder</Text>
+                        <Text style={styles.infoValue}>{staffData.accountHolderName}</Text>
+                      </View>
+                    </View>
+                  )}
+
+                  {staffData.accountNumber && (
+                    <View style={styles.infoCard}>
+                      <MaterialCommunityIcons name="credit-card-outline" size={24} color={COLORS.primary} />
+                      <View style={styles.infoCardContent}>
+                        <Text style={styles.infoLabel}>Account Number</Text>
+                        <Text style={styles.infoValue}>{staffData.accountNumber}</Text>
+                      </View>
+                    </View>
+                  )}
+
+                  {staffData.bankBranch && (
+                    <View style={styles.infoCard}>
+                      <MaterialCommunityIcons name="map-marker-radius-outline" size={24} color={COLORS.primary} />
+                      <View style={styles.infoCardContent}>
+                        <Text style={styles.infoLabel}>Bank Branch</Text>
+                        <Text style={styles.infoValue}>{staffData.bankBranch}</Text>
+                      </View>
+                    </View>
+                  )}
+                </>
               )}
-            </View>
-          </View>
+            </>
+          )}
         </View>
 
         {isEditing && (
@@ -362,8 +612,6 @@ export default function ProfileScreen({ navigation }) {
           </View>
         )}
 
-
-
         <View style={styles.bottomPadding} />
       </ScrollView>
       </KeyboardAvoidingView>
@@ -375,6 +623,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
   },
   flex: {
     flex: 1,
@@ -571,6 +828,19 @@ const styles = StyleSheet.create({
     paddingHorizontal: 20,
     gap: 12,
     marginTop: 20,
+  },
+  sectionDivider: {
+    height: 2,
+    borderRadius: 2,
+    marginVertical: 16,
+    marginHorizontal: 20,
+  },
+  sectionTitle: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.textLight,
+    marginLeft: 12,
+    marginBottom: 12,
   },
   infoCard: {
     backgroundColor: COLORS.white,

@@ -11,7 +11,6 @@ import {
   KeyboardAvoidingView,
   Platform,
   StatusBar,
-  Modal,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -23,37 +22,102 @@ import { useNotifications } from '../context/NotificationContext';
 import { useNurses } from '../context/NurseContext';
 import { useProfileEdit } from '../context/ProfileEditContext';
 import * as ImagePicker from 'expo-image-picker';
+import ApiService from '../services/ApiService';
 
-export default function NurseProfileScreen({ navigation }) {
-  const { user, updateUser } = useAuth();
+export default function NurseProfileScreen({ navigation, route }) {
+  const { user, updateUserProfile } = useAuth();
   const { sendNotificationToUser } = useNotifications();
   const { nurses } = useNurses();
-  const { createEditRequest, canEditProfile, revokeEditPermission } = useProfileEdit();
+  const { createEditRequest, canEditProfile, revokeEditPermission, editRequests, refreshRequests } = useProfileEdit();
   const insets = useSafeAreaInsets();
   const [profilePhoto, setProfilePhoto] = useState(user?.profilePhoto || null);
   const [nurseStaffData, setNurseStaffData] = useState(null);
   const [isEditing, setIsEditing] = useState(false);
+  const [hasPendingRequest, setHasPendingRequest] = useState(false);
   const [nursePayslips, setNursePayslips] = useState([]);
-  const [payslipModalVisible, setPayslipModalVisible] = useState(false);
+  const [payslipsExpanded, setPayslipsExpanded] = useState(false);
   const [formData, setFormData] = useState({
-    username: user?.username || '',
+    username: user?.name || user?.username || '',
     email: user?.email || '',
     phone: user?.phone || '',
     specialization: user?.specialization || '',
     nurseCode: user?.nurseCode || '',
-    experience: user?.experience || '',
-    qualification: user?.qualification || '',
-    address: user?.address || '',
-    emergencyContact: user?.emergencyContact || '',
-    emergencyPhone: user?.emergencyPhone || '',
+    bankName: user?.bankingDetails?.bankName || user?.bankName || '',
+    accountNumber: user?.bankingDetails?.accountNumber || user?.accountNumber || '',
+    accountHolderName: user?.bankingDetails?.accountHolderName || user?.accountHolderName || '',
+    bankBranch: user?.bankingDetails?.bankBranch || user?.bankBranch || '',
   });
 
-  // Load payslips for this nurse
+  const SectionDivider = () => (
+    <LinearGradient
+      colors={GRADIENTS.header}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 1, y: 0 }}
+      style={styles.sectionDivider}
+    />
+  );
+
+  // Check for navigation params to open payslips
+  useEffect(() => {
+    if (route?.params?.showPaymentHistory) {
+      setPayslipsExpanded(true);
+      navigation.setParams({ showPaymentHistory: undefined });
+    }
+  }, [route?.params]);
+
+  // Load payslips for this nurse - from backend with fallback to local storage
   useEffect(() => {
     const loadPayslips = async () => {
       try {
+        if (!user?.id) return;
+
+        const userKeyCandidates = [
+          user.id,
+          user.nurseCode,
+          user.code,
+          formData?.nurseCode,
+        ].filter(Boolean);
+
+        // Try to fetch from backend first
+        try {
+          const response = await ApiService.makeRequest('/payslips', {
+            method: 'GET'
+          });
+          
+          if (response && response.success && Array.isArray(response.data)) {
+            // Some backends return all payslips; filter to only this nurse.
+            const filtered = response.data.filter((p) => {
+              const payKeys = [
+                p?.staffId,
+                p?.nurseId,
+                p?.userId,
+                p?.employeeId,
+                p?.nurseCode,
+                p?.code,
+              ].filter(Boolean);
+              return payKeys.some((k) => userKeyCandidates.includes(k));
+            });
+
+            if (filtered.length > 0) {
+              filtered.sort((a, b) => new Date(b.paidDate || b.createdAt) - new Date(a.paidDate || a.createdAt));
+              setNursePayslips(filtered);
+
+              // Cache to local storage for offline access
+              const payslipsJson = (await AsyncStorage.getItem('nursePayslips')) || '{}';
+              const allPayslips = JSON.parse(payslipsJson);
+              allPayslips[user.id] = filtered;
+              await AsyncStorage.setItem('nursePayslips', JSON.stringify(allPayslips));
+              return;
+            }
+            // If backend returns nothing for this nurse, fall back to local storage without overwriting.
+          }
+        } catch (backendError) {
+          // Backend unavailable, falling back to local storage
+        }
+        
+        // Fallback to local storage if backend unavailable
         const payslipsJson = await AsyncStorage.getItem('nursePayslips');
-        if (payslipsJson && user?.id) {
+        if (payslipsJson) {
           const allPayslips = JSON.parse(payslipsJson);
           const myPayslips = allPayslips[user.id] || [];
           // Sort by paid date, most recent first
@@ -80,20 +144,19 @@ export default function NurseProfileScreen({ navigation }) {
       );
       
       if (staffRecord) {
-        console.log('👨‍⚕️ Found staff record:', staffRecord);
+        // Found staff record
         setNurseStaffData(staffRecord);
         // Update form data with staff record
         setFormData({
-          username: staffRecord.name || user?.username || '',
+          username: staffRecord.name || user?.name || user?.username || '',
           email: staffRecord.email || user?.email || '',
           phone: staffRecord.phone || user?.phone || '',
           specialization: staffRecord.specialization || user?.specialization || '',
           nurseCode: staffRecord.code || user?.nurseCode || '',
-          experience: user?.experience || '',
-          qualification: user?.qualification || '',
-          address: user?.address || '',
-          emergencyContact: user?.emergencyContact || '',
-          emergencyPhone: user?.emergencyPhone || '',
+          bankName: staffRecord.bankName || user?.bankingDetails?.bankName || '',
+          accountNumber: staffRecord.accountNumber || user?.bankingDetails?.accountNumber || '',
+          accountHolderName: staffRecord.accountHolderName || user?.bankingDetails?.accountHolderName || '',
+          bankBranch: staffRecord.bankBranch || user?.bankingDetails?.bankBranch || '',
         });
       }
     }
@@ -208,7 +271,11 @@ export default function NurseProfileScreen({ navigation }) {
               );
             } catch (error) {
               console.error('Failed to send edit request:', error);
-              Alert.alert('Error', 'Failed to send request. Please try again.');
+              if (error.message && error.message.includes('pending edit request')) {
+                Alert.alert('Request Pending', 'You already have a pending edit request awaiting approval.');
+              } else {
+                Alert.alert('Error', error.message || 'Failed to send request. Please try again.');
+              }
             }
           }
         }
@@ -218,17 +285,38 @@ export default function NurseProfileScreen({ navigation }) {
 
   // Check if editing is allowed
   useEffect(() => {
-    if (user?.id) {
-      const canEdit = canEditProfile(user.id);
-      setIsEditing(canEdit);
-    }
-  }, [user]);
+    const checkEditPermission = async () => {
+      if (user?.id) {
+        try {
+          // First check locally in editRequests
+          if (editRequests && editRequests.length > 0) {
+            const approvedRequest = editRequests.find(req => 
+              (req.nurseId === user.id || req.nurseId === user._id) && req.status === 'approved'
+            );
+            if (approvedRequest) {
+              setIsEditing(true);
+              return;
+            }
+          }
+          
+          // If not found locally, check backend
+          const canEdit = await canEditProfile(user.id);
+          setIsEditing(canEdit);
+        } catch (error) {
+          console.error('Failed to check edit permission:', error);
+          setIsEditing(false);
+        }
+      }
+    };
+
+    checkEditPermission();
+  }, [user, canEditProfile, editRequests]);
 
   const handleSave = async () => {
     try {
       // Save the profile updates including photo
       const updatedData = { ...formData, profilePhoto };
-      await updateUser(updatedData);
+      await updateUserProfile(user?.id, updatedData);
       
       // Revoke edit permission after save
       await revokeEditPermission(user?.id);
@@ -248,24 +336,59 @@ export default function NurseProfileScreen({ navigation }) {
     
     // Reset form data
     setFormData({
-      username: user?.username || '',
+      username: user?.name || user?.username || '',
       email: user?.email || '',
       phone: user?.phone || '',
       specialization: user?.specialization || '',
       nurseCode: user?.nurseCode || '',
-      experience: user?.experience || '',
-      qualification: user?.qualification || '',
-      address: user?.address || '',
-      emergencyContact: user?.emergencyContact || '',
-      emergencyPhone: user?.emergencyPhone || '',
+      bankName: user?.bankingDetails?.bankName || user?.bankName || '',
+      accountNumber: user?.bankingDetails?.accountNumber || user?.accountNumber || '',
+      accountHolderName: user?.bankingDetails?.accountHolderName || user?.accountHolderName || '',
+      bankBranch: user?.bankingDetails?.bankBranch || user?.bankBranch || '',
     });
     // Reset profile photo to original
     setProfilePhoto(user?.profilePhoto || null);
   };
 
+  // Check for pending requests
+  useEffect(() => {
+    if (editRequests && user?.id) {
+      const pending = editRequests.find(req => 
+        (req.nurseId === user.id || req.nurseId === user._id) && req.status === 'pending'
+      );
+      setHasPendingRequest(!!pending);
+    }
+  }, [editRequests, user]);
+
+  // Refresh requests on mount and when screen is focused
+  useEffect(() => {
+    refreshRequests();
+    
+    // Subscribe to focus events to refresh when returning to this screen
+    const unsubscribe = navigation.addListener('focus', () => {
+      refreshRequests();
+    });
+    
+    return unsubscribe;
+  }, [navigation, refreshRequests]);
+
+  const handleShowPendingAlert = () => {
+    Alert.alert(
+      'Request Pending',
+      'You already have a pending edit request awaiting approval from the administrator.'
+    );
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={[]}>
       <StatusBar barStyle="light-content" backgroundColor="transparent" translucent />
+      
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
       
       {/* Header */}
       <LinearGradient
@@ -274,6 +397,7 @@ export default function NurseProfileScreen({ navigation }) {
         end={{ x: 0, y: 1 }}
         style={[styles.header, { paddingTop: insets.top + 20, paddingBottom: 20 }]}
       >
+
         <View style={styles.headerRow}>
           <TouchableWeb 
             style={styles.iconButton}
@@ -285,12 +409,12 @@ export default function NurseProfileScreen({ navigation }) {
           <Text style={styles.headerTitle}>Nurse Profile</Text>
           {!isEditing ? (
             <TouchableWeb
-              style={styles.editButton}
-              onPress={handleRequestEditPermission}
+              style={[styles.editButton, hasPendingRequest && styles.pendingButton]}
+              onPress={hasPendingRequest ? handleShowPendingAlert : handleRequestEditPermission}
               activeOpacity={0.7}
             >
               <MaterialCommunityIcons 
-                name="lock-alert" 
+                name={hasPendingRequest ? "clock-outline" : "lock-alert"} 
                 size={24} 
                 color={COLORS.white} 
               />
@@ -341,7 +465,7 @@ export default function NurseProfileScreen({ navigation }) {
                 <LinearGradient
                   colors={GRADIENTS.primary}
                   start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
+                  end={{ x: 0, y: 1 }}
                   style={styles.defaultAvatarGradient}
                 >
                   <MaterialCommunityIcons name="account-heart" size={64} color={COLORS.white} />
@@ -359,38 +483,20 @@ export default function NurseProfileScreen({ navigation }) {
             )}
           </View>
           
-          <Text style={styles.adminName}>{formData.username}</Text>
+          <Text style={styles.adminName}>{formData.username || user?.name || user?.username || 'Nurse'}</Text>
           <Text style={styles.adminRole}>{formData.specialization || 'Registered Nurse'}</Text>
           <LinearGradient
             colors={GRADIENTS.primary}
             start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
+            end={{ x: 0, y: 1 }}
             style={styles.adminBadge}
           >
             <MaterialCommunityIcons name="badge-account" size={16} color={COLORS.white} />
             <Text style={styles.adminBadgeText}>ID: {formData.nurseCode}</Text>
           </LinearGradient>
-          
-          {/* Staff Status Badge */}
-          {nurseStaffData && (
-            <View style={styles.staffInfoBadge}>
-              <MaterialCommunityIcons 
-                name={nurseStaffData.isActive ? "check-circle" : "alert-circle"} 
-                size={16} 
-                color={nurseStaffData.isActive ? COLORS.success : COLORS.error} 
-              />
-              <Text style={[
-                styles.staffStatusText,
-                { color: nurseStaffData.isActive ? COLORS.success : COLORS.error }
-              ]}>
-                {nurseStaffData.isActive ? 'Active Staff' : 'Inactive'}
-              </Text>
-              <Text style={styles.staffDateText}>
-                Added: {nurseStaffData.dateAdded}
-              </Text>
-            </View>
-          )}
         </View>
+
+        <SectionDivider />
 
         {/* Simple Info Cards - Stacked Vertically */}
         <View style={styles.infoCardsContainer}>
@@ -450,111 +556,91 @@ export default function NurseProfileScreen({ navigation }) {
               )}
             </View>
           </View>
+        </View>
 
+        <SectionDivider />
+
+        {/* Banking Details Section */}
+        <View style={styles.infoCardsContainer}>
+          <Text style={styles.sectionHeading}>Banking Details</Text>
           <View style={styles.infoCard}>
-            <MaterialCommunityIcons name="school" size={24} color={COLORS.primary} />
+            <MaterialCommunityIcons name="bank" size={24} color={COLORS.primary} />
             <View style={styles.infoCardContent}>
-              <Text style={styles.infoLabel}>Qualification</Text>
+              <Text style={styles.infoLabel}>Bank Name</Text>
               {isEditing ? (
                 <TextInput
                   style={styles.editInput}
-                  value={formData.qualification}
-                  onChangeText={(text) => setFormData({ ...formData, qualification: text })}
-                  placeholder="Qualification"
+                  value={formData.bankName}
+                  onChangeText={(text) => setFormData({ ...formData, bankName: text })}
+                  placeholder="Bank Name"
                   placeholderTextColor={COLORS.textLight}
                 />
               ) : (
-                <Text style={styles.infoValue}>{formData.qualification || 'Not set'}</Text>
+                <Text style={styles.infoValue}>{formData.bankName || 'Not set'}</Text>
               )}
             </View>
           </View>
 
           <View style={styles.infoCard}>
-            <MaterialCommunityIcons name="calendar-clock" size={24} color={COLORS.primary} />
+            <MaterialCommunityIcons name="numeric" size={24} color={COLORS.primary} />
             <View style={styles.infoCardContent}>
-              <Text style={styles.infoLabel}>Experience</Text>
+              <Text style={styles.infoLabel}>Account Number</Text>
               {isEditing ? (
                 <TextInput
                   style={styles.editInput}
-                  value={formData.experience}
-                  onChangeText={(text) => setFormData({ ...formData, experience: text })}
-                  placeholder="Years of Experience"
+                  value={formData.accountNumber}
+                  onChangeText={(text) => setFormData({ ...formData, accountNumber: text })}
+                  placeholder="Account Number"
+                  keyboardType="numeric"
                   placeholderTextColor={COLORS.textLight}
                 />
               ) : (
-                <Text style={styles.infoValue}>{formData.experience || 'Not set'}</Text>
+                <Text style={styles.infoValue}>{formData.accountNumber || 'Not set'}</Text>
               )}
             </View>
           </View>
 
           <View style={styles.infoCard}>
-            <MaterialCommunityIcons name="map-marker-outline" size={24} color={COLORS.primary} />
+            <MaterialCommunityIcons name="account" size={24} color={COLORS.primary} />
             <View style={styles.infoCardContent}>
-              <Text style={styles.infoLabel}>Address</Text>
+              <Text style={styles.infoLabel}>Account Holder Name</Text>
               {isEditing ? (
                 <TextInput
                   style={styles.editInput}
-                  value={formData.address}
-                  onChangeText={(text) => setFormData({ ...formData, address: text })}
-                  placeholder="Address"
+                  value={formData.accountHolderName}
+                  onChangeText={(text) => setFormData({ ...formData, accountHolderName: text })}
+                  placeholder="Account Holder Name"
                   placeholderTextColor={COLORS.textLight}
                 />
               ) : (
-                <Text style={styles.infoValue}>{formData.address || 'Not set'}</Text>
+                <Text style={styles.infoValue}>{formData.accountHolderName || 'Not set'}</Text>
               )}
             </View>
           </View>
 
           <View style={styles.infoCard}>
-            <MaterialCommunityIcons name="account-heart" size={24} color={COLORS.primary} />
+            <MaterialCommunityIcons name="map-marker" size={24} color={COLORS.primary} />
             <View style={styles.infoCardContent}>
-              <Text style={styles.infoLabel}>Emergency Contact</Text>
+              <Text style={styles.infoLabel}>Bank Branch</Text>
               {isEditing ? (
                 <TextInput
                   style={styles.editInput}
-                  value={formData.emergencyContact}
-                  onChangeText={(text) => setFormData({ ...formData, emergencyContact: text })}
-                  placeholder="Emergency Contact Name"
+                  value={formData.bankBranch}
+                  onChangeText={(text) => setFormData({ ...formData, bankBranch: text })}
+                  placeholder="Bank Branch"
                   placeholderTextColor={COLORS.textLight}
                 />
               ) : (
-                <Text style={styles.infoValue}>{formData.emergencyContact || 'Not set'}</Text>
-              )}
-            </View>
-          </View>
-
-          <View style={styles.infoCard}>
-            <MaterialCommunityIcons name="phone-alert" size={24} color={COLORS.primary} />
-            <View style={styles.infoCardContent}>
-              <Text style={styles.infoLabel}>Emergency Phone</Text>
-              {isEditing ? (
-                <TextInput
-                  style={styles.editInput}
-                  value={formData.emergencyPhone}
-                  onChangeText={(text) => setFormData({ ...formData, emergencyPhone: text })}
-                  placeholder="Emergency Phone Number"
-                  keyboardType="phone-pad"
-                  placeholderTextColor={COLORS.textLight}
-                />
-              ) : (
-                <Text style={styles.infoValue}>{formData.emergencyPhone || 'Not set'}</Text>
+                <Text style={styles.infoValue}>{formData.bankBranch || 'Not set'}</Text>
               )}
             </View>
           </View>
         </View>
 
+        <SectionDivider />
+
         {/* Edit Request Info Banner */}
-        {!isEditing && (
-          <View style={styles.editInfoBanner}>
-            <MaterialCommunityIcons name="information" size={24} color={COLORS.primary} />
-            <View style={styles.editInfoText}>
-              <Text style={styles.editInfoTitle}>Profile Editing</Text>
-              <Text style={styles.editInfoDescription}>
-                To update your profile information, tap the lock icon above to request edit permission from the administrator.
-              </Text>
-            </View>
-          </View>
-        )}
+        {/* Moved to bottom of page */}
 
         {/* Editing Mode Banner */}
         {isEditing && (
@@ -572,7 +658,7 @@ export default function NurseProfileScreen({ navigation }) {
         {/* Payslips Section */}
         <TouchableWeb 
           style={styles.sectionCard}
-          onPress={() => setPayslipModalVisible(true)}
+          onPress={() => setPayslipsExpanded((prev) => !prev)}
           activeOpacity={0.7}
         >
           <View style={styles.sectionHeaderRow}>
@@ -584,115 +670,143 @@ export default function NurseProfileScreen({ navigation }) {
                   <Text style={styles.payslipBadgeText}>{nursePayslips.length}</Text>
                 </View>
               )}
-              <MaterialCommunityIcons name="chevron-down" size={24} color={COLORS.textLight} />
+              <MaterialCommunityIcons
+                name={payslipsExpanded ? 'chevron-up' : 'chevron-down'}
+                size={24}
+                color={COLORS.textLight}
+              />
             </View>
           </View>
           
           {nursePayslips.length === 0 ? (
-            <View style={styles.emptyPayslipsPreview}>
-              <Text style={styles.emptyPayslipsText}>No payslips yet</Text>
-              <Text style={styles.emptyPayslipsSubtext}>Payslips will appear here when marked as paid by admin</Text>
+            <View style={styles.emptyPayslipsPreviewCentered}>
+              <Text style={styles.emptyPayslipsTextCentered}>No payslips yet</Text>
+              <Text style={styles.emptyPayslipsSubtextCentered}>Payslips will appear here when marked as paid by admin</Text>
             </View>
           ) : (
             <View style={styles.payslipsPreview}>
               <Text style={styles.payslipsPreviewText}>
-                Latest: {nursePayslips[0]?.periodStart} - {nursePayslips[0]?.periodEnd}
+                Latest: {nursePayslips[0]?.periodStart || 'N/A'} - {nursePayslips[0]?.periodEnd || 'N/A'}
               </Text>
               <Text style={styles.payslipsPreviewAmount}>
-                J${parseFloat(nursePayslips[0]?.netPay || 0).toLocaleString()}
+                ${parseFloat(nursePayslips[0]?.netPay || 0).toLocaleString()}
               </Text>
             </View>
           )}
+
+          {payslipsExpanded && nursePayslips.length > 0 && (
+            <View style={styles.payslipsInlineList}>
+              {nursePayslips.map((payslip, index) => (
+                <View key={payslip?.id || `${payslip?.paidDate || payslip?.createdAt || 'payslip'}-${index}`} style={styles.payslipCard}>
+                  {/* Company Header */}
+                  <View style={styles.payslipCompanyHeader}>
+                    <View style={styles.payslipCompanyInfo}>
+                      <MaterialCommunityIcons name="receipt-text" size={24} color={COLORS.primary} />
+                      <Text style={styles.payslipCompanyName}>Care Nursing Services</Text>
+                    </View>
+                    <Text style={styles.payslipNumber}>Payslip #{payslip.id || index + 1}</Text>
+                  </View>
+
+                  {/* Period Section */}
+                  <View style={styles.payslipPeriodSection}>
+                    <Text style={styles.payslipSectionLabel}>PAY PERIOD</Text>
+                    <Text style={styles.payslipPeriod}>
+                      {payslip.periodStart} - {payslip.periodEnd}
+                    </Text>
+                    <Text style={styles.payslipDate}>
+                      Payment Date: {payslip.paidDate ? (() => {
+                        // Handle "Feb 19, 2026" format
+                        if (typeof payslip.paidDate === 'string') {
+                          const match = payslip.paidDate.match(/^([A-Za-z]{3})\s+(\d{1,2}),?\s+(\d{4})$/);
+                          if (match) {
+                            const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                            const monthIndex = monthNames.findIndex(m => m === match[1]);
+                            if (monthIndex !== -1) {
+                              const d = new Date(parseInt(match[3]), monthIndex, parseInt(match[2]));
+                              if (!isNaN(d.getTime())) {
+                                return d.toLocaleDateString();
+                              }
+                            }
+                          }
+                        }
+                        return new Date(payslip.paidDate).toLocaleDateString();
+                      })() : 'N/A'}
+                    </Text>
+                  </View>
+
+                  {/* Hours Breakdown Section */}
+                  <View style={styles.payslipSection}>
+                    <Text style={styles.payslipSectionTitle}>Hours Breakdown</Text>
+                    <View style={styles.payslipTableHeader}>
+                      <Text style={[styles.payslipTableHeaderText, { flex: 2, textAlign: 'left' }]}>Type</Text>
+                      <Text style={[styles.payslipTableHeaderText, { flex: 1, textAlign: 'center' }]}>Hours</Text>
+                      <Text style={[styles.payslipTableHeaderText, { flex: 1.5, textAlign: 'right' }]}>Amount</Text>
+                    </View>
+
+                    <View style={styles.payslipTableRow}>
+                      <Text style={[styles.payslipTableCell, { flex: 2, textAlign: 'left' }]}>Regular Hours</Text>
+                      <Text style={[styles.payslipTableCell, { flex: 1, textAlign: 'center' }]}>{payslip.regularHours}</Text>
+                      <Text style={[styles.payslipTableCell, { flex: 1.5, textAlign: 'right' }]}>${parseFloat(payslip.regularPay || 0).toLocaleString()}</Text>
+                    </View>
+
+                    {parseFloat(payslip.overtimeHours || 0) > 0 && (
+                      <View style={styles.payslipTableRow}>
+                        <Text style={[styles.payslipTableCell, { flex: 2, textAlign: 'left' }]}>Overtime Hours</Text>
+                        <Text style={[styles.payslipTableCell, { flex: 1, textAlign: 'center' }]}>{payslip.overtimeHours}</Text>
+                        <Text style={[styles.payslipTableCell, { flex: 1.5, textAlign: 'right' }]}>${parseFloat(payslip.overtimePay || 0).toLocaleString()}</Text>
+                      </View>
+                    )}
+
+                    {parseFloat(payslip.shiftHours || 0) > 0 && (
+                      <View style={styles.payslipTableRow}>
+                        <Text style={[styles.payslipTableCell, { flex: 2, textAlign: 'left' }]}>Shift Hours</Text>
+                        <Text style={[styles.payslipTableCell, { flex: 1, textAlign: 'center' }]}>{payslip.shiftHours}</Text>
+                        <Text style={[styles.payslipTableCell, { flex: 1.5, textAlign: 'right' }]}>${parseFloat(payslip.shiftPay || 0).toLocaleString()}</Text>
+                      </View>
+                    )}
+                  </View>
+
+                  {/* Payment Summary Section */}
+                  <View style={styles.payslipTotalSection}>
+                    <View style={styles.payslipTotalRow}>
+                      <Text style={styles.payslipTotalLabel}>Gross Pay:</Text>
+                      <Text style={styles.payslipTotalValue}>${parseFloat(payslip.grossPay || 0).toLocaleString()}</Text>
+                    </View>
+
+                    {parseFloat(payslip.deductions || 0) > 0 && (
+                      <View style={styles.payslipTotalRow}>
+                        <Text style={styles.payslipTotalLabel}>Deductions:</Text>
+                        <Text style={[styles.payslipTotalValue, { color: COLORS.danger }]}>-${parseFloat(payslip.deductions || 0).toLocaleString()}</Text>
+                      </View>
+                    )}
+
+                    <View style={styles.payslipFinalTotalRow}>
+                      <Text style={styles.payslipFinalTotalLabel}>Net Pay:</Text>
+                      <Text style={styles.payslipFinalTotalValue}>${parseFloat(payslip.netPay || 0).toLocaleString()}</Text>
+                    </View>
+                  </View>
+                </View>
+              ))}
+            </View>
+          )}
         </TouchableWeb>
+
+        {/* Edit Request Info Banner - Bottom */}
+        {!isEditing && (
+          <View style={styles.editInfoBannerBottom}>
+            <MaterialCommunityIcons name="information" size={20} color={COLORS.textLight} />
+            <View style={styles.editInfoTextBottom}>
+              <Text style={styles.editInfoDescriptionBottom}>
+                To update your profile information, tap the lock icon to request edit permission from the administrator.
+              </Text>
+            </View>
+          </View>
+        )}
 
         <View style={styles.bottomPadding} />
       </ScrollView>
       </KeyboardAvoidingView>
 
-      {/* Payslip Modal */}
-      <Modal
-        visible={payslipModalVisible}
-        animationType="slide"
-        transparent={true}
-        onRequestClose={() => setPayslipModalVisible(false)}
-      >
-        <View style={styles.modalOverlay}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <View style={styles.modalHeaderLeft}>
-                <MaterialCommunityIcons name="receipt-text" size={24} color={COLORS.primary} />
-                <Text style={styles.modalTitle}>My Payslips</Text>
-              </View>
-              <TouchableWeb 
-                onPress={() => setPayslipModalVisible(false)}
-                activeOpacity={0.7}
-              >
-                <MaterialCommunityIcons name="close" size={24} color={COLORS.textLight} />
-              </TouchableWeb>
-            </View>
-
-            <ScrollView style={styles.modalScroll} showsVerticalScrollIndicator={false}>
-              {nursePayslips.length === 0 ? (
-                <View style={styles.emptyPayslipsModal}>
-                  <MaterialCommunityIcons name="receipt" size={64} color={COLORS.border} />
-                  <Text style={styles.emptyPayslipsModalText}>No payslips yet</Text>
-                  <Text style={styles.emptyPayslipsModalSubtext}>
-                    Payslips will appear here when marked as paid by admin
-                  </Text>
-                </View>
-              ) : (
-                <View style={styles.payslipsList}>
-                  {nursePayslips.map((payslip, index) => (
-                    <View key={index} style={styles.payslipItem}>
-                      <View style={styles.payslipHeader}>
-                        <View style={styles.payslipInfo}>
-                          <Text style={styles.payslipPeriod}>
-                            {payslip.periodStart} - {payslip.periodEnd}
-                          </Text>
-                          <Text style={styles.payslipDate}>
-                            Paid: {new Date(payslip.paidDate).toLocaleDateString()}
-                          </Text>
-                        </View>
-                        <View style={styles.payslipAmount}>
-                          <Text style={styles.payslipAmountLabel}>Net Pay</Text>
-                          <Text style={styles.payslipAmountValue}>
-                            J${parseFloat(payslip.netPay).toLocaleString()}
-                          </Text>
-                        </View>
-                      </View>
-                      
-                      <View style={styles.payslipDetails}>
-                        <View style={styles.payslipDetailRow}>
-                          <Text style={styles.payslipDetailLabel}>Regular Hours:</Text>
-                          <Text style={styles.payslipDetailValue}>{payslip.regularHours} hrs</Text>
-                        </View>
-                        {parseFloat(payslip.overtimeHours || 0) > 0 && (
-                          <View style={styles.payslipDetailRow}>
-                            <Text style={styles.payslipDetailLabel}>Overtime:</Text>
-                            <Text style={styles.payslipDetailValue}>{payslip.overtimeHours} hrs</Text>
-                          </View>
-                        )}
-                        {parseFloat(payslip.shiftHours || 0) > 0 && (
-                          <View style={styles.payslipDetailRow}>
-                            <Text style={styles.payslipDetailLabel}>Shift Hours:</Text>
-                            <Text style={styles.payslipDetailValue}>{payslip.shiftHours} hrs</Text>
-                          </View>
-                        )}
-                        <View style={styles.payslipDetailRow}>
-                          <Text style={styles.payslipDetailLabel}>Gross Pay:</Text>
-                          <Text style={styles.payslipDetailValue}>
-                            J${parseFloat(payslip.grossPay).toLocaleString()}
-                          </Text>
-                        </View>
-                      </View>
-                    </View>
-                  ))}
-                </View>
-              )}
-            </ScrollView>
-          </View>
-        </View>
-      </Modal>
     </SafeAreaView>
   );
 }
@@ -701,6 +815,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
   },
   flex: {
     flex: 1,
@@ -738,6 +861,9 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(255, 255, 255, 0.2)',
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  pendingButton: {
+    backgroundColor: 'rgba(255, 152, 0, 0.9)', // Orange for pending
   },
   editButtonsContainer: {
     flexDirection: 'row',
@@ -894,29 +1020,16 @@ const styles = StyleSheet.create({
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.white,
   },
-  staffInfoBadge: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: COLORS.background,
-    paddingHorizontal: 16,
-    paddingVertical: 8,
-    borderRadius: 20,
-    gap: 8,
-  },
-  staffStatusText: {
-    fontSize: 13,
-    fontFamily: 'Poppins_600SemiBold',
-  },
-  staffDateText: {
-    fontSize: 11,
-    fontFamily: 'Poppins_400Regular',
-    color: COLORS.textLight,
-    marginLeft: 4,
-  },
   infoCardsContainer: {
     paddingHorizontal: 20,
     gap: 12,
     marginTop: 20,
+  },
+  sectionDivider: {
+    height: 2,
+    borderRadius: 2,
+    marginHorizontal: 20,
+    marginVertical: 12,
   },
   infoCard: {
     backgroundColor: COLORS.white,
@@ -941,6 +1054,14 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 2,
     marginTop: 16,
+  },
+  sectionHeading: {
+    fontSize: 16,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+    marginBottom: 12,
+    marginTop: 8,
+    marginLeft: 4,
   },
   sectionHeaderRow: {
     flexDirection: 'row',
@@ -980,6 +1101,33 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 2,
   },
+  editInfoBannerBottom: {
+    padding: 20,
+    paddingBottom: 40,
+    alignItems: 'center',
+    justifyContent: 'center',
+    flexDirection: 'row',
+    gap: 8,
+  },
+  editInfoTextBottom: {
+    flex: 1,
+  },
+  editInfoDescriptionBottom: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textLight,
+    opacity: 0.5,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
+  editInfoDescriptionFaded: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textLight,
+    opacity: 0.6,
+    textAlign: 'center',
+    lineHeight: 18,
+  },
   editInfoText: {
     flex: 1,
   },
@@ -996,67 +1144,144 @@ const styles = StyleSheet.create({
     lineHeight: 20,
   },
   payslipsList: {
-    gap: 12,
+    gap: 16,
   },
-  payslipItem: {
+  payslipsInlineList: {
+    marginTop: 16,
+    gap: 16,
+  },
+  payslipCard: {
     backgroundColor: COLORS.white,
     borderRadius: 12,
-    padding: 16,
-    borderLeftWidth: 4,
-    borderLeftColor: COLORS.primary,
+    padding: 12,
+    marginBottom: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
   },
-  payslipHeader: {
+  payslipCompanyHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
-    marginBottom: 12,
-    paddingBottom: 12,
+    alignItems: 'center',
+    marginBottom: 15,
+    paddingBottom: 15,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
   },
-  payslipInfo: {
-    flex: 1,
+  payslipCompanyInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  payslipCompanyName: {
+    fontSize: 18,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.primary,
+    marginLeft: 8,
+  },
+  payslipNumber: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+  },
+  payslipPeriodSection: {
+    marginBottom: 20,
+    paddingBottom: 15,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  payslipSectionLabel: {
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.textMuted,
+    marginBottom: 8,
+    textTransform: 'uppercase',
   },
   payslipPeriod: {
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.text,
     marginBottom: 4,
   },
   payslipDate: {
-    fontSize: 12,
+    fontSize: 13,
     fontFamily: 'Poppins_400Regular',
     color: COLORS.textLight,
   },
-  payslipAmount: {
-    alignItems: 'flex-end',
+  payslipSection: {
+    marginBottom: 20,
   },
-  payslipAmountLabel: {
+  payslipSectionTitle: {
+    fontSize: 15,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+    marginBottom: 12,
+  },
+  payslipTableHeader: {
+    flexDirection: 'row',
+    paddingVertical: 12,
+    backgroundColor: '#f8f9fa',
+    borderRadius: 6,
+    marginBottom: 8,
+    paddingHorizontal: 12,
+  },
+  payslipTableHeaderText: {
     fontSize: 11,
-    fontFamily: 'Poppins_400Regular',
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.textMuted,
+    textTransform: 'uppercase',
+  },
+  payslipTableRow: {
+    flexDirection: 'row',
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: '#f0f0f0',
+  },
+  payslipTableCell: {
+    fontSize: 13,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.text,
+  },
+  payslipTotalSection: {
+    marginTop: 15,
+    paddingTop: 15,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
+  payslipTotalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 8,
+  },
+  payslipTotalLabel: {
+    fontSize: 14,
+    fontFamily: 'Poppins_500Medium',
     color: COLORS.textLight,
-    marginBottom: 2,
   },
-  payslipAmountValue: {
-    fontSize: 18,
-    fontFamily: 'Poppins_700Bold',
-    color: COLORS.success,
+  payslipTotalValue: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
   },
-  payslipDetails: {
-    gap: 8,
-  },
-  payslipDetailRow: {
+  payslipFinalTotalRow: {
+    paddingTop: 12,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    marginTop: 8,
     flexDirection: 'row',
     justifyContent: 'space-between',
   },
-  payslipDetailLabel: {
-    fontSize: 13,
-    fontFamily: 'Poppins_400Regular',
-    color: COLORS.textLight,
-  },
-  payslipDetailValue: {
-    fontSize: 13,
-    fontFamily: 'Poppins_600SemiBold',
+  payslipFinalTotalLabel: {
+    fontSize: 16,
+    fontFamily: 'Poppins_700Bold',
     color: COLORS.text,
+  },
+  payslipFinalTotalValue: {
+    fontSize: 18,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.success,
   },
   emptyPayslips: {
     alignItems: 'center',
@@ -1065,17 +1290,36 @@ const styles = StyleSheet.create({
   emptyPayslipsPreview: {
     paddingVertical: 16,
   },
+  emptyPayslipsPreviewCentered: {
+    paddingVertical: 24,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   emptyPayslipsText: {
     fontSize: 15,
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.textLight,
     marginTop: 12,
   },
+  emptyPayslipsTextCentered: {
+    fontSize: 15,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.textLight,
+    marginBottom: 4,
+    textAlign: 'center',
+  },
   emptyPayslipsSubtext: {
     fontSize: 13,
     fontFamily: 'Poppins_400Regular',
     color: COLORS.textLight,
     marginTop: 4,
+    textAlign: 'center',
+    paddingHorizontal: 40,
+  },
+  emptyPayslipsSubtextCentered: {
+    fontSize: 13,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textLight,
     textAlign: 'center',
     paddingHorizontal: 40,
   },
@@ -1104,17 +1348,6 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
     marginTop: 12,
-  },
-  payslipsPreviewText: {
-    fontSize: 13,
-    fontFamily: 'Poppins_500Medium',
-    color: COLORS.text,
-    marginBottom: 4,
-  },
-  payslipsPreviewAmount: {
-    fontSize: 18,
-    fontFamily: 'Poppins_700Bold',
-    color: COLORS.success,
   },
   modalOverlay: {
     flex: 1,

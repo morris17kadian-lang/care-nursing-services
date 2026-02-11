@@ -2,18 +2,280 @@ import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { auth, db } from '../config/firebase';
+import {
+  addDoc,
+  collection,
+  doc,
+  getDoc,
+  getDocs,
+  limit,
+  onSnapshot,
+  orderBy,
+  query,
+  runTransaction,
+  serverTimestamp,
+  setDoc,
+  where,
+} from 'firebase/firestore';
 import InvoiceImageGenerator from './InvoiceImageGenerator';
+import ApiService from './ApiService';
+import EmailService from './EmailService';
 
 class InvoiceService {
+    static async getAppointmentStorageKeys() {
+      try {
+        const keys = await AsyncStorage.getAllKeys();
+        return keys.filter(key => key.startsWith('@care_appointments_'));
+      } catch (error) {
+        return [];
+      }
+    }
+
   static STORAGE_KEY = '@care_invoices';
   static INVOICE_COUNTER_KEY = '@care_invoice_counter';
-  
-  // Helper function to format dates consistently
-  static formatDateForInvoice(dateString) {
-    if (!dateString) return new Date().toLocaleDateString('en-US');
-    
+  static SYNC_QUEUE_KEY = '@care_invoice_sync_queue';
+  static RECURRING_SCHEDULES_KEY = '@care_recurring_schedules';
+
+  static COUNTERS_COLLECTION = 'counters';
+  // Use a dedicated counter for nurse invoices to avoid colliding with legacy/migrated
+  // generic invoice counters (which commonly start at 1000).
+  static INVOICE_COUNTER_DOC_ID = 'nurseInvoiceNumber';
+
+  static _autoSeedAttempted = false;
+  static _firestoreInvoiceCounterBlocked = false;
+
+  static _extractNurseInvoiceSequence(invoiceId) {
+    if (typeof invoiceId !== 'string') return null;
+    const match = invoiceId.match(/^NUR-INV-(\d+)$/i);
+    if (!match) return null;
+    const parsed = parseInt(match[1], 10);
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null;
+  }
+
+  static async _inferLastNurseInvoiceSequenceFromFirestore() {
     try {
-      // If already in "MMM DD, YYYY" format, return as is
+      const invoicesRef = collection(db, 'invoices');
+      // Invoice IDs are zero-padded (NUR-INV-0001), so ordering by invoiceId desc
+      // gives us the highest sequence in typical usage.
+      const q = query(invoicesRef, orderBy('invoiceId', 'desc'), limit(25));
+      const snap = await getDocs(q);
+      for (const d of snap.docs) {
+        const seq = this._extractNurseInvoiceSequence(d.data()?.invoiceId);
+        if (seq !== null) return seq;
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  static async _ensureFirestoreInvoiceCounterSeeded(localCounter) {
+    // Best-effort: if the counter doc doesn't exist yet, initialize it automatically.
+    // This makes invoice numbering behave like staff codes (admin/nurse counters) without
+    // requiring an admin to manually set the last invoice number.
+    if (this._autoSeedAttempted) return;
+    this._autoSeedAttempted = true;
+
+    try {
+      const counterRef = doc(db, this.COUNTERS_COLLECTION, this.INVOICE_COUNTER_DOC_ID);
+      const snap = await getDoc(counterRef);
+      if (snap.exists()) return;
+
+      const inferred = await this._inferLastNurseInvoiceSequenceFromFirestore();
+      const seedValue = Math.max(Number.isFinite(localCounter) ? localCounter : 0, inferred ?? 0);
+
+      await setDoc(
+        counterRef,
+        {
+          sequence: seedValue,
+          updatedAt: serverTimestamp(),
+          autoSeeded: true,
+          autoSeedSource: inferred !== null ? 'invoices' : 'local',
+          seededAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+
+      await this._setLocalInvoiceCounter(seedValue);
+    } catch {
+      // Ignore auto-seed failures (offline / rules). Transaction path will still work when possible.
+    }
+  }
+
+  static _parseCounterValue(counterStr) {
+    const parsed = counterStr ? parseInt(counterStr, 10) : 0;
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : 0;
+  }
+
+  static async _getLocalInvoiceCounter() {
+    try {
+      const counterStr = await AsyncStorage.getItem(this.INVOICE_COUNTER_KEY);
+      return this._parseCounterValue(counterStr);
+    } catch {
+      return 0;
+    }
+  }
+
+  static async _setLocalInvoiceCounter(value) {
+    try {
+      if (Number.isFinite(value) && value >= 0) {
+        await AsyncStorage.setItem(this.INVOICE_COUNTER_KEY, String(value));
+      }
+    } catch {
+      // Ignore local storage failures
+    }
+  }
+
+  static formatAddressForStorage(addressValue) {
+    if (!addressValue) return '';
+    if (typeof addressValue === 'string') return addressValue;
+    if (typeof addressValue !== 'object') return String(addressValue);
+
+    const parts = [];
+    if (addressValue.street) parts.push(addressValue.street);
+    if (addressValue.city) parts.push(addressValue.city);
+    if (addressValue.parish) parts.push(addressValue.parish);
+    if (addressValue.postalCode) parts.push(addressValue.postalCode);
+    if (addressValue.country) parts.push(addressValue.country);
+    return parts.filter(Boolean).join(', ');
+  }
+  
+  /**
+   * Add item to sync queue for offline changes
+   */
+  static async queueForSync(action, data) {
+    try {
+      const queue = await AsyncStorage.getItem(this.SYNC_QUEUE_KEY);
+      const syncQueue = queue ? JSON.parse(queue) : [];
+      
+      syncQueue.push({
+        id: `${action}-${Date.now()}`,
+        action, // 'create', 'update', 'delete', 'create_schedule'
+        data,
+        timestamp: new Date().toISOString(),
+        retries: 0
+      });
+      
+      await AsyncStorage.setItem(this.SYNC_QUEUE_KEY, JSON.stringify(syncQueue));
+      // Queued for sync
+    } catch (error) {
+      // Error adding to sync queue
+    }
+  }
+
+  /**
+   * Process sync queue when connection is restored
+   */
+  static async processSyncQueue() {
+    try {
+      const queue = await AsyncStorage.getItem(this.SYNC_QUEUE_KEY);
+      if (!queue) return;
+
+      const syncQueue = JSON.parse(queue);
+      if (syncQueue.length === 0) return;
+
+      // Processing queued changes
+      
+      const processed = [];
+      const failed = [];
+
+      for (const item of syncQueue) {
+        try {
+          let success = false;
+          
+          switch (item.action) {
+            case 'create':
+              await ApiService.post('/api/invoices', item.data);
+              success = true;
+              break;
+            case 'update':
+              await ApiService.put(`/api/invoices/${item.data.invoiceId}`, item.data);
+              success = true;
+              break;
+            case 'delete':
+              await ApiService.delete(`/api/invoices/${item.data.invoiceId}`);
+              success = true;
+              break;
+            case 'create_schedule':
+              await ApiService.post('/api/recurring-invoices/schedules', item.data);
+              success = true;
+              break;
+            case 'update_schedule':
+              await ApiService.put(`/api/recurring-invoices/schedules/${item.data.id}`, item.data);
+              success = true;
+              break;
+          }
+
+          if (success) {
+            processed.push(item.id);
+            // Synced
+          }
+        } catch (error) {
+          item.retries = (item.retries || 0) + 1;
+          if (item.retries > 3) {
+            failed.push(item.id);
+            // Failed after 3 retries
+          } else {
+            // Retry for sync item
+          }
+        }
+      }
+
+      // Remove successfully processed items
+      const remainingQueue = syncQueue.filter(item => !processed.includes(item.id));
+      
+      if (remainingQueue.length > 0) {
+        await AsyncStorage.setItem(this.SYNC_QUEUE_KEY, JSON.stringify(remainingQueue));
+      } else {
+        await AsyncStorage.removeItem(this.SYNC_QUEUE_KEY);
+      }
+
+      // Sync complete
+      return {
+        synced: processed.length,
+        failed: failed.length,
+        remaining: remainingQueue.length
+      };
+    } catch (error) {
+      // Error processing sync queue
+    }
+  }
+  
+  /**
+   * Get sync queue status
+   */
+  static async getSyncQueueStatus() {
+    try {
+      const queue = await AsyncStorage.getItem(this.SYNC_QUEUE_KEY);
+      const syncQueue = queue ? JSON.parse(queue) : [];
+      return {
+        hasPendingChanges: syncQueue.length > 0,
+        pendingCount: syncQueue.length,
+        items: syncQueue
+      };
+    } catch (error) {
+      return { hasPendingChanges: false, pendingCount: 0, items: [] };
+    }
+  }
+  
+
+  static formatDateForInvoice(dateString) {
+    if (!dateString) {
+      const today = new Date();
+      return today.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+    }
+
+    const formatOptions = { year: 'numeric', month: 'short', day: 'numeric' };
+
+    try {
+      if (dateString instanceof Date) {
+        return !isNaN(dateString.getTime())
+          ? dateString.toLocaleDateString('en-US', formatOptions)
+          : new Date().toLocaleDateString('en-US', formatOptions);
+      }
+
+      // If already in "MMM D, YYYY" format (e.g., "Dec 23, 2025"), return as is
       if (typeof dateString === 'string' && /^[A-Z][a-z]{2}\s\d{1,2},\s\d{4}$/.test(dateString)) {
         return dateString;
       }
@@ -21,66 +283,198 @@ class InvoiceService {
       // Try to parse as Date
       const date = new Date(dateString);
       if (!isNaN(date.getTime())) {
-        return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+        return date.toLocaleDateString('en-US', formatOptions);
       }
       
       // If can't parse, return today's date
-      return new Date().toLocaleDateString('en-US');
+      return new Date().toLocaleDateString('en-US', formatOptions);
     } catch (error) {
-      return new Date().toLocaleDateString('en-US');
+      return new Date().toLocaleDateString('en-US', formatOptions);
     }
   }
+
+  /**
+   * Format currency with thousand separators (e.g., J$1,234.56)
+   */
+  static formatCurrency(amount, currencyCode = 'JMD') {
+    const numericAmount = typeof amount === 'number'
+      ? amount
+      : parseFloat(amount || 0) || 0;
+
+    const currencyMap = {
+      JMD: 'J$',
+      USD: 'US$',
+      CAD: 'CA$',
+      EUR: '€',
+      GBP: '£'
+    };
+
+    const symbol = currencyMap[currencyCode] || currencyCode || 'J$';
+    // Add thousand separators with toLocaleString
+    return `${symbol}${numericAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+
+  static parseDateInput(value) {
+    if (!value) return null;
+
+    if (value instanceof Date) {
+      return isNaN(value.getTime()) ? null : value;
+    }
+
+    if (typeof value === 'object') {
+      if (typeof value.toDate === 'function') {
+        const parsed = value.toDate();
+        return parsed && !isNaN(parsed.getTime()) ? parsed : null;
+      }
+
+      if (typeof value.seconds === 'number') {
+        return new Date(value.seconds * 1000);
+      }
+
+      if (value.$date) {
+        const parsed = new Date(value.$date);
+        return isNaN(parsed.getTime()) ? null : parsed;
+      }
+    }
+
+    // Handle "Feb 19, 2026" format from BookScreen
+    if (typeof value === 'string') {
+      const match = value.match(/^([A-Za-z]{3})\s+(\d{1,2}),?\s+(\d{4})$/);
+      if (match) {
+        const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+        const monthIndex = monthNames.findIndex(m => m === match[1]);
+        if (monthIndex !== -1) {
+          const d = new Date(parseInt(match[3]), monthIndex, parseInt(match[2]));
+          if (!isNaN(d.getTime())) {
+            return d;
+          }
+        }
+      }
+    }
+
+    const parsed = new Date(value);
+    return isNaN(parsed.getTime()) ? null : parsed;
+  }
   
-  // Service rates configuration - SYNCED WITH ACTUAL SERVICE PRICES
+  // Service rates configuration - UPDATED JAN 21, 2026 per Nurse Bernard's pricing
   static SERVICE_RATES = {
-    // Clinical Services
+    // Wound Care Services
+    'Wound Care - With Supplies': 15000,
+    'Wound Care - Without Supplies': 9500,
+    'Wound Care': 9500, // Default without supplies
+    
+    // NG Tube Services
+    'NG Tube Repass - With Supplies': 15000,
+    'NG Tube Repass - Without Supplies': 8500,
+    'NG Tubes': 8500, // Default without supplies
+    
+    // Urinary Catheter Services
+    'Repass Urine Catheter - With Supplies': 16500,
+    'Repass Urine Catheter - Without Supplies': 10000,
+    'Urinary Catheter': 10000, // Default without supplies
+    
+    // IV Services
+    'IV Therapy Monitoring (2hrs)': 27350,
+    'IV Cannulation': 8500,
+    'IV Access': 8500, // Alias for IV Cannulation
+    
+    // Nursing Services - Practical Nurse (PN)
+    'PN - 8 Hour Service': 7500,
+    'PN - 12 Hour Service': 9500,
+    'PN - 8 Hour Shift': 7500, // Alias
+    'PN - 12 Hour Shift': 9500, // Alias
+    'Practical Nurse Shift': 7500, // Default to 8hr rate
+    
+    // Registered Nurse (RN)
+    'RN - Hourly': 4500,
+    'Registered Nurse Hourly': 4500,
+    'RN - Hourly (1-4hrs)': 4500, // Legacy alias
+    'RN - Hourly (5+ hrs)': 4500, // Updated to flat rate
+    
+    // Physiotherapy
+    'Physiotherapy (2hrs)': 10000,
+    'Physiotherapy': 10000,
+    'Physical Therapy': 10000, // Alias
+    
+    // Doctors Visits
+    'Doctors Visits': 0, // Location-based pricing - to be calculated
+    
+    // Live-in Care Services
+    'Weekly Live-in Care (7 days)': 55000,
+    'Monthly Live-in Care (4 weeks)': 170000,
+    'PN - Weekly Live-in': 55000, // Alias
+    'PN - Monthly Live-in': 170000, // Alias
+    'Caregiver - Weekly Live-in': 55000, // Alias
+    'Caregiver - Monthly Live-in': 170000, // Alias
+    
+    // Legacy/Backward Compatibility Services
     'Dressings': 6750,
     'Medication Administration': 5275,
-    'NG Tubes': 12800,
-    'Urinary Catheter': 11300,
-    'IV Access': 9800,
     'Tracheostomy Care': 14300,
     'Blood Draws': 6025,
-    'Wound Care': 10550,
     'Injection Services': 5275,
-    
-    // Therapy
-    'Physiotherapy': 12050,
-    'Physical Therapy': 12050, // Alias
-    
-    // Home Care (hourly rates)
     'Home Nursing': 18100,
     'Elderly Care': 16575,
-    
-    // Support Services
     'Hospital Sitter': 15075,
     'Post-Surgery Care': 22575,
     'Post-Surgical Care': 22575, // Alias
     'Palliative Care': 19575,
-    
-    // Monitoring
     'Vital Signs': 4525,
     'Health Assessments': 13575,
     'Health Assessment': 13575, // Alias
     'Diabetic Care': 8300,
+    'PN - Daily Live-in (24hrs)': 9000, // Legacy
+    'Caregiver - Daily Live-in (24hrs)': 9000, // Legacy
     
     // Legacy/Generic services (fallback)
     'Home Visit': 18100,
     'Health Monitoring': 8300,
     'General Nursing': 18100,
     'Emergency Care': 22575,
-    'Consultation': 13575
+    'Consultation': 13575,
   };
 
   // Company information
   static COMPANY_INFO = {
-    name: 'CARE Medical Services',
-    address: '456 Oak Ave, Town, State 67890',
-    phone: '+1 (555) 987-6543',
-    email: 'billing@care.com',
-    website: 'www.care.com',
-    paymentInfo: 'NCB Account #123456789\nE-Transfer: billing@care.com\nCash accepted for home visits'
+    name: 'CARE Nursing Services and More',
+    address: '15 Oaklands Ave, Kingston 10, Jamaica, W.I.',
+    phone: '876-288-7304',
+    email: 'care@nursingcareja.com',
+    website: 'www.nursingcareja.com',
+    paymentInfo: 'NCB Bank Account Details:\nJMD Account: 380111365078\nUSD Account: 380111365086\nPayee: Nurse Bernard\nBranch: Liguanea\nSwift Code: JNCBJMKX\nSort Code: 380111\n\nCash accepted for home visits\nPOS machine available'
   };
+
+  /**
+   * Fetch and update company payment info from backend
+   */
+  static async updateCompanyInfo() {
+    try {
+      const response = await ApiService.getPaymentSettings();
+      if (response.success && response.data) {
+        const settings = response.data;
+        // Construct payment info string from settings
+        let paymentInfoStr = '';
+        
+        if (settings.bankName) paymentInfoStr += `${settings.bankName} Bank Account Details:\n`;
+        if (settings.accountNumber) paymentInfoStr += `Account: ${settings.accountNumber}\n`;
+        if (settings.accountName) paymentInfoStr += `Payee: ${settings.accountName}\n`;
+        if (settings.branch) paymentInfoStr += `Branch: ${settings.branch}\n`;
+        
+        // Add any custom instructions
+        if (settings.paymentInstructions) {
+          paymentInfoStr += `\n${settings.paymentInstructions}`;
+        }
+        
+        // Only update if we got valid data
+        if (paymentInfoStr) {
+          this.COMPANY_INFO.paymentInfo = paymentInfoStr;
+          // Updated invoice payment info from backend settings
+        }
+      }
+    } catch (error) {
+      // Failed to fetch payment settings for invoice, using defaults
+    }
+  }
 
   /**
    * Get service price - tries to match service name, falls back to default
@@ -113,8 +507,138 @@ class InvoiceService {
     }
     
     // Default fallback
-    console.warn(`⚠️ No price found for service: ${serviceName}, using default rate`);
+    // No price found for service, using default rate
     return 18100;
+  }
+
+  /**
+   * Calculate Registered Nurse (RN) rate based on hours worked
+   * @param {number} hours - Number of hours worked
+   * @returns {number} Total cost for RN services
+   */
+  static calculateRNRate(hours) {
+    if (!hours || hours <= 0) return 0;
+    
+    if (hours <= 4) {
+      // Up to 4 hours: $4500/hr
+      return hours * 4500;
+    } else {
+      // First 4 hours at $4500/hr, remaining hours at $3500/hr
+      return (4 * 4500) + ((hours - 4) * 3500);
+    }
+  }
+
+  /**
+   * Get hourly rate for Registered Nurse based on total hours
+   * @param {number} totalHours - Total hours to be worked
+   * @returns {number} Hourly rate (4500 for ≤4hrs, 3500 for 5+hrs)
+   */
+  static getRNHourlyRate(totalHours) {
+    return totalHours <= 4 ? 4500 : 3500;
+  }
+
+  /**
+   * Get Practical Nurse shift rate
+   * @param {string} shiftType - '8hr', '12hr', '24hr_live_in', or 'weekly_live_in'
+   * @returns {number} Shift rate
+   */
+  static getPNShiftRate(shiftType) {
+    const rates = {
+      '8hr': 6500,
+      '8hour': 6500,
+      '8 hour': 6500,
+      '12hr': 8500, 
+      '12hour': 8500,
+      '12 hour': 8500,
+      '24hr': 9000,
+      '24hr_live_in': 9000,
+      '24 hour': 9000,
+      'daily_live_in': 9000,
+      'weekly_live_in': 45000,
+      'weekly': 45000
+    };
+    
+    const normalizedType = shiftType?.toLowerCase().replace(/[_\s-]/g, '');
+    return rates[normalizedType] || rates[shiftType] || 6500; // Default to 8hr rate
+  }
+
+  /**
+   * Initialize invoice counter from existing business system
+  * Call this once to continue from Nurse Bernard's last invoice number
+   */
+  static async initializeInvoiceCounter(lastInvoiceNumber) {
+    try {
+      // Extract number from invoice ID (e.g., "NUR-INV-1234" -> 1234)
+      let startingNumber = 0;
+      
+      if (typeof lastInvoiceNumber === 'string') {
+        const match = lastInvoiceNumber.match(/(\d+)$/);
+        if (match) {
+          startingNumber = parseInt(match[1]);
+        }
+      } else if (typeof lastInvoiceNumber === 'number') {
+        startingNumber = lastInvoiceNumber;
+      }
+      
+      // Set the counter to continue from the last used number
+      await this._setLocalInvoiceCounter(startingNumber);
+
+      // Also set the Firestore counter so the sequence is global and atomic
+      const counterRef = doc(db, this.COUNTERS_COLLECTION, this.INVOICE_COUNTER_DOC_ID);
+      await setDoc(
+        counterRef,
+        {
+          sequence: startingNumber,
+          updatedAt: serverTimestamp(),
+        },
+        { merge: true }
+      );
+      
+      return {
+        success: true,
+        message: `Invoice counter initialized. Next invoice will be NUR-INV-${(startingNumber + 1).toString().padStart(4, '0')}`,
+        startingNumber,
+        nextNumber: startingNumber + 1
+      };
+    } catch (error) {
+      // Error initializing invoice counter
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
+  /**
+   * Get current invoice counter status
+   */
+  static async getInvoiceCounterStatus() {
+    try {
+      const localCounter = await this._getLocalInvoiceCounter();
+
+      let firestoreCounter = null;
+      try {
+        const counterRef = doc(db, this.COUNTERS_COLLECTION, this.INVOICE_COUNTER_DOC_ID);
+        const snap = await getDoc(counterRef);
+        if (snap.exists()) {
+          const seq = snap.data()?.sequence;
+          firestoreCounter = Number.isFinite(seq) && seq >= 0 ? seq : null;
+        }
+      } catch {
+        // Ignore Firestore issues here; fall back to local
+      }
+
+      const currentCounter = Math.max(localCounter, firestoreCounter ?? 0);
+      
+      return {
+        currentCounter,
+        nextInvoiceId: `NUR-INV-${(currentCounter + 1).toString().padStart(4, '0')}`,
+        lastInvoiceId: currentCounter > 0 ? `NUR-INV-${currentCounter.toString().padStart(4, '0')}` : 'None'
+      };
+    } catch (error) {
+      // Error getting invoice counter status
+      return null;
+    }
   }
 
   /**
@@ -122,15 +646,62 @@ class InvoiceService {
    */
   static async generateInvoiceId() {
     try {
-      const counterStr = await AsyncStorage.getItem(this.INVOICE_COUNTER_KEY);
-      let counter = counterStr ? parseInt(counterStr) : 0;
-      counter++;
-      
-      await AsyncStorage.setItem(this.INVOICE_COUNTER_KEY, counter.toString());
-      return `CARE-INV-${counter.toString().padStart(4, '0')}`;
+      if (this._firestoreInvoiceCounterBlocked) {
+        // Use local-only sequencing once we know Firestore counter access is blocked.
+        const counter = (await this._getLocalInvoiceCounter()) + 1;
+        await this._setLocalInvoiceCounter(counter);
+        return `NUR-INV-${String(counter).padStart(4, '0')}`;
+      }
+
+      const localCounter = await this._getLocalInvoiceCounter();
+      const counterRef = doc(db, this.COUNTERS_COLLECTION, this.INVOICE_COUNTER_DOC_ID);
+
+      // Auto-initialize the counter doc once if it's missing, seeded from existing invoices when possible.
+      await this._ensureFirestoreInvoiceCounterSeeded(localCounter);
+
+      const result = await runTransaction(db, async (transaction) => {
+        const snap = await transaction.get(counterRef);
+
+        const existingSeqRaw = snap.exists() ? snap.data()?.sequence : null;
+        const existingSeq = Number.isFinite(existingSeqRaw) && existingSeqRaw >= 0 ? existingSeqRaw : 0;
+
+        // Ensure we never go backwards if the device has a higher local counter.
+        const base = Math.max(existingSeq, localCounter);
+        const nextSequence = base + 1;
+
+        if (snap.exists()) {
+          transaction.update(counterRef, {
+            sequence: nextSequence,
+            updatedAt: serverTimestamp(),
+          });
+        } else {
+          transaction.set(counterRef, {
+            sequence: nextSequence,
+            updatedAt: serverTimestamp(),
+          });
+        }
+
+        return {
+          nextSequence,
+          invoiceId: `NUR-INV-${String(nextSequence).padStart(4, '0')}`,
+        };
+      });
+
+      await this._setLocalInvoiceCounter(result.nextSequence);
+      return result.invoiceId;
     } catch (error) {
-      console.error('Error generating invoice ID:', error);
-      return `CARE-INV-${Date.now()}`;
+      // Error generating invoice ID
+      if (error?.code === 'permission-denied') {
+        this._firestoreInvoiceCounterBlocked = true;
+      }
+      try {
+        // Fallback to local-only sequencing when offline or blocked by rules.
+        const counter = (await this._getLocalInvoiceCounter()) + 1;
+        await this._setLocalInvoiceCounter(counter);
+        return `NUR-INV-${String(counter).padStart(4, '0')}`;
+      } catch {
+        return `NUR-INV-${Date.now()}`;
+      }
     }
   }
 
@@ -378,7 +949,7 @@ class InvoiceService {
 
           <div class="total-section">
             <div class="total-row">
-              <div class="total-label">Subtotal:</div>
+              <div class="total-label">Deposit:</div>
               <div class="total-amount">${formatJMD(total)}</div>
             </div>
             <div class="total-row grand-total">
@@ -432,10 +1003,9 @@ class InvoiceService {
       
       await AsyncStorage.setItem('@care_recurring_schedules', JSON.stringify(updatedSchedules));
       
-      console.log('📅 Recurring invoice schedule set up for:', clientData.name);
       return scheduleData;
     } catch (error) {
-      console.error('Error setting up recurring invoice schedule:', error);
+      // Error setting up recurring invoice schedule
       throw error;
     }
   }
@@ -467,7 +1037,7 @@ class InvoiceService {
       const schedules = await AsyncStorage.getItem('@care_recurring_schedules');
       return schedules ? JSON.parse(schedules) : [];
     } catch (error) {
-      console.error('Error getting recurring schedules:', error);
+      // Error getting recurring schedules
       return [];
     }
   }
@@ -479,12 +1049,15 @@ class InvoiceService {
     try {
       const schedules = await this.getRecurringSchedules();
       const now = new Date();
+      
+      // Generate invoices 3 days before due date instead of on due date
+      const threeDaysFromNow = new Date(now.getTime() + (3 * 24 * 60 * 60 * 1000));
+      
       const dueInvoices = schedules.filter(schedule => 
         schedule.isActive && 
-        new Date(schedule.nextScheduled) <= now
+        new Date(schedule.nextScheduled) <= threeDaysFromNow &&
+        new Date(schedule.nextScheduled) > now
       );
-
-      console.log(`📋 Processing ${dueInvoices.length} due recurring invoices...`);
 
       for (const schedule of dueInvoices) {
         try {
@@ -494,7 +1067,8 @@ class InvoiceService {
             clientName: schedule.clientName,
             email: schedule.email,
             service: schedule.serviceType,
-            date: new Date().toISOString(),
+            appointmentDate: schedule.nextScheduled, // Use the actual scheduled date
+            scheduledDate: schedule.nextScheduled, // For due date calculation
             hoursWorked: 2, // Default for recurring
             isRecurring: true,
             frequency: schedule.frequency,
@@ -510,10 +1084,8 @@ class InvoiceService {
           // Update schedule for next invoice
           schedule.lastSent = now.toISOString();
           schedule.nextScheduled = this.calculateNextInvoiceDate(schedule.frequency);
-          
-          console.log(`✅ Recurring invoice sent to ${schedule.clientName}`);
         } catch (error) {
-          console.error(`❌ Failed to process recurring invoice for ${schedule.clientName}:`, error);
+          // Failed to process recurring invoice
         }
       }
 
@@ -522,7 +1094,7 @@ class InvoiceService {
       
       return dueInvoices.length;
     } catch (error) {
-      console.error('Error processing due recurring invoices:', error);
+      // Error processing due recurring invoices
       throw error;
     }
   }
@@ -533,30 +1105,44 @@ class InvoiceService {
   static async sendRecurringInvoiceEmail(invoice, schedule) {
     try {
       // In a real app, this would integrate with an email service like SendGrid, Mailgun, etc.
+      // Calculate actual due date (3 days from now)
+      const actualDueDate = new Date(schedule.nextScheduled);
+      
       const emailData = {
         to: schedule.email,
-        subject: `Recurring Invoice - ${invoice.invoiceId}`,
-        template: 'recurring_invoice',
+        subject: `Upcoming Recurring Invoice - ${invoice.invoiceId} (Due in 3 days)`,
+        template: 'recurring_invoice_early',
         data: {
           clientName: schedule.clientName,
           invoiceId: invoice.invoiceId,
           amount: invoice.total,
           service: schedule.serviceType,
           frequency: schedule.frequency,
-          dueDate: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000).toLocaleDateString(),
+          dueDate: this.formatDateForInvoice(actualDueDate),
+          earlyNotice: true,
+          daysUntilDue: 3,
           pdfAttachment: invoice.pdfUri
         }
       };
 
       // Simulate email sending
-      console.log('📧 Sending recurring invoice email:', emailData);
       
-      // In production, you would call your email service here:
-      // await EmailService.send(emailData);
+      // Send email using EmailService
+      const emailResult = await EmailService.sendInvoiceEmail({
+        to: schedule.email,
+        invoiceData: {
+          ...invoice,
+          clientName: schedule.clientName,
+          service: schedule.serviceType,
+          invoiceNumber: invoice.invoiceId,
+          date: this.formatDateForInvoice(actualDueDate)
+        },
+        pdfUri: invoice.pdfUri
+      });
       
-      return { success: true, emailId: `EMAIL-${Date.now()}` };
+      return emailResult;
     } catch (error) {
-      console.error('Error sending recurring invoice email:', error);
+      // Error sending recurring invoice email
       throw error;
     }
   }
@@ -583,11 +1169,9 @@ class InvoiceService {
       };
 
       const invoice = await this.createInvoice(sampleAppointmentData);
-      console.log('📄 Sample invoice created:', invoice.invoiceId);
-      console.log(`💰 Sample invoice amount: J$${invoice.invoice.total.toLocaleString()}`);
       return invoice;
     } catch (error) {
-      console.error('Error creating sample invoice:', error);
+      // Error creating sample invoice
       throw error;
     }
   }
@@ -595,8 +1179,125 @@ class InvoiceService {
   /**
    * Create and save invoice from appointment data
    */
+  /**
+   * Create a partial invoice with deposit payment
+   * Used when patient makes upfront deposit before appointment
+   */
+  static async createPartialInvoice(appointmentData, depositInfo) {
+    try {
+      // Ensure company info is up to date
+      await this.updateCompanyInfo();
+
+      const invoiceId = await this.generateInvoiceId();
+      
+      // Handle multiple services
+      const services = appointmentData.services || [];
+      const items = services.map(service => {
+        const rate = this.getServicePrice(service.name || service);
+        const hours = service.hours || appointmentData.hoursWorked || 1;
+        return {
+          description: service.name || service,
+          detailedDescription: service.description || `Professional ${(service.name || service).toLowerCase()} services`,
+          quantity: hours,
+          price: rate,
+          total: rate * hours,
+          serviceDates: '',
+          nurseNames: ''
+        };
+      });
+
+      const subtotal = items.reduce((sum, item) => sum + item.total, 0);
+      const paidAmount = depositInfo.amount || 0;
+      const outstandingAmount = subtotal - paidAmount;
+
+      const issueDate = this.formatDateForInvoice(new Date());
+
+      const invoiceData = {
+        invoiceId,
+        clientName: appointmentData.patientName || appointmentData.clientName || 'Client',
+        clientEmail: appointmentData.patientEmail || appointmentData.email || appointmentData.clientEmail || 'client@care.com',
+        clientPhone: appointmentData.clientPhone || appointmentData.patientPhone || appointmentData.phone || 'N/A',
+        clientAddress: this.formatAddressForStorage(appointmentData.address || appointmentData.clientAddress) || 'Address on file',
+        nurseName: 'To be assigned',
+        service: services.map(s => s.name || s).join(', '),
+        date: this.formatDateForInvoice(appointmentData.appointmentDate),
+        hours: 1,
+        rate: subtotal,
+        total: subtotal,
+        issueDate,
+        dueDate: this.formatDateForInvoice(appointmentData.appointmentDate),
+        status: 'Partial',
+        paymentStatus: 'partial',
+        createdAt: new Date().toISOString(),
+        appointmentId: appointmentData.id,
+        relatedAppointmentId: appointmentData.id,
+        items,
+        serviceDate: this.formatDateForInvoice(appointmentData.appointmentDate),
+        subtotal,
+        tax: 0,
+        finalTotal: subtotal,
+        paidAmount,
+        outstandingAmount,
+        payments: [{
+          amount: paidAmount,
+          transactionId: depositInfo.transactionId,
+          type: 'deposit',
+          date: new Date().toISOString(),
+          method: depositInfo.method || 'fygaro',
+          status: 'completed'
+        }]
+      };
+
+      // Generate PDF using InvoiceImageGenerator
+      const html = InvoiceImageGenerator.createInvoiceHTML(invoiceData);
+      const { uri } = await Print.printToFileAsync({ 
+        html,
+        base64: false 
+      });
+
+      // Save PDF to local storage
+      const fileName = `${invoiceId}.pdf`;
+      const fileUri = `${FileSystem.documentDirectory}invoices/${fileName}`;
+      
+      // Create invoices directory if it doesn't exist
+      const dirInfo = await FileSystem.getInfoAsync(`${FileSystem.documentDirectory}invoices/`);
+      if (!dirInfo.exists) {
+        await FileSystem.makeDirectoryAsync(`${FileSystem.documentDirectory}invoices/`, { intermediates: true });
+      }
+
+      // Copy PDF to permanent location
+      await FileSystem.copyAsync({
+        from: uri,
+        to: fileUri
+      });
+
+      // Save invoice record
+      const invoiceRecord = {
+        ...invoiceData,
+        pdfUri: fileUri,
+        fileName
+      };
+
+      await this.saveInvoiceRecord(invoiceRecord);
+
+      return {
+        success: true,
+        invoice: invoiceRecord
+      };
+    } catch (error) {
+      // Error creating partial invoice
+      return {
+        success: false,
+        error: error.message
+      };
+    }
+  }
+
   static async createInvoice(appointmentData) {
     try {
+      // Ensure company info is up to date
+      await this.updateCompanyInfo();
+
       const invoiceId = await this.generateInvoiceId();
       const serviceType = appointmentData.serviceType || appointmentData.serviceName || appointmentData.service;
       
@@ -606,17 +1307,89 @@ class InvoiceService {
       const hours = appointmentData.hoursWorked || 1;
       const total = rate * hours;
       
-      console.log(`💰 Creating invoice for ${serviceType}: J$${rate} x ${hours} hours = J$${total}`);
-      
-      const issueDate = new Date().toLocaleDateString('en-US');
-      const dueDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toLocaleDateString('en-US'); // 30 days from now
+      // Calculate dates correctly based on service/appointment date
+      const serviceDate = this.parseDateInput(appointmentData.appointmentDate) || new Date();
+      const issueDate = this.formatDateForInvoice(serviceDate); // Use service date as issue date
+
+      const explicitDueDate = this.parseDateInput(
+        appointmentData.dueDate || appointmentData.paymentDueDate || appointmentData.invoiceDueDate
+      );
+
+      // Determine billing frequency from appointment data
+      const billingFrequency = appointmentData.billingFrequency || 
+                              appointmentData.recurringBilling?.frequency || 
+                              appointmentData.frequency || 
+                              'weekly';
+
+      const billingAnchors = [
+        appointmentData.recurringBilling?.nextBillingDate,
+        appointmentData.recurringBilling?.cycleStartDate,
+        appointmentData.recurringBilling?.cycleEndDate,
+        appointmentData.billingCycleDate,
+        appointmentData.billingPeriodStart,
+        appointmentData.billingPeriodEnd,
+        appointmentData.recurringPeriodStart,
+        appointmentData.recurringPeriodEnd,
+        appointmentData.scheduledDate,
+        appointmentData.nextServiceDate,
+      ];
+
+      let nextServiceDate = null;
+      for (const candidate of billingAnchors) {
+        const parsed = this.parseDateInput(candidate);
+        if (parsed) {
+          nextServiceDate = parsed;
+          break;
+        }
+      }
+
+      // If no explicit next service date, calculate from service date + billing frequency
+      if (!nextServiceDate) {
+        const daysToAdd = billingFrequency === 'fortnightly' ? 14 : 
+                         billingFrequency === 'weekly' ? 7 : 
+                         billingFrequency === 'monthly' ? 30 : 7;
+        nextServiceDate = new Date(serviceDate.getTime() + (daysToAdd * 24 * 60 * 60 * 1000));
+      }
+
+      const threeDaysMs = 3 * 24 * 60 * 60 * 1000;
+      let dueDateBase;
+
+      if (explicitDueDate) {
+        dueDateBase = explicitDueDate;
+      } else {
+        // Due date = 3 days before next service date
+        dueDateBase = new Date(nextServiceDate.getTime() - threeDaysMs);
+      }
+
+      if (!(dueDateBase instanceof Date) || isNaN(dueDateBase.getTime())) {
+        // Fallback: 7 days from service date if calculation failed
+        dueDateBase = new Date(serviceDate.getTime() + (7 * 24 * 60 * 60 * 1000));
+      }
+
+      // Ensure due date is after service date
+      if (dueDateBase.getTime() <= serviceDate.getTime()) {
+        dueDateBase = new Date(serviceDate.getTime() + (7 * 24 * 60 * 60 * 1000));
+      }
+
+      const dueDate = this.formatDateForInvoice(dueDateBase); // Use same format as service date
+
+      const periodStartDate = this.parseDateInput(
+        appointmentData.billingPeriodStart ||
+          appointmentData.recurringBilling?.cycleStartDate ||
+          appointmentData.recurringPeriodStart
+      );
+      const periodEndDate = this.parseDateInput(
+        appointmentData.billingPeriodEnd ||
+          appointmentData.recurringBilling?.cycleEndDate ||
+          appointmentData.recurringPeriodEnd
+      );
 
       const invoiceData = {
         invoiceId,
         clientName: appointmentData.patientName || appointmentData.clientName || 'Client',
-        clientEmail: appointmentData.patientEmail || appointmentData.email || appointmentData.clientEmail || 'client@care.com',
-        clientPhone: appointmentData.patientPhone || appointmentData.phone || appointmentData.clientPhone || 'N/A',
-        clientAddress: appointmentData.address || appointmentData.clientAddress || 'Address on file',
+        clientEmail: appointmentData.patientEmail || appointmentData.email || appointmentData.clientEmail || '',
+        clientPhone: appointmentData.clientPhone || appointmentData.patientPhone || appointmentData.phone || 'N/A',
+        clientAddress: this.formatAddressForStorage(appointmentData.address || appointmentData.clientAddress) || 'Address on file',
         nurseName: appointmentData.nurseName || 'Assigned Nurse',
         service: serviceType,
         date: this.formatDateForInvoice(appointmentData.appointmentDate),
@@ -625,9 +1398,14 @@ class InvoiceService {
         total,
         issueDate,
         dueDate,
+        periodStart: periodStartDate ? periodStartDate.toISOString() : null,
+        periodEnd: periodEndDate ? periodEndDate.toISOString() : null,
         status: 'Pending',
         createdAt: new Date().toISOString(),
         appointmentId: appointmentData.id,
+        relatedAppointmentId: appointmentData.relatedAppointmentId || appointmentData.appointmentId || appointmentData.id, // For backend compatibility
+        shiftRequestId: appointmentData.shiftRequestId || null,
+        visitKey: appointmentData.visitKey || null,
         // Add items array for compatibility with InvoiceImageGenerator
         items: [{
           description: serviceType,
@@ -682,7 +1460,7 @@ class InvoiceService {
         invoice: invoiceRecord
       };
     } catch (error) {
-      console.error('Error creating invoice:', error);
+      // Error creating invoice
       return {
         success: false,
         error: error.message
@@ -691,39 +1469,162 @@ class InvoiceService {
   }
 
   /**
-   * Save invoice record to AsyncStorage
+   * Save invoice record to AsyncStorage and sync to backend
    */
   static async saveInvoiceRecord(invoice) {
     try {
-      const existingInvoices = await this.getAllInvoices();
-      const updatedInvoices = [...existingInvoices, invoice];
-      await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(updatedInvoices));
+      // PRIMARY: Save to Firestore first (source of truth)
+      const currentUid = auth?.currentUser?.uid || null;
+
+      const invoiceData = {
+        ...invoice,
+        createdByUid: invoice?.createdByUid || currentUid,
+        createdBySource: invoice?.createdBySource || 'mobile',
+        createdAt: invoice.createdAt || new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      // Save to Firestore
+      const invoicesRef = collection(db, 'invoices');
+      const docRef = await addDoc(invoicesRef, invoiceData);
+      
+      // Add Firestore document ID to invoice
+      const savedInvoice = {
+        ...invoiceData,
+        firestoreId: docRef.id,
+      };
+
+      // SECONDARY: Cache locally in AsyncStorage for offline access
+      try {
+        const existingInvoices = await this._getCachedInvoices();
+        const exists = existingInvoices.some(inv => inv.invoiceId === invoice.invoiceId);
+        
+        let updatedInvoices;
+        if (!exists) {
+          updatedInvoices = [...existingInvoices, savedInvoice];
+        } else {
+          updatedInvoices = existingInvoices.map(inv => 
+            inv.invoiceId === invoice.invoiceId ? savedInvoice : inv
+          );
+        }
+        
+        await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(updatedInvoices));
+      } catch (cacheError) {
+        // Cache update failed but Firestore save succeeded - that's okay
+        console.warn('Failed to update invoice cache:', cacheError);
+      }
+
+      return savedInvoice;
     } catch (error) {
-      console.error('Error saving invoice record:', error);
+      console.error('Error saving invoice to Firestore:', error);
       throw error;
     }
   }
 
   /**
-   * Get all invoices
+   * Get all invoices from Firestore (primary) with local cache fallback
    */
   static async getAllInvoices() {
+    try {
+      // PRIMARY: Fetch from Firestore
+      const invoicesRef = collection(db, 'invoices');
+      const q = query(invoicesRef, orderBy('createdAt', 'desc'));
+      const snapshot = await getDocs(q);
+      
+      const invoices = [];
+      snapshot.forEach((doc) => {
+        invoices.push({
+          firestoreId: doc.id,
+          ...doc.data(),
+        });
+      });
+
+      // Update local cache with fresh data
+      try {
+        await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(invoices));
+      } catch (cacheError) {
+        console.warn('Failed to update invoice cache:', cacheError);
+      }
+
+      return invoices;
+    } catch (firestoreError) {
+      console.warn('Failed to fetch from Firestore, using cache:', firestoreError);
+      
+      // FALLBACK: Use local cache if Firestore fails
+      return await this._getCachedInvoices();
+    }
+  }
+
+  /**
+   * Subscribe to invoices in Firestore (realtime).
+   * @param {(invoices: any[]) => void} onInvoices
+   * @param {(error: any) => void} [onError]
+   * @returns {() => void} unsubscribe
+   */
+  static subscribeToInvoices(onInvoices, onError) {
+    const invoicesRef = collection(db, 'invoices');
+    const q = query(invoicesRef, orderBy('createdAt', 'desc'));
+
+    return onSnapshot(
+      q,
+      async (snapshot) => {
+        const invoices = [];
+        snapshot.forEach((d) => {
+          invoices.push({
+            firestoreId: d.id,
+            ...d.data(),
+          });
+        });
+
+        // Best-effort cache update for offline usage
+        try {
+          await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(invoices));
+        } catch {
+          // ignore cache errors
+        }
+
+        if (typeof onInvoices === 'function') onInvoices(invoices);
+      },
+      (error) => {
+        if (typeof onError === 'function') onError(error);
+      }
+    );
+  }
+
+  /**
+   * Get cached invoices from AsyncStorage (private helper)
+   */
+  static async _getCachedInvoices() {
     try {
       const invoicesStr = await AsyncStorage.getItem(this.STORAGE_KEY);
       return invoicesStr ? JSON.parse(invoicesStr) : [];
     } catch (error) {
-      console.error('Error getting invoices:', error);
+      console.error('Error reading invoice cache:', error);
       return [];
     }
   }
 
   /**
-   * Get invoice by ID
+   * Get invoice by ID from Firestore
    */
   static async getInvoiceById(invoiceId) {
     try {
-      const invoices = await this.getAllInvoices();
-      return invoices.find(invoice => invoice.invoiceId === invoiceId);
+      // Query Firestore for invoice with matching invoiceId
+      const invoicesRef = collection(db, 'invoices');
+      const q = query(invoicesRef, where('invoiceId', '==', invoiceId), limit(1));
+      const snapshot = await getDocs(q);
+      
+      if (!snapshot.empty) {
+        const doc = snapshot.docs[0];
+        return {
+          firestoreId: doc.id,
+          ...doc.data(),
+        };
+      }
+
+      // Fallback to cache if not found in Firestore
+      const cachedInvoices = await this._getCachedInvoices();
+      return cachedInvoices.find(invoice => invoice.invoiceId === invoiceId) || null;
     } catch (error) {
       console.error('Error getting invoice by ID:', error);
       return null;
@@ -731,38 +1632,113 @@ class InvoiceService {
   }
 
   /**
-   * Update invoice status
+   * Update invoice status in Firestore
    */
   static async updateInvoiceStatus(invoiceId, status, paymentMethod = null) {
     try {
-      const invoices = await this.getAllInvoices();
-      const updatedInvoices = invoices.map(invoice => {
-        if (invoice.invoiceId === invoiceId) {
-          const updates = { 
-            ...invoice, 
-            status, 
-            updatedAt: new Date().toISOString() 
-          };
-          // Add paidDate and paymentMethod when marking as paid
-          if (status === 'Paid') {
-            updates.paidDate = new Date().toLocaleDateString('en-US', { 
-              month: 'short', 
-              day: 'numeric', 
-              year: 'numeric' 
-            });
-            if (paymentMethod) {
-              updates.paymentMethod = paymentMethod;
-            }
-          }
-          return updates;
+      const paidDate = status === 'Paid' 
+        ? new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+        : null;
+
+      const updateData = {
+        status,
+        ...(status === 'Paid' && { paymentStatus: 'paid' }),
+        ...(paymentMethod && { paymentMethod }),
+        ...(paidDate && { paidDate }),
+        updatedAt: new Date().toISOString()
+      };
+
+      // PRIMARY: Update in Firestore
+      const invoicesRef = collection(db, 'invoices');
+      const q = query(invoicesRef, where('invoiceId', '==', invoiceId), limit(1));
+      const snapshot = await getDocs(q);
+
+      if (!snapshot.empty) {
+        const docRef = doc(db, 'invoices', snapshot.docs[0].id);
+        await setDoc(docRef, updateData, { merge: true });
+
+        // Update local cache
+        try {
+          const cachedInvoices = await this._getCachedInvoices();
+          const updatedInvoices = cachedInvoices.map(inv => 
+            inv.invoiceId === invoiceId ? { ...inv, ...updateData } : inv
+          );
+          await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(updatedInvoices));
+        } catch (cacheError) {
+          console.warn('Failed to update invoice cache:', cacheError);
         }
-        return invoice;
-      });
-      await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(updatedInvoices));
-      console.log(`📄 Invoice ${invoiceId} status updated to: ${status}${paymentMethod ? ` via ${paymentMethod}` : ''}`);
+
+        // Update corresponding appointment
+        await this.updateAppointmentInvoiceStatus(invoiceId, status, paymentMethod);
+      } else {
+        throw new Error(`Invoice ${invoiceId} not found in Firestore`);
+      }
     } catch (error) {
       console.error('Error updating invoice status:', error);
       throw error;
+    }
+  }
+
+  /**
+   * Update appointment invoice status when invoice status changes
+   */
+  static async updateAppointmentInvoiceStatus(invoiceId, status, paymentMethod = null) {
+    try {
+      // Get all appointments
+      const appointmentKeys = await this.getAppointmentStorageKeys();
+      if (appointmentKeys.length === 0) {
+        return;
+      }
+
+      const entries = await AsyncStorage.multiGet(appointmentKeys);
+
+      for (const [storageKey, value] of entries) {
+        if (!value) {
+          continue;
+        }
+
+        let updated = false;
+        let appointments;
+        try {
+          appointments = JSON.parse(value);
+        } catch (error) {
+          // Error parsing appointments for key
+          continue;
+        }
+
+        const updatedAppointments = appointments.map(appointment => {
+          if (appointment.invoiceId === invoiceId) {
+            updated = true;
+            const updates = {
+              ...appointment,
+              invoiceStatus: status,
+              invoiceUpdatedAt: new Date().toISOString()
+            };
+            
+            // Add payment details if marking as paid
+            if (status === 'Paid') {
+              updates.paidDate = new Date().toLocaleDateString('en-US', { 
+                month: 'short', 
+                day: 'numeric', 
+                year: 'numeric' 
+              });
+              if (paymentMethod) {
+                updates.paymentMethod = paymentMethod;
+              }
+            }
+            
+            return updates;
+          }
+          return appointment;
+        });
+
+        if (updated) {
+          await AsyncStorage.setItem(storageKey, JSON.stringify(updatedAppointments));
+          break;
+        }
+      }
+    } catch (error) {
+      // Error updating appointment invoice status
     }
   }
 
@@ -778,10 +1754,10 @@ class InvoiceService {
           UTI: 'com.adobe.pdf'
         });
       } else {
-        console.log('Sharing is not available on this platform');
+        // Sharing is not available on this platform
       }
     } catch (error) {
-      console.error('Error sharing invoice:', error);
+      // Error sharing invoice
       throw error;
     }
   }
@@ -795,17 +1771,22 @@ class InvoiceService {
       const invoice = invoices.find(inv => inv.invoiceId === invoiceId);
       
       if (invoice) {
-        // Delete PDF file
-        const fileInfo = await FileSystem.getInfoAsync(invoice.pdfUri);
-        if (fileInfo.exists) {
-          await FileSystem.deleteAsync(invoice.pdfUri);
+        // Delete PDF file if it exists and path is valid
+        if (invoice.pdfUri) {
+          try {
+            const fileInfo = await FileSystem.getInfoAsync(invoice.pdfUri);
+            if (fileInfo.exists) {
+              await FileSystem.deleteAsync(invoice.pdfUri, { idempotent: true });
+            }
+          } catch (fileError) {
+            console.warn('Error deleting PDF file:', fileError);
+            // Continue with record deletion even if file deletion fails
+          }
         }
         
         // Remove from records
         const updatedInvoices = invoices.filter(inv => inv.invoiceId !== invoiceId);
         await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(updatedInvoices));
-        
-        console.log(`📄 Invoice ${invoiceId} deleted successfully`);
       }
     } catch (error) {
       console.error('Error deleting invoice:', error);
@@ -849,7 +1830,7 @@ class InvoiceService {
       
       await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(realInvoices));
     } catch (error) {
-      console.error('Error removing sample invoices:', error);
+      // Error removing sample invoices
       throw error;
     }
   }
@@ -878,7 +1859,7 @@ class InvoiceService {
         pendingAmount
       };
     } catch (error) {
-      console.error('Error getting invoice stats:', error);
+      // Error getting invoice stats
       return {
         total: 0,
         pending: 0,
@@ -905,6 +1886,11 @@ class InvoiceService {
     return `J$${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
   }
 
+  static formatCurrency(amount) {
+    if (!amount && amount !== 0) return 'J$0.00';
+    return `J$${amount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  }
+
   static calculateTotals(items) {
     const subtotal = items.reduce((sum, item) => sum + (item.total || item.price * item.quantity), 0);
     const tax = 0;
@@ -927,7 +1913,7 @@ class InvoiceService {
 
       return overdueInvoices;
     } catch (error) {
-      console.error('Error getting overdue invoices:', error);
+      // Error getting overdue invoices
       return [];
     }
   }
@@ -970,7 +1956,7 @@ class InvoiceService {
 
       return notifications;
     } catch (error) {
-      console.error('Error sending overdue notifications:', error);
+      // Error sending overdue notifications
       return [];
     }
   }
@@ -989,13 +1975,12 @@ class InvoiceService {
           await FileSystem.deleteAsync(invoiceDir, { idempotent: true });
         }
       } catch (fileError) {
-        console.log('No invoice directory to clear');
+        // No invoice directory to clear
       }
       
-      console.log('✅ All invoices cleared successfully');
       return { success: true, message: 'All invoices cleared' };
     } catch (error) {
-      console.error('Error clearing invoices:', error);
+      // Error clearing invoices
       throw error;
     }
   }
@@ -1006,16 +1991,11 @@ class InvoiceService {
    */
   static async updateInvoicePricing() {
     try {
-      console.log('🔄 Starting invoice price update...');
-      
       const invoices = await this.getAllInvoices();
       
       if (invoices.length === 0) {
-        console.log('ℹ️  No invoices found to update');
         return { success: true, updated: 0, total: 0 };
       }
-      
-      console.log(`📊 Found ${invoices.length} invoices to check`);
       
       let updatedCount = 0;
       
@@ -1031,12 +2011,6 @@ class InvoiceService {
         
         // Only update if prices have changed
         if (oldRate !== newRate || oldTotal !== newTotal) {
-          console.log(`📝 Updating ${invoice.invoiceId}:`);
-          console.log(`   Service: ${service}`);
-          console.log(`   Hours: ${hours}`);
-          console.log(`   Old: $${oldRate} x ${hours} = $${oldTotal}`);
-          console.log(`   New: J$${newRate.toLocaleString()} x ${hours} = J$${newTotal.toLocaleString()}`);
-          
           updatedCount++;
           
           return {
@@ -1068,11 +2042,6 @@ class InvoiceService {
       // Save updated invoices
       await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(updatedInvoices));
       
-      console.log(`✅ Invoice pricing update complete!`);
-      console.log(`   Total invoices: ${invoices.length}`);
-      console.log(`   Updated: ${updatedCount}`);
-      console.log(`   Unchanged: ${invoices.length - updatedCount}`);
-      
       return { 
         success: true, 
         updated: updatedCount, 
@@ -1081,7 +2050,7 @@ class InvoiceService {
       };
       
     } catch (error) {
-      console.error('❌ Error updating invoice pricing:', error);
+      // Error updating invoice pricing
       return { 
         success: false, 
         error: error.message 

@@ -1,0 +1,70 @@
+[{
+  "_id": {
+    "$oid": "691cdd53fd869fceec0ac445"
+  },
+  "fullName": "Shert walker",
+  "email": "nurse@care.com",
+  "phone": "+18763602214",
+  "password": "$2b$12$OAUZVYP9O37H9QxJfFBfIu9NGiUjTAkBgXM1gBORTixMqgg2J4vgC",
+  "nurseCode": "NURSE004",
+  "bankingDetails": {
+    "bankName": "National Commercial Bank (NCB)",
+    "accountNumber": "214336805",
+    "accountHolderName": "Shert walker",
+    "bankBranch": "King Street",
+    "currency": "JMD"
+  },
+  "experience": 0,
+  "licenseNumber": "NURSE004",
+  "isActive": true,
+  "isAvailable": true,
+  "profilePhoto": null,
+  "lastLogin": {
+    "$date": "2025-11-19T03:40:06.155Z"
+  },
+  "createdAt": {
+    "$date": "2025-11-18T20:55:47.695Z"
+  },
+  "updatedAt": {
+    "$date": "2025-11-19T03:40:15.490Z"
+  },
+  "__v": 0,
+  "specialization": "General Nursing",
+  "fcmToken": "ExponentPushToken[-9Dp2ILyzOBgycXR3Yz5yE]"
+},
+{
+  "_id": {
+    "$oid": "691e5a9aab82c2fff5c525ea"
+  },
+  "fullName": "Kadian Walker",
+  "email": "kadian@care.com",
+  "phone": "+18762441436",
+  "password": "$2b$12$iHNnARdxikMRRcoU8PSWsuB4TVzqKgzZTqQxWc.Xdz3ftboj.6eT.",
+  "nurseCode": "NURSE005",
+  "bankingDetails": {
+    "bankName": "Scotiabank Jamaica",
+    "accountNumber": "000199635",
+    "accountHolderName": "Kadian walker",
+    "bankBranch": "Main Branch",
+    "currency": "JMD"
+  },
+  "experience": 0,
+  "licenseNumber": "NURSE005",
+  "specialization": "General Nursing",
+  "emergencyContact": null,
+  "emergencyPhone": null,
+  "isActive": true,
+  "isAvailable": true,
+  "profilePhoto": null,
+  "fcmToken": "ExponentPushToken[-9Dp2ILyzOBgycXR3Yz5yE]",
+  "lastLogin": {
+    "$date": "2025-11-25T21:38:08.704Z"
+  },
+  "createdAt": {
+    "$date": "2025-11-20T00:02:34.200Z"
+  },
+  "updatedAt": {
+    "$date": "2025-11-25T21:38:08.705Z"
+  },
+  "__v": 0
+}]

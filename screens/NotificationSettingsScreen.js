@@ -12,7 +12,10 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import TouchableWeb from '../components/TouchableWeb';
 import { useNotifications } from '../context/NotificationContext';
+import { useAuth } from '../context/AuthContext';
 import { COLORS, GRADIENTS, SPACING } from '../constants';
+import ApiService from '../services/ApiService';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export default function NotificationSettingsScreen({ navigation }) {
   const { 
@@ -20,10 +23,11 @@ export default function NotificationSettingsScreen({ navigation }) {
     requestPushPermissions,
     pushToken 
   } = useNotifications();
+  const { user } = useAuth();
 
   const [settings, setSettings] = useState({
     pushNotifications: false,
-    chatMessages: true,
+    // chatMessages: true, // REMOVED
     appointments: true,
     reminders: true,
     serviceUpdates: true,
@@ -31,12 +35,75 @@ export default function NotificationSettingsScreen({ navigation }) {
     emailNotifications: true,
   });
 
+  // Load preferences from backend on mount
   useEffect(() => {
+    loadNotificationPreferences();
+  }, [user]);
+
+  const loadNotificationPreferences = async () => {
+    try {
+      // Try backend first
+      if (user) {
+        try {
+          const response = await ApiService.makeRequest('/settings/preferences', { method: 'GET' });
+          if (response.success && response.data) {
+            setSettings({
+              pushNotifications: pushPermissionStatus === 'granted',
+              // chatMessages: response.data.chatMessages ?? true, // REMOVED
+              appointments: response.data.appointments ?? true,
+              reminders: response.data.reminders ?? true,
+              serviceUpdates: response.data.serviceUpdates ?? true,
+              systemNotifications: response.data.systemNotifications ?? false,
+              emailNotifications: response.data.emailNotifications ?? true,
+            });
+            return;
+          }
+        } catch (backendError) {
+          // Backend unavailable for notification preferences
+        }
+      }
+
+      // Fallback to AsyncStorage
+      const stored = await AsyncStorage.getItem('notificationPreferences');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        setSettings(prev => ({ ...prev, ...parsed }));
+      }
+    } catch (error) {
+      console.error('Error loading notification preferences:', error);
+    }
+
+    // Update push notification status
     setSettings(prev => ({
       ...prev,
       pushNotifications: pushPermissionStatus === 'granted'
     }));
-  }, [pushPermissionStatus]);
+  };
+
+  const saveNotificationPreference = async (key, value) => {
+    const newSettings = { ...settings, [key]: value };
+    setSettings(newSettings);
+
+    try {
+      // Try backend first
+      if (user) {
+        try {
+          await ApiService.makeRequest('/settings/preferences', {
+            method: 'PUT',
+            body: JSON.stringify({ [key]: value })
+          });
+          // Notification preference synced to backend
+        } catch (backendError) {
+          // Backend sync failed, saved locally
+        }
+      }
+
+      // Always save to AsyncStorage as backup
+      await AsyncStorage.setItem('notificationPreferences', JSON.stringify(newSettings));
+    } catch (error) {
+      console.error('Error saving notification preference:', error);
+    }
+  };
 
   const handlePushNotificationToggle = async (value) => {
     if (value && pushPermissionStatus !== 'granted') {
@@ -78,7 +145,7 @@ export default function NotificationSettingsScreen({ navigation }) {
   };
 
   const handleSettingToggle = (key, value) => {
-    setSettings(prev => ({ ...prev, [key]: value }));
+    saveNotificationPreference(key, value);
   };
 
   const SettingRow = ({ icon, title, subtitle, value, onToggle, iconColor = COLORS.primary }) => (
@@ -99,7 +166,7 @@ export default function NotificationSettingsScreen({ navigation }) {
   );
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       {/* Header */}
       <LinearGradient
         colors={GRADIENTS.header}
@@ -151,14 +218,7 @@ export default function NotificationSettingsScreen({ navigation }) {
             Choose which types of notifications you want to receive
           </Text>
 
-          <SettingRow
-            icon="message-text"
-            title="Chat Messages"
-            subtitle="New messages from healthcare providers"
-            value={settings.chatMessages}
-            onToggle={(value) => handleSettingToggle('chatMessages', value)}
-            iconColor={COLORS.accent}
-          />
+          {/* Chat Messages Setting REMOVED */}
 
           <SettingRow
             icon="calendar-clock"
@@ -169,14 +229,17 @@ export default function NotificationSettingsScreen({ navigation }) {
             iconColor={COLORS.primary}
           />
 
-          <SettingRow
-            icon="pill"
-            title="Medication Reminders"
-            subtitle="Reminders to take medication"
-            value={settings.reminders}
-            onToggle={(value) => handleSettingToggle('reminders', value)}
-            iconColor="#FF6B6B"
-          />
+          {/* Medication Reminders - Only show for patients */}
+          {user?.role === 'patient' && (
+            <SettingRow
+              icon="pill"
+              title="Medication Reminders"
+              subtitle="Reminders to take medication"
+              value={settings.reminders}
+              onToggle={(value) => handleSettingToggle('reminders', value)}
+              iconColor={COLORS.accent}
+            />
+          )}
 
           <SettingRow
             icon="medical-bag"

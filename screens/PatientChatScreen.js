@@ -1,6 +1,6 @@
 import TouchableWeb from "../components/TouchableWeb";
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, FlatList, Modal, KeyboardAvoidingView, Platform, Keyboard, Alert, Linking, Image } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TextInput, FlatList, Modal, KeyboardAvoidingView, Platform, Keyboard, Alert, Linking, Image, Animated, PanResponder, Dimensions } from 'react-native';
 import { WebView } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -15,6 +15,120 @@ import { Audio } from 'expo-av';
 import * as Contacts from 'expo-contacts';
 import * as Location from 'expo-location';
 import * as Sharing from 'expo-sharing';
+
+const { width: screenWidth } = Dimensions.get('window');
+
+// SwipeableChatItem component for swipe-to-delete functionality
+const SwipeableChatItem = ({ 
+  children, 
+  onDelete, 
+  contactName,
+  style 
+}) => {
+  const translateX = useRef(new Animated.Value(0)).current;
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const panResponder = PanResponder.create({
+    onMoveShouldSetPanResponder: (evt, gestureState) => {
+      return Math.abs(gestureState.dx) > Math.abs(gestureState.dy) && Math.abs(gestureState.dx) > 15;
+    },
+    onPanResponderGrant: () => {
+      // Prevent other touches while panning
+    },
+    onPanResponderMove: (evt, gestureState) => {
+      // Only allow left swipe (negative dx) and limit to max reveal of 100px
+      const newValue = Math.max(gestureState.dx, -100);
+      if (gestureState.dx < 0) {
+        translateX.setValue(newValue);
+      }
+    },
+    onPanResponderRelease: (evt, gestureState) => {
+      const deleteThreshold = -60; // Swipe at least 60px to show delete option
+      
+      if (gestureState.dx < deleteThreshold) {
+        // Keep delete button visible
+        Animated.spring(translateX, {
+          toValue: -80,
+          useNativeDriver: true,
+          tension: 100,
+          friction: 8,
+        }).start();
+      } else {
+        // Animate back to original position
+        Animated.spring(translateX, {
+          toValue: 0,
+          useNativeDriver: true,
+          tension: 100,
+          friction: 8,
+        }).start();
+      }
+    },
+  });
+
+  const handleDeletePress = () => {
+    Alert.alert(
+      'Delete Chat',
+      `Are you sure you want to delete your conversation with ${contactName}? This action cannot be undone.`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+          onPress: () => {
+            // Animate back to original position
+            Animated.spring(translateX, {
+              toValue: 0,
+              useNativeDriver: true,
+            }).start();
+          }
+        },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            setIsDeleting(true);
+            // Animate out then delete
+            Animated.timing(translateX, {
+              toValue: -screenWidth,
+              duration: 300,
+              useNativeDriver: true,
+            }).start(() => {
+              onDelete && onDelete();
+              setIsDeleting(false);
+            });
+          }
+        }
+      ]
+    );
+  };
+
+  return (
+    <View style={[styles.swipeContainer, style]}>
+      {/* Delete button background */}
+      <View style={styles.deleteBackground}>
+        <TouchableWeb
+          style={styles.deleteButton}
+          onPress={handleDeletePress}
+          activeOpacity={0.7}
+        >
+          <MaterialCommunityIcons name="delete" size={20} color="#FFFFFF" />
+          <Text style={styles.deleteText}>Delete</Text>
+        </TouchableWeb>
+      </View>
+      
+      <Animated.View
+        {...panResponder.panHandlers}
+        style={[
+          styles.swipeableRow,
+          {
+            transform: [{ translateX }]
+          }
+        ]}
+      >
+        {children}
+      </Animated.View>
+    </View>
+  );
+};
 
 export default function PatientChatScreen({ navigation }) {
   const { user } = useAuth();
@@ -85,7 +199,7 @@ export default function PatientChatScreen({ navigation }) {
           });
         }
         
-        // Load admin profile separately (for Shertonia/ADMIN001)
+        // Load admin profile separately (for Nurse Bernard/ADMIN001)
         try {
           const admin001Profile = await AsyncStorage.getItem('adminProfile_ADMIN001');
           if (admin001Profile) {
@@ -94,7 +208,7 @@ export default function PatientChatScreen({ navigation }) {
             if (photo) {
               profileMap['admin-001'] = {
                 profilePhoto: photo,
-                username: adminData.username || 'Shertonia Walker',
+                username: adminData.username || 'Nurse Bernard',
                 role: 'admin'
               };
             }
@@ -144,11 +258,11 @@ export default function PatientChatScreen({ navigation }) {
     const loadHealthcareTeam = async () => {
       try {
         const usersData = await AsyncStorage.getItem('users');
-        if (!usersData) {
+        const allUsersFromStorage = usersData ? JSON.parse(usersData) : [];
+        
+        if (allUsersFromStorage.length === 0) {
           return;
         }
-        
-        const allUsersFromStorage = JSON.parse(usersData);
         
         // Load all users for search functionality
         const formattedAllUsers = allUsersFromStorage.map(u => ({
@@ -169,7 +283,7 @@ export default function PatientChatScreen({ navigation }) {
               const adminData = JSON.parse(admin001Profile);
               formattedAllUsers.push({
                 id: 'admin-001',
-                name: adminData.username || 'Shertonia Walker',
+                name: adminData.username || 'Nurse Bernard',
                 email: adminData.email || 'admin@care.com',
                 role: 'admin',
                 type: 'admin',
@@ -278,7 +392,7 @@ export default function PatientChatScreen({ navigation }) {
           if (!userFromStorage && otherUserId === 'admin-001') {
             userFromStorage = {
               id: 'admin-001',
-              username: 'Shertonia Walker',
+              username: 'Nurse Bernard',
               email: 'admin@care.com',
               role: 'admin',
               code: 'ADMIN001',
@@ -325,17 +439,10 @@ export default function PatientChatScreen({ navigation }) {
           return timeB - timeA;
         });
         
-        console.log('✅ PATIENT: Final active contacts:', activeContacts.map(c => ({ 
-          name: c.name, 
-          lastMsg: c.lastMessage,
-          unread: c.unreadCount 
-        })));
         setHealthcareTeam(activeContacts);
-        console.log('Healthcare team loaded:', activeContacts.length);
         
         // Badge is displayed by ChatTabIcon in App.js, no need to set here
         const totalUnread = getTotalUnreadCount('PATIENT001');
-        console.log('📊 PATIENT: Total unread count:', totalUnread);
       } catch (error) {
         console.error('Error loading healthcare team:', error);
       }
@@ -356,7 +463,6 @@ export default function PatientChatScreen({ navigation }) {
     setCurrentMessages(messages);
     
     // Mark messages as read when opening chat - check all patient ID variations
-    console.log('📖 PATIENT: Calling markAsRead for', conversationId, currentPatientId);
     markAsRead(conversationId, currentPatientId);
     
     // Also mark alternative conversation ID formats as read
@@ -376,6 +482,38 @@ export default function PatientChatScreen({ navigation }) {
     setTimeout(() => {
       scrollToBottom();
     }, 200);
+  };
+
+  const deleteChat = async (contact) => {
+    try {
+      const currentPatientId = user?.id || 'PATIENT001';
+      const conversationId = getConversationId(currentPatientId, contact.id);
+      
+      // Remove from AsyncStorage
+      await AsyncStorage.removeItem(`messages_${conversationId}`);
+      await AsyncStorage.removeItem(`lastRead_${conversationId}`);
+      
+      // Also clear alternative conversation ID formats
+      const altConversationId1 = getConversationId('patient-001', contact.id);
+      if (altConversationId1 !== conversationId) {
+        await AsyncStorage.removeItem(`messages_${altConversationId1}`);
+        await AsyncStorage.removeItem(`lastRead_${altConversationId1}`);
+      }
+      
+      const altConversationId2 = getConversationId('PATIENT001', contact.id);
+      if (altConversationId2 !== conversationId && altConversationId2 !== altConversationId1) {
+        await AsyncStorage.removeItem(`messages_${altConversationId2}`);
+        await AsyncStorage.removeItem(`lastRead_${altConversationId2}`);
+      }
+      
+      // Update local state to remove the chat from the list
+      setHealthcareTeam(prevTeam => prevTeam.filter(member => member.id !== contact.id));
+      
+      Alert.alert('Success', `Conversation with ${contact.name} has been deleted.`);
+    } catch (error) {
+      console.error('Error deleting chat:', error);
+      Alert.alert('Error', 'Failed to delete conversation. Please try again.');
+    }
   };
 
   // Filter search results from all users (only when searching)
@@ -886,8 +1024,14 @@ export default function PatientChatScreen({ navigation }) {
     setSelectedAttachment(null); // Clear attachment
     
     try {
+      // Determine sender/receiver roles for backend
+      const senderRole = 'patient';
+      const receiverRole = selectedContact.type === 'admin'
+        ? 'admin'
+        : 'nurse';
+
       // Send message using shared context and get updated messages - pass attachment
-      const updatedMessages = await sendMessage(conversationId, messageContent, 'PATIENT001', selectedContact.id, selectedAttachment);
+      const updatedMessages = await sendMessage(conversationId, messageContent, senderRole, receiverRole, selectedAttachment);
       
       // Use the updated messages returned from sendMessage
       setCurrentMessages(updatedMessages);
@@ -1030,7 +1174,7 @@ export default function PatientChatScreen({ navigation }) {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <LinearGradient
         colors={GRADIENTS.header}
         start={{ x: 0, y: 0 }}
@@ -1039,6 +1183,14 @@ export default function PatientChatScreen({ navigation }) {
       >
         <View style={styles.headerRow}>
           <Text style={styles.headerTitle}>Chats</Text>
+
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
+
           <View style={styles.headerActions}>
             <TouchableWeb
               style={styles.headerButton}
@@ -1087,11 +1239,11 @@ export default function PatientChatScreen({ navigation }) {
                   nestedScrollEnabled
                   keyboardShouldPersistTaps="handled"
                 >
-                  {searchResults.map((user) => {
+                  {searchResults.map((user, index) => {
                     const profilePhoto = userProfiles[user.id]?.profilePhoto;
                     return (
                       <TouchableWeb
-                        key={user.id}
+                        key={`search-${user.id}-${index}`}
                         style={styles.searchResultItem}
                         onPress={() => handleUserSelect(user)}
                         activeOpacity={0.7}
@@ -1105,7 +1257,7 @@ export default function PatientChatScreen({ navigation }) {
                         )}
                         <View style={styles.searchResultInfo}>
                           <Text style={styles.searchResultName}>{user.name}</Text>
-                          <Text style={styles.searchResultEmail}>{user.email}</Text>
+                          <Text style={styles.searchResultEmail}>{user.contactEmail || user.email}</Text>
                         </View>
                       </TouchableWeb>
                     );
@@ -1121,50 +1273,55 @@ export default function PatientChatScreen({ navigation }) {
         {/* Display active chats only */}
         <View style={styles.chatListSection}>
           {healthcareTeam.length > 0 ? (
-            healthcareTeam.map((contact) => {
+            healthcareTeam.map((contact, index) => {
               const profilePhoto = userProfiles[contact.id]?.profilePhoto;
               return (
-                <TouchableWeb
-                  key={contact.id}
-                  style={styles.chatItem}
-                  onPress={() => openChat(contact)}
-                  activeOpacity={0.95}
+                <SwipeableChatItem
+                  key={`contact-${contact.id}-${index}`}
+                  onDelete={() => deleteChat(contact)}
+                  contactName={contact.name}
                 >
-                  {profilePhoto ? (
-                    <Image source={{ uri: profilePhoto }} style={styles.chatAvatar} />
-                  ) : (
-                    <View style={[styles.chatAvatar, { backgroundColor: getAvatarColor(contact.role) }]}>
-                      <Text style={styles.avatarText}>{getInitials(contact.name)}</Text>
+                  <TouchableWeb
+                    style={styles.chatItem}
+                    onPress={() => openChat(contact)}
+                    activeOpacity={0.95}
+                  >
+                    {profilePhoto ? (
+                      <Image source={{ uri: profilePhoto }} style={styles.chatAvatar} />
+                    ) : (
+                      <View style={[styles.chatAvatar, { backgroundColor: getAvatarColor(contact.role) }]}>
+                        <Text style={styles.avatarText}>{getInitials(contact.name)}</Text>
+                      </View>
+                    )}
+                    <View style={styles.chatInfo}>
+                      <View style={styles.chatHeader}>
+                        <Text style={styles.chatName}>{contact.name}</Text>
+                        <Text style={styles.chatTime}>{String(contact.lastMessageTime || '')}</Text>
+                      </View>
+                      <View style={styles.chatLastMessageRow}>
+                        {contact.status === 'online' && (
+                          <View style={styles.onlineIndicator} />
+                        )}
+                        {(contact.lastMessageSender === 'PATIENT001' || contact.lastMessageSender === 'patient-001') && (
+                          <MaterialCommunityIcons 
+                            name="check-all" 
+                            size={16} 
+                            color={contact.otherUserUnreadCount === 0 ? '#4fc3f7' : COLORS.textLight} 
+                            style={{ marginRight: 4 }}
+                          />
+                        )}
+                        <Text style={styles.chatLastMessage} numberOfLines={1}>
+                          {contact.lastMessage}
+                        </Text>
+                        {contact.unreadCount > 0 && (
+                          <View style={styles.unreadBadge}>
+                            <Text style={styles.unreadCount}>{contact.unreadCount}</Text>
+                          </View>
+                        )}
+                      </View>
                     </View>
-                  )}
-                  <View style={styles.chatInfo}>
-                    <View style={styles.chatHeader}>
-                      <Text style={styles.chatName}>{contact.name}</Text>
-                      <Text style={styles.chatTime}>{String(contact.lastMessageTime || '')}</Text>
-                    </View>
-                    <View style={styles.chatLastMessageRow}>
-                      {contact.status === 'online' && (
-                        <View style={styles.onlineIndicator} />
-                      )}
-                      {(contact.lastMessageSender === 'PATIENT001' || contact.lastMessageSender === 'patient-001') && (
-                        <MaterialCommunityIcons 
-                          name="check-all" 
-                          size={16} 
-                          color={contact.otherUserUnreadCount === 0 ? '#4fc3f7' : COLORS.textLight} 
-                          style={{ marginRight: 4 }}
-                        />
-                      )}
-                      <Text style={styles.chatLastMessage} numberOfLines={1}>
-                        {contact.lastMessage}
-                      </Text>
-                      {contact.unreadCount > 0 && (
-                        <View style={styles.unreadBadge}>
-                          <Text style={styles.unreadCount}>{contact.unreadCount}</Text>
-                        </View>
-                      )}
-                    </View>
-                  </View>
-                </TouchableWeb>
+                  </TouchableWeb>
+                </SwipeableChatItem>
               );
             })
           ) : (
@@ -1623,11 +1780,20 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#F5F5F5',
   },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
+  },
   header: {
     paddingHorizontal: 16,
     paddingBottom: 16,
-    borderBottomLeftRadius: 20,
-    borderBottomRightRadius: 20,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
   },
   headerRow: {
     flexDirection: 'row',
@@ -2346,5 +2512,38 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: 'Poppins_400Regular',
     color: COLORS.textLight,
+  },
+  // Swipe to delete styles
+  swipeContainer: {
+    position: 'relative',
+    backgroundColor: COLORS.background,
+  },
+  swipeableRow: {
+    backgroundColor: COLORS.card,
+    zIndex: 2,
+  },
+  deleteBackground: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    width: 80,
+    backgroundColor: '#ff4444',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1,
+  },
+  deleteButton: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+  },
+  deleteText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+    marginTop: 4,
+    textAlign: 'center',
   },
 });

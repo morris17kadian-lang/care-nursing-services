@@ -1,6 +1,6 @@
 import TouchableWeb from "../components/TouchableWeb";
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, FlatList, Modal, KeyboardAvoidingView, Platform, Keyboard, Alert, Linking, Image } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TextInput, FlatList, Modal, KeyboardAvoidingView, Platform, Keyboard, Alert, Linking, Image, Animated, PanResponder, Dimensions } from 'react-native';
 import { WebView } from 'react-native-webview';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -9,6 +9,7 @@ import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context'
 import { COLORS, GRADIENTS } from '../constants';
 import { useChat } from '../context/ChatContext';
 import { useAuth } from '../context/AuthContext';
+import ApiService from '../services/ApiService';
 import * as ImagePicker from 'expo-image-picker';
 import * as DocumentPicker from 'expo-document-picker';
 import { Audio } from 'expo-av';
@@ -17,12 +18,177 @@ import * as Location from 'expo-location';
 import * as Sharing from 'expo-sharing';
 import { useNavigation } from '@react-navigation/native';
 
-export default function AdminChatScreen({ navigation: navProp }) {
+const { width: screenWidth } = Dimensions.get('window');
+
+// SwipeableChatItem component for swipe-to-delete functionality
+const SwipeableChatItem = ({ 
+  children, 
+  onDelete, 
+  contactName,
+  style 
+}) => {
+  const translateX = useRef(new Animated.Value(0)).current;
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const panResponder = PanResponder.create({
+    onMoveShouldSetPanResponder: (evt, gestureState) => {
+      return Math.abs(gestureState.dx) > Math.abs(gestureState.dy) && Math.abs(gestureState.dx) > 15;
+    },
+    onPanResponderGrant: () => {
+      // Prevent other touches while panning
+    },
+    onPanResponderMove: (evt, gestureState) => {
+      // Only allow left swipe (negative dx) and limit to max reveal of 100px
+      const newValue = Math.max(gestureState.dx, -100);
+      if (gestureState.dx < 0) {
+        translateX.setValue(newValue);
+      }
+    },
+    onPanResponderRelease: (evt, gestureState) => {
+      const deleteThreshold = -60; // Swipe at least 60px to show delete option
+      
+      if (gestureState.dx < deleteThreshold) {
+        // Keep delete button visible
+        Animated.spring(translateX, {
+          toValue: -80,
+          useNativeDriver: true,
+          tension: 100,
+          friction: 8,
+        }).start();
+      } else {
+        // Animate back to original position
+        Animated.spring(translateX, {
+          toValue: 0,
+          useNativeDriver: true,
+          tension: 100,
+          friction: 8,
+        }).start();
+      }
+    },
+  });
+
+  const handleDeletePress = () => {
+    Alert.alert(
+      'Delete Chat',
+      `Are you sure you want to delete your conversation with ${contactName}? This action cannot be undone.`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+          onPress: () => {
+            // Animate back to original position
+            Animated.spring(translateX, {
+              toValue: 0,
+              useNativeDriver: true,
+            }).start();
+          }
+        },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            setIsDeleting(true);
+            // Animate out then delete
+            Animated.timing(translateX, {
+              toValue: -screenWidth,
+              duration: 300,
+              useNativeDriver: true,
+            }).start(() => {
+              onDelete && onDelete();
+              setIsDeleting(false);
+            });
+          }
+        }
+      ]
+    );
+  };
+
+  return (
+    <View style={[styles.swipeContainer, style]}>
+      {/* Delete button background */}
+      <View style={styles.deleteBackground}>
+        <TouchableWeb
+          style={styles.deleteButton}
+          onPress={handleDeletePress}
+          activeOpacity={0.7}
+        >
+          <MaterialCommunityIcons name="delete" size={20} color="#FFFFFF" />
+          <Text style={styles.deleteText}>Delete</Text>
+        </TouchableWeb>
+      </View>
+      
+      <Animated.View
+        {...panResponder.panHandlers}
+        style={[
+          styles.swipeableRow,
+          {
+            transform: [{ translateX }]
+          }
+        ]}
+      >
+        {children}
+      </Animated.View>
+    </View>
+  );
+};
+
+export default function AdminChatScreen({ navigation: navProp, route }) {
   const navigation = navProp || useNavigation();
-  const { sendMessage, getConversationMessages, markAsRead, getUnreadCount, getLastReadTimestamp, getTotalUnreadCount, getConversationId, lastMessages, unreadCounts, resetUnreadCounts } = useChat();
+  const { sendMessage, getConversationMessages, markAsRead, getUnreadCount, getLastReadTimestamp, getTotalUnreadCount, getConversationId, lastMessages, unreadCounts, resetUnreadCounts, initializeUserChats } = useChat();
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
   const [selectedPatient, setSelectedPatient] = useState(null);
+
+  // Handle navigation from notifications
+  useEffect(() => {
+    if (route?.params?.openConversation && user) {
+      const conversationId = route.params.openConversation;
+      
+      // Parse conversation ID to find the other user
+      const parts = conversationId.split('_');
+      if (parts.length === 2) {
+        const currentAdminId = user?.id || 'admin-001';
+        const otherUserId = parts[0] === currentAdminId ? parts[1] : parts[0];
+        
+        // Find the user in activeChats first
+        let targetUser = activeChats.find(chat => chat.id === otherUserId);
+        
+        // If not found in activeChats, try allUsers
+        if (!targetUser) {
+          targetUser = allUsers.find(u => u.id === otherUserId);
+          if (targetUser) {
+            // Convert allUsers format to activeChats format
+            targetUser = {
+              ...targetUser,
+              name: targetUser.name || targetUser.username || otherUserId,
+              type: targetUser.role === 'nurse' || targetUser.role === 'doctor' ? 'nurse' : 
+                    targetUser.role === 'admin' ? 'admin' : 'patient'
+            };
+          }
+        }
+        
+        if (targetUser) {
+          openChat(targetUser);
+        } else {
+          // Create a basic user object for opening chat
+          const basicUser = {
+            id: otherUserId,
+            name: otherUserId.includes('ADMIN') ? 'Admin User' : 
+                  otherUserId.includes('NURSE') ? 'Nurse User' : 
+                  otherUserId.includes('PATIENT') ? 'Patient User' : otherUserId,
+            type: otherUserId.toLowerCase().includes('admin') ? 'admin' : 
+                  otherUserId.toLowerCase().includes('nurse') ? 'nurse' : 'patient'
+          };
+          openChat(basicUser);
+        }
+      }
+      
+      // Clear the navigation parameter to prevent repeated opens
+      setTimeout(() => {
+        navigation.setParams({ openConversation: null });
+      }, 500);
+    }
+  }, [route?.params?.openConversation, activeChats, allUsers, user]);
   const [messageText, setMessageText] = useState('');
   const [chatModalVisible, setChatModalVisible] = useState(false);
   const [searchVisible, setSearchVisible] = useState(false);
@@ -60,7 +226,6 @@ export default function AdminChatScreen({ navigation: navProp }) {
         
         if (usersData) {
           const users = JSON.parse(usersData);
-          console.log('Loaded users for profile photos:', users.length);
           users.forEach(user => {
             // Check both profilePhoto and profileImage fields
             const photo = user.profilePhoto || user.profileImage;
@@ -69,13 +234,10 @@ export default function AdminChatScreen({ navigation: navProp }) {
               username: user.username,
               role: user.role
             };
-            if (photo) {
-              console.log(`User ${user.username} has profile photo`);
-            }
           });
         }
         
-        // Also load admin profiles separately (for Shertonia/ADMIN001)
+        // Also load admin profiles separately (for Nurse Bernard/ADMIN001)
         try {
           const admin001Profile = await AsyncStorage.getItem('adminProfile_ADMIN001');
           if (admin001Profile) {
@@ -84,14 +246,13 @@ export default function AdminChatScreen({ navigation: navProp }) {
             if (photo) {
               profileMap['admin-001'] = {
                 profilePhoto: photo,
-                username: adminData.username || 'Shertonia Walker',
+                username: adminData.username || 'Nurse Bernard',
                 role: 'admin'
               };
-              console.log('Loaded Shertonia profile photo from adminProfile_ADMIN001');
             }
           }
         } catch (e) {
-          console.log('No admin profile found for ADMIN001');
+          // No admin profile found for ADMIN001
         }
         
         setUserProfiles(profileMap);
@@ -137,7 +298,6 @@ export default function AdminChatScreen({ navigation: navProp }) {
         return 'Start a conversation';
       }
       // Fallback for any other object structure
-      console.warn('Unexpected lastMessage format:', lastMsg);
       return 'Start a conversation';
     }
     return 'Start a conversation';
@@ -170,6 +330,13 @@ export default function AdminChatScreen({ navigation: navProp }) {
     }
   };
 
+  // Initialize chat system for current user
+  useEffect(() => {
+    if (user?.id && user?.role) {
+      initializeUserChats(user.id, user.role);
+    }
+  }, [user?.id, user?.role]);
+
   // Auto-scroll when messages change
   useEffect(() => {
     scrollToBottom();
@@ -195,22 +362,34 @@ export default function AdminChatScreen({ navigation: navProp }) {
     const loadAllUsers = async () => {
       try {
         const usersData = await AsyncStorage.getItem('users');
-        if (usersData) {
-          const users = JSON.parse(usersData);
-          // Filter out the current admin user and format for search results
+        const users = usersData ? JSON.parse(usersData) : [];
+        
+        if (users && users.length > 0) {
+          // Filter out the current admin user but allow ADMIN001 and other role users
           const formattedUsers = users
-            .filter(user => user.role !== 'admin') // Don't show other admins
-            .map(user => ({
-              id: user.id,
-              name: user.username || `${user.firstName || ''} ${user.lastName || ''}`.trim(),
-              email: user.email || '',
-              type: user.role === 'nurse' || user.role === 'doctor' ? 'nurse' : 'patient',
+            .filter(userObj => {
+              // Don't show the current admin user (themselves)
+              if (userObj.id === user?.id) {
+                return false;
+              }
+              // Allow ADMIN001 (Nurse Bernard) to appear in searches for other admins
+              if (userObj.code === 'ADMIN001' || userObj.isSuperAdmin || userObj.email === 'nurse@876.com') {
+                return true;
+              }
+              // Allow nurses, doctors, and patients
+              const isNonAdmin = userObj.role !== 'admin';
+              return isNonAdmin;
+            })
+            .map(userObj => ({
+              id: userObj.id,
+              name: userObj.username || `${userObj.firstName || ''} ${userObj.lastName || ''}`.trim(),
+              email: userObj.email || '',
+              type: userObj.role === 'nurse' || userObj.role === 'doctor' ? 'nurse' : 'patient',
               status: 'offline',
-              profilePhoto: user.profilePhoto || user.profileImage,
+              profilePhoto: userObj.profilePhoto || userObj.profileImage,
             }));
           
           setAllUsers(formattedUsers);
-          console.log('Loaded users for search:', formattedUsers.length);
         }
       } catch (error) {
         console.error('Error loading users:', error);
@@ -222,12 +401,10 @@ export default function AdminChatScreen({ navigation: navProp }) {
 
   // Load active chats from lastMessages
   useEffect(() => {
-    console.log('🔄 ADMIN CHAT: useEffect triggered, lastMessages:', Object.keys(lastMessages));
     const loadActiveChats = async () => {
       try {
         const usersData = await AsyncStorage.getItem('users');
         if (!usersData) {
-          console.log('⚠️ No users data found');
           return;
         }
         
@@ -235,8 +412,6 @@ export default function AdminChatScreen({ navigation: navProp }) {
         
         // Get all conversations from lastMessages
         const conversationIds = Object.keys(lastMessages);
-        console.log('🔍 ADMIN: Conversation IDs from lastMessages:', conversationIds);
-        console.log('🔍 ADMIN: Current user ID:', user?.id || 'ADMIN001');
         const activeConversations = [];
         const seenUserIds = new Set(); // Track users we've already added
         
@@ -246,18 +421,58 @@ export default function AdminChatScreen({ navigation: navProp }) {
           if (parts.length !== 2) continue;
           
           const [userId1, userId2] = parts;
-          // Admin can have either 'admin' or 'admin-001' as their ID
+          // Admin can have various ID formats: 'admin', 'admin-001', 'admin-002', 'admin-003', etc.
           const currentAdminId = user?.id || 'admin-001';
-          const isAdminConversation = 
-            userId1 === currentAdminId || userId1 === 'admin' || 
-            userId2 === currentAdminId || userId2 === 'admin';
           
-          // Skip if this conversation doesn't involve admin
-          if (!isAdminConversation) continue;
+          // Check if either user in the conversation is an admin (current user or any admin)
+          const isUser1Admin = userId1 === currentAdminId || userId1 === 'admin' || userId1.startsWith('admin-');
+          const isUser2Admin = userId2 === currentAdminId || userId2 === 'admin' || userId2.startsWith('admin-');
+          const isCurrentUserInConversation = userId1 === currentAdminId || userId2 === currentAdminId;
           
-          // Get the other user's ID
-          const otherUserId = 
-            (userId1 === currentAdminId || userId1 === 'admin') ? userId2 : userId1;
+          // Prioritize conversations where current user is directly involved
+          if (isCurrentUserInConversation) {
+            // Direct conversation for current user
+          } else if ((user?.role === 'admin' || user?.role === 'superAdmin') && (isUser1Admin || isUser2Admin)) {
+            // Admin supervision conversation
+          } else {
+            continue;
+          }
+          
+          // Skip supervision conversations if user has direct conversations available
+          const hasDirectConversations = conversationIds.some(cId => {
+            const parts = cId.split('_');
+            return parts.includes(currentAdminId);
+          });
+          
+          if (hasDirectConversations && !isCurrentUserInConversation) {
+            continue;
+          }
+          
+          // Get the other user's ID (the one that's not the current admin)
+          // For admin users viewing all conversations, we need to be smarter about this
+          let otherUserId;
+          if (userId1 === currentAdminId) {
+            otherUserId = userId2;
+          } else if (userId2 === currentAdminId) {
+            otherUserId = userId1;
+          } else {
+            // Neither user is the current admin - this happens when admin supervises other conversations
+            // For admin supervision, show the non-admin user as the "other" user
+            const isUser1Admin = userId1 === 'admin' || userId1.startsWith('admin-');
+            const isUser2Admin = userId2 === 'admin' || userId2.startsWith('admin-');
+            
+            if (isUser1Admin && !isUser2Admin) {
+              otherUserId = userId2; // Show the non-admin user
+            } else if (!isUser1Admin && isUser2Admin) {
+              otherUserId = userId1; // Show the non-admin user
+            } else if (isUser1Admin && isUser2Admin) {
+              // Both are admins - show the one that's not current admin, or the "higher priority" one
+              otherUserId = userId1 === 'admin-001' ? userId1 : userId2;
+            } else {
+              // Neither is admin (nurse-patient conversation)
+              otherUserId = userId1; // Default to first user
+            }
+          }
           
           // Skip if we've already added this user, BUT check if this conversation has a newer message
           if (seenUserIds.has(otherUserId)) {
@@ -272,22 +487,18 @@ export default function AdminChatScreen({ navigation: navProp }) {
               const existingTimestamp = existingMsg?.timestamp ? new Date(existingMsg.timestamp).getTime() : 0;
               
               if (currentTimestamp > existingTimestamp) {
-                console.log('🔄 Found newer message for', otherUserId, 'updating from', existingMsg?.text, 'to', currentMsg?.text);
                 // Update with the newer message
                 const lastMsg = currentMsg;
                 
                 // Recalculate unread counts with BOTH conversation IDs
                 // First check the current conversation ID we're iterating over
                 let adminUnreadCount = getUnreadCount(conversationId, user?.id || 'admin-001');
-                console.log('  🔍 Checking', conversationId, 'with admin-001:', adminUnreadCount);
-                console.log('  🔑 Key would be:', `${conversationId}_${user?.id || 'admin-001'}`);
                 
                 // Then check the legacy conversation ID
                 const legacyConversationId = getConversationId('admin', otherUserId);
                 if (legacyConversationId !== conversationId) {
                   const legacyAdminUnread = getUnreadCount(legacyConversationId, 'admin');
                   const legacyAdminUnread2 = getUnreadCount(legacyConversationId, 'admin-001');
-                  console.log('  🔍 Checking legacy', legacyConversationId, 'with admin:', legacyAdminUnread, 'with admin-001:', legacyAdminUnread2);
                   adminUnreadCount = Math.max(adminUnreadCount, legacyAdminUnread, legacyAdminUnread2);
                 }
                 
@@ -295,12 +506,8 @@ export default function AdminChatScreen({ navigation: navProp }) {
                 const newConversationId = getConversationId('admin-001', otherUserId);
                 if (newConversationId !== conversationId && newConversationId !== legacyConversationId) {
                   const newAdminUnread = getUnreadCount(newConversationId, 'admin-001');
-                  console.log('  🔍 Checking new format', newConversationId, 'with admin-001:', newAdminUnread);
-                  console.log('  🔑 New key would be:', `${newConversationId}_${user?.id || 'admin-001'}`);
                   adminUnreadCount = Math.max(adminUnreadCount, newAdminUnread);
                 }
-                
-                console.log('  ✅ Final adminUnreadCount:', adminUnreadCount);
                 
                 let otherUserUnreadCount = getUnreadCount(conversationId, otherUserId);
                 if (legacyConversationId !== conversationId) {
@@ -341,11 +548,28 @@ export default function AdminChatScreen({ navigation: navProp }) {
               };
             }
           }
+
+          // Fallback: If user still not found, create a placeholder so the chat is visible
+          if (!otherUser) {
+            const isNurse = otherUserId.toLowerCase().includes('nurse');
+            const isPatient = otherUserId.toLowerCase().includes('patient');
+            const isSystem = otherUserId.toLowerCase() === 'system';
+            
+            otherUser = {
+              id: otherUserId,
+              name: isNurse ? `Nurse (${otherUserId})` : 
+                    isPatient ? `Patient (${otherUserId})` : 
+                    isSystem ? 'System' : `User ${otherUserId}`,
+              email: '',
+              type: isNurse ? 'nurse' : 'patient',
+              status: 'offline',
+              profilePhoto: null,
+              isPlaceholder: true
+            };
+          }
           
           if (otherUser) {
             const lastMsg = lastMessages[conversationId];
-            console.log('📨 Admin chat - lastMsg for', otherUser.name, ':', lastMsg);
-            console.log('🔑 Admin checking conversationId:', conversationId, 'otherUserId:', otherUserId);
             
             // Get unread count for this admin (messages from others)
             // Check both possible conversation IDs (new: admin-001_nurse-001, old: admin_nurse-001)
@@ -366,8 +590,6 @@ export default function AdminChatScreen({ navigation: navProp }) {
               otherUserUnreadCount = Math.max(otherUserUnreadCount, legacyOtherUnread);
             }
             
-            console.log('📊 Admin counts - adminUnread:', adminUnreadCount, 'otherUserUnread:', otherUserUnreadCount);
-            
             activeConversations.push({
               ...otherUser,
               lastMessage: lastMsg,
@@ -386,18 +608,10 @@ export default function AdminChatScreen({ navigation: navProp }) {
           return timeB - timeA;
         });
         
-        console.log('✅ ADMIN: Setting activeChats:', activeConversations.map(c => ({ 
-          name: c.name, 
-          lastMsg: c.lastMessage?.text,
-          unread: c.unreadCount,
-          otherUnread: c.otherUserUnreadCount 
-        })));
         setActiveChats(activeConversations);
-        console.log('Active chats loaded:', activeConversations.length);
         
         // Badge is displayed by ChatTabIcon in App.js, no need to set here
-        const totalUnread = getTotalUnreadCount('admin-001');
-        console.log('📊 ADMIN: Total unread count:', totalUnread);
+        const totalUnread = getTotalUnreadCount(user?.id || 'admin-001');
       } catch (error) {
         console.error('Error loading active chats:', error);
       }
@@ -409,6 +623,7 @@ export default function AdminChatScreen({ navigation: navProp }) {
   const handleSendMessage = async () => {
     if ((messageText.trim() || selectedAttachment) && selectedPatient) {
       const conversationId = getConversationId(user?.id || 'admin-001', selectedPatient.id);
+      
       let messageContent = messageText.trim();
       
       // If there's an attachment, append it to the message
@@ -443,8 +658,14 @@ export default function AdminChatScreen({ navigation: navProp }) {
       setSelectedAttachment(null); // Clear attachment
       
       try {
+        // Determine sender/receiver roles for backend
+        const senderRole = 'admin';
+        const receiverRole = selectedPatient.type === 'nurse'
+          ? 'nurse'
+          : 'patient';
+
         // Send message to ChatContext and get the updated messages - pass attachment
-        const updatedMessages = await sendMessage(conversationId, messageContent, user?.id || 'admin-001', selectedPatient.id, selectedAttachment);
+        const updatedMessages = await sendMessage(conversationId, messageContent, senderRole, receiverRole, selectedAttachment);
         
         // Use the updated messages directly from ChatContext
         setCurrentMessages(updatedMessages);
@@ -530,11 +751,18 @@ export default function AdminChatScreen({ navigation: navProp }) {
   };
 
   const openChat = async (patient) => {
+
+    // SAFETY CHECK: Don't open chat with yourself
+    if (patient.id === (user?.id || 'admin-001')) {
+      Alert.alert('Error', 'Cannot open chat with yourself');
+      return;
+    }
+
     setSelectedPatient(patient);
     setChatModalVisible(true);
     
-    const conversationId = getConversationId(user?.id || 'admin-001', patient.id);
-    
+    const currentAdminId = user?.id || 'admin-001';
+    const conversationId = getConversationId(currentAdminId, patient.id);
     // Load messages for this conversation
     const messages = await getConversationMessages(conversationId);
     setCurrentMessages(messages);
@@ -554,6 +782,32 @@ export default function AdminChatScreen({ navigation: navProp }) {
     setTimeout(() => {
       scrollToBottom();
     }, 200);
+  };
+
+  const deleteChat = async (patient) => {
+    try {
+      const currentUserId = user?.id || 'admin-001';
+      const conversationId = getConversationId(currentUserId, patient.id);
+      
+      // Remove from AsyncStorage
+      await AsyncStorage.removeItem(`messages_${conversationId}`);
+      await AsyncStorage.removeItem(`lastRead_${conversationId}`);
+      
+      // Also clear legacy conversation ID formats
+      const legacyConversationId = getConversationId('admin', patient.id);
+      if (legacyConversationId !== conversationId) {
+        await AsyncStorage.removeItem(`messages_${legacyConversationId}`);
+        await AsyncStorage.removeItem(`lastRead_${legacyConversationId}`);
+      }
+      
+      // Update local state to remove the chat from the list
+      setActiveChats(prevChats => prevChats.filter(chat => chat.id !== patient.id));
+      
+      Alert.alert('Success', `Conversation with ${patient.name} has been deleted.`);
+    } catch (error) {
+      console.error('Error deleting chat:', error);
+      Alert.alert('Error', 'Failed to delete conversation. Please try again.');
+    }
   };
 
   const handleAttachFile = () => {
@@ -1094,7 +1348,7 @@ export default function AdminChatScreen({ navigation: navProp }) {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       {/* Header */}
       <LinearGradient
         colors={GRADIENTS.header}
@@ -1152,25 +1406,25 @@ export default function AdminChatScreen({ navigation: navProp }) {
                   nestedScrollEnabled
                   keyboardShouldPersistTaps="handled"
                 >
-                  {searchResults.map((user) => {
-                    const profilePhoto = userProfiles[user.id]?.profilePhoto;
+                  {searchResults.map((userResult, index) => {
+                    const profilePhoto = userProfiles[userResult.id]?.profilePhoto;
                     return (
                       <TouchableWeb
-                        key={user.id}
+                        key={`search-${userResult.id}-${index}`}
                         style={styles.searchResultItem}
-                        onPress={() => handleUserSelect(user)}
+                        onPress={() => handleUserSelect(userResult)}
                         activeOpacity={0.7}
                       >
                         {profilePhoto ? (
                           <Image source={{ uri: profilePhoto }} style={styles.searchResultAvatar} />
                         ) : (
-                          <View style={[styles.searchResultAvatar, { backgroundColor: getAvatarColor(user.type) }]}>
-                            <Text style={styles.searchResultAvatarText}>{getInitials(user.name)}</Text>
+                          <View style={[styles.searchResultAvatar, { backgroundColor: getAvatarColor(userResult.type) }]}>
+                            <Text style={styles.searchResultAvatarText}>{getInitials(userResult.name)}</Text>
                           </View>
                         )}
                         <View style={styles.searchResultInfo}>
-                          <Text style={styles.searchResultName}>{user.name}</Text>
-                          <Text style={styles.searchResultEmail}>{user.email}</Text>
+                          <Text style={styles.searchResultName}>{userResult.name}</Text>
+                          <Text style={styles.searchResultEmail}>{userResult.contactEmail || userResult.email}</Text>
                         </View>
                       </TouchableWeb>
                     );
@@ -1186,50 +1440,55 @@ export default function AdminChatScreen({ navigation: navProp }) {
         {/* Display active chats only */}
         <View style={styles.chatListSection}>
           {activeChats.length > 0 ? (
-            activeChats.map((contact) => {
+            activeChats.map((contact, index) => {
               const profilePhoto = userProfiles[contact.id]?.profilePhoto;
               return (
-                <TouchableWeb
-                  key={contact.id}
-                  style={styles.chatItem}
-                  onPress={() => openChat(contact)}
-                  activeOpacity={0.95}
+                <SwipeableChatItem
+                  key={`${contact.id}-${index}`}
+                  onDelete={() => deleteChat(contact)}
+                  contactName={contact.name}
                 >
-                  {profilePhoto ? (
-                    <Image source={{ uri: profilePhoto }} style={styles.chatAvatar} />
-                  ) : (
-                    <View style={[styles.chatAvatar, { backgroundColor: getAvatarColor(contact.type) }]}>
-                      <Text style={styles.avatarText}>{getInitials(contact.name)}</Text>
-                    </View>
-                  )}
-                  <View style={styles.chatInfo}>
-                    <View style={styles.chatHeader}>
-                      <Text style={styles.chatName}>{contact.name}</Text>
-                      <Text style={styles.chatTime}>{String(contact.lastMessageTime || '')}</Text>
-                    </View>
-                    <View style={styles.chatLastMessageRow}>
-                        {contact.status === 'online' && (
-                          <View style={styles.onlineIndicator} />
-                        )}
-                        {(contact.lastMessage?.sender === (user?.id || 'admin-001') || contact.lastMessage?.sender === 'admin') && (
-                          <MaterialCommunityIcons 
-                            name="check-all" 
-                            size={16} 
-                            color={contact.otherUserUnreadCount === 0 ? '#4fc3f7' : COLORS.textLight} 
-                            style={{ marginRight: 4 }}
-                          />
-                        )}
-                        <Text style={styles.chatLastMessage} numberOfLines={1}>
-                          {getMessageText(contact.lastMessage)}
-                        </Text>
-                        {contact.unreadCount > 0 && (
-                          <View style={styles.unreadBadge}>
-                            <Text style={styles.unreadCount}>{contact.unreadCount}</Text>
-                          </View>
-                        )}
+                  <TouchableWeb
+                    style={styles.chatItem}
+                    onPress={() => openChat(contact)}
+                    activeOpacity={0.95}
+                  >
+                    {profilePhoto ? (
+                      <Image source={{ uri: profilePhoto }} style={styles.chatAvatar} />
+                    ) : (
+                      <View style={[styles.chatAvatar, { backgroundColor: getAvatarColor(contact.type) }]}>
+                        <Text style={styles.avatarText}>{getInitials(contact.name)}</Text>
                       </View>
-                    </View>
-                  </TouchableWeb>
+                    )}
+                    <View style={styles.chatInfo}>
+                      <View style={styles.chatHeader}>
+                        <Text style={styles.chatName}>{contact.name}</Text>
+                        <Text style={styles.chatTime}>{String(contact.lastMessageTime || '')}</Text>
+                      </View>
+                      <View style={styles.chatLastMessageRow}>
+                          {contact.status === 'online' && (
+                            <View style={styles.onlineIndicator} />
+                          )}
+                          {(contact.lastMessage?.sender === (user?.id || 'admin-001') || contact.lastMessage?.sender === 'admin') && (
+                            <MaterialCommunityIcons 
+                              name="check-all" 
+                              size={16} 
+                              color={contact.otherUserUnreadCount === 0 ? '#4fc3f7' : COLORS.textLight} 
+                              style={{ marginRight: 4 }}
+                            />
+                          )}
+                          <Text style={styles.chatLastMessage} numberOfLines={1}>
+                            {getMessageText(contact.lastMessage)}
+                          </Text>
+                          {contact.unreadCount > 0 && (
+                            <View style={styles.unreadBadge}>
+                              <Text style={styles.unreadCount}>{contact.unreadCount}</Text>
+                            </View>
+                          )}
+                        </View>
+                      </View>
+                    </TouchableWeb>
+                  </SwipeableChatItem>
                 );
               })
             ) : (
@@ -1685,11 +1944,20 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: '#F5F5F5',
   },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
+  },
   header: {
     paddingHorizontal: 16,
     paddingBottom: 16,
-    borderBottomLeftRadius: 20,
-    borderBottomRightRadius: 20,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
   },
   headerRow: {
     flexDirection: 'row',
@@ -1809,20 +2077,28 @@ const styles = StyleSheet.create({
   },
   filterPill: {
     paddingHorizontal: 10,
+    paddingVertical: 8,
     borderRadius: 20,
-    backgroundColor: '#F0F0F0',
+    backgroundColor: COLORS.white,
     marginRight: 8,
     minHeight: 36,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 1,
   },
   filterPillActive: {
     backgroundColor: COLORS.primary,
+    shadowOpacity: 0.08,
+    elevation: 2,
   },
   filterText: {
     fontSize: 11,
     fontFamily: 'Poppins_700Bold',
-    color: COLORS.text,
+    color: COLORS.textMuted,
     textAlign: 'center',
   },
   filterTextActive: {
@@ -2578,5 +2854,38 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: 'Poppins_400Regular',
     color: COLORS.textLight,
+  },
+  // Swipe to delete styles
+  swipeContainer: {
+    position: 'relative',
+    backgroundColor: COLORS.background,
+  },
+  swipeableRow: {
+    backgroundColor: COLORS.card,
+    zIndex: 2,
+  },
+  deleteBackground: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    width: 80,
+    backgroundColor: '#ff4444',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1,
+  },
+  deleteButton: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+  },
+  deleteText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+    marginTop: 4,
+    textAlign: 'center',
   },
 });

@@ -11,7 +11,7 @@ import {
   Image,
   Alert,
   Animated,
-  useWindowDimensions,
+  
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -19,6 +19,7 @@ import { SafeAreaView } from 'react-native-safe-area-context';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { COLORS, SPACING, GRADIENTS } from '../constants';
 import { useAuth } from '../context/AuthContext';
+import useWindowDimensions from '../hooks/useWindowDimensions';
 
 export default function LoginScreen({ navigation }) {
   const { height } = useWindowDimensions();
@@ -119,7 +120,7 @@ export default function LoginScreen({ navigation }) {
         <View style={styles.fixedLogoContainer}>
           <SafeAreaView edges={['top']}>
             <Image
-              source={require('../assets/Images/CARElogo.png')}
+              source={require('../assets/Images/Nurses-logo.png')}
               style={styles.logoImage}
               resizeMode="contain"
             />

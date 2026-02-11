@@ -20,31 +20,30 @@ import { COLORS, GRADIENTS } from '../constants';
 
 const PaymentSettingsScreen = ({ navigation }) => {
   const insets = useSafeAreaInsets();
-  const [viewMode, setViewMode] = useState('general'); // 'general', 'payment', 'business', 'company'
+  const [viewMode, setViewMode] = useState('general'); // 'general', 'payroll', 'company'
   
   // State for settings
-  const [autoPayoutEnabled, setAutoPayoutEnabled] = useState(true);
   const [paymentRemindersEnabled, setPaymentRemindersEnabled] = useState(true);
   const [receiptsEnabled, setReceiptsEnabled] = useState(true);
   
   // Picker modal states
   const [currencyModalVisible, setCurrencyModalVisible] = useState(false);
-  const [scheduleModalVisible, setScheduleModalVisible] = useState(false);
   
-  // Payment method states
-  const [paymentMethods, setPaymentMethods] = useState([
-    { id: '1', type: 'Credit Card', name: 'Visa ****1234', default: true, icon: 'credit-card' },
-    { id: '2', type: 'Bank Account', name: 'Checking ****5678', default: false, icon: 'bank' },
-  ]);
-
-  // Business settings
-  const [businessSettings, setBusinessSettings] = useState({
-    businessName: 'CARE Nursing Services and More',
-    taxId: '12-3456789',
-    serviceFee: '2.5',
-    currency: 'JMD',
-    payoutSchedule: 'weekly',
-    minimumPayout: '15,000'
+  // Payroll settings (used to calculate payslip amounts)
+  const [payrollSettings, setPayrollSettings] = useState({
+    defaultPayType: 'hourly',
+    defaultHourlyRate: 625,
+    defaultSalaryAmount: 180000,
+    shiftRates: {
+      eightHours: 5000,
+      twelveHours: 7000,
+    },
+    holidayMultiplier: 2,
+    allowances: { transport: 0, meal: 0, phone: 0 },
+    deductions: { tax: 25, nis: 3, education: 2 },
+    taxEnabled: true,
+    healthInsurance: false,
+    pensionContribution: false,
   });
 
   // Company details for invoices
@@ -78,10 +77,11 @@ const PaymentSettingsScreen = ({ navigation }) => {
     posAvailable: false
   });
 
-  // Load company details and payment info from AsyncStorage on mount
+  // Load company details, payment info, and payroll settings from AsyncStorage on mount
   useEffect(() => {
     loadCompanyDetails();
     loadPaymentInfo();
+    loadPayrollSettings();
   }, []);
 
   const loadPaymentInfo = async () => {
@@ -128,52 +128,37 @@ const PaymentSettingsScreen = ({ navigation }) => {
     }
   };
 
-  const handleAddPaymentMethod = () => {
-    Alert.alert(
-      'Add Payment Method',
-      'Choose payment method type:',
-      [
-        { text: 'Credit Card', onPress: () => addPaymentMethod('Credit Card') },
-        { text: 'Bank Account', onPress: () => addPaymentMethod('Bank Account') },
-        { text: 'Cancel', style: 'cancel' }
-      ]
-    );
-  };
-
-  const addPaymentMethod = (type) => {
-    Alert.alert('Add Payment Method', `${type} addition functionality would be implemented here`);
-  };
-
-  const setDefaultPaymentMethod = (id) => {
-    setPaymentMethods(methods =>
-      methods.map(method => ({
-        ...method,
-        default: method.id === id
-      }))
-    );
-    Alert.alert('Success', 'Default payment method updated');
-  };
-
-  const removePaymentMethod = (id) => {
-    Alert.alert(
-      'Remove Payment Method',
-      'Are you sure you want to remove this payment method?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: () => {
-            setPaymentMethods(methods => methods.filter(method => method.id !== id));
-            Alert.alert('Success', 'Payment method removed');
-          }
-        }
-      ]
-    );
-  };
-
   const saveSettings = () => {
     Alert.alert('Success', 'Payment settings have been saved successfully');
+  };
+
+  const loadPayrollSettings = async () => {
+    try {
+      const stored = await AsyncStorage.getItem('adminPayrollSettings');
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        // Merge with defaults to ensure all keys exist
+        setPayrollSettings((prev) => ({
+          ...prev,
+          ...parsed,
+          shiftRates: { ...prev.shiftRates, ...(parsed.shiftRates || {}) },
+          allowances: { ...prev.allowances, ...(parsed.allowances || {}) },
+          deductions: { ...prev.deductions, ...(parsed.deductions || {}) },
+        }));
+      }
+    } catch (error) {
+      console.error('Error loading payroll settings:', error);
+    }
+  };
+
+  const savePayrollSettings = async () => {
+    try {
+      await AsyncStorage.setItem('adminPayrollSettings', JSON.stringify(payrollSettings));
+      Alert.alert('Success', 'Payroll settings saved successfully');
+    } catch (error) {
+      console.error('Error saving payroll settings:', error);
+      Alert.alert('Error', 'Failed to save payroll settings');
+    }
   };
 
   const renderSettingRow = (title, subtitle, value, onValueChange, type = 'switch') => (
@@ -198,46 +183,7 @@ const PaymentSettingsScreen = ({ navigation }) => {
     </View>
   );
 
-  const renderPaymentMethod = (method) => (
-    <View key={method.id} style={styles.paymentMethodCard}>
-      <View style={styles.paymentMethodLeft}>
-        <View style={styles.paymentMethodInfo}>
-          <Text style={styles.paymentMethodType}>{method.type}</Text>
-          <Text style={styles.paymentMethodName}>{method.name}</Text>
-          {method.default && <Text style={styles.defaultLabel}>Default</Text>}
-        </View>
-      </View>
-      <View style={styles.paymentMethodActions}>
-        {!method.default && (
-          <TouchableOpacity 
-            style={styles.actionButton}
-            onPress={() => setDefaultPaymentMethod(method.id)}
-          >
-            <Text style={styles.actionButtonText}>Set Default</Text>
-          </TouchableOpacity>
-        )}
-        <TouchableOpacity 
-          style={[styles.actionButton, styles.removeButton]}
-          onPress={() => removePaymentMethod(method.id)}
-        >
-          <MaterialCommunityIcons name="delete" size={16} color={COLORS.error} />
-        </TouchableOpacity>
-      </View>
-    </View>
-  );
 
-  const renderBusinessSetting = (key, label, value, placeholder) => (
-    <View style={styles.inputGroup}>
-      <Text style={styles.inputLabel}>{label}</Text>
-      <TextInput
-        style={styles.textInput}
-        value={value}
-        onChangeText={(text) => setBusinessSettings(prev => ({ ...prev, [key]: text }))}
-        placeholder={placeholder}
-        placeholderTextColor={COLORS.textMuted}
-      />
-    </View>
-  );
 
   const renderCompanyField = (key, label, value, placeholder, keyboardType = 'default') => (
     <View style={styles.inputGroup}>
@@ -276,6 +222,8 @@ const PaymentSettingsScreen = ({ navigation }) => {
               if (viewMode === 'company') {
                 saveCompanyDetails();
                 savePaymentInfo();
+              } else if (viewMode === 'payroll') {
+                savePayrollSettings();
               } else {
                 saveSettings();
               }
@@ -297,7 +245,7 @@ const PaymentSettingsScreen = ({ navigation }) => {
             <LinearGradient
               colors={GRADIENTS.header}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.tabGradient}
             >
               <Text style={styles.tabText}>General</Text>
@@ -310,39 +258,20 @@ const PaymentSettingsScreen = ({ navigation }) => {
         </TouchableOpacity>
         <TouchableOpacity 
           style={styles.tab}
-          onPress={() => setViewMode('payment')}
+          onPress={() => setViewMode('payroll')}
         >
-          {viewMode === 'payment' ? (
+          {viewMode === 'payroll' ? (
             <LinearGradient
               colors={GRADIENTS.header}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.tabGradient}
             >
-              <Text style={styles.tabText}>Payment</Text>
+              <Text style={styles.tabText}>Payroll</Text>
             </LinearGradient>
           ) : (
             <View style={styles.inactiveTab}>
-              <Text style={styles.inactiveTabText}>Payment</Text>
-            </View>
-          )}
-        </TouchableOpacity>
-        <TouchableOpacity 
-          style={styles.tab}
-          onPress={() => setViewMode('business')}
-        >
-          {viewMode === 'business' ? (
-            <LinearGradient
-              colors={GRADIENTS.header}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.tabGradient}
-            >
-              <Text style={styles.tabText}>Business</Text>
-            </LinearGradient>
-          ) : (
-            <View style={styles.inactiveTab}>
-              <Text style={styles.inactiveTabText}>Business</Text>
+              <Text style={styles.inactiveTabText}>Payroll</Text>
             </View>
           )}
         </TouchableOpacity>
@@ -354,7 +283,7 @@ const PaymentSettingsScreen = ({ navigation }) => {
             <LinearGradient
               colors={GRADIENTS.header}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.tabGradient}
             >
               <Text style={styles.tabText}>Invoice</Text>
@@ -379,12 +308,6 @@ const PaymentSettingsScreen = ({ navigation }) => {
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>General Settings</Text>
               {renderSettingRow(
-                'Auto Payout',
-                'Automatically transfer earnings to your account',
-                autoPayoutEnabled,
-                setAutoPayoutEnabled
-              )}
-              {renderSettingRow(
                 'Payment Reminders',
                 'Send notifications for upcoming payments',
                 paymentRemindersEnabled,
@@ -399,58 +322,81 @@ const PaymentSettingsScreen = ({ navigation }) => {
             </View>
           </>
         )}
-
-        {viewMode === 'payment' && (
+        {viewMode === 'payroll' && (
           <>
-            {/* Payment Methods Section */}
+            {/* Payroll Settings Section */}
             <View style={styles.section}>
-              <View style={styles.sectionHeader}>
-                <Text style={styles.sectionTitle}>Payment Methods</Text>
-                <TouchableOpacity 
-                  style={styles.addButton}
-                  onPress={handleAddPaymentMethod}
-                >
-                  <MaterialCommunityIcons name="plus" size={20} color={COLORS.primary} />
-                  <Text style={styles.addButtonText}>Add</Text>
-                </TouchableOpacity>
-              </View>
-              {paymentMethods.map(renderPaymentMethod)}
-            </View>
-          </>
-        )}
+              <Text style={styles.sectionTitle}>Payroll Settings</Text>
+              <Text style={styles.sectionSubtitle}>These settings are used to calculate payslip amounts</Text>
 
-        {viewMode === 'business' && (
-          <>
-            {/* Business Settings Section */}
-            <View style={styles.section}>
-              <Text style={styles.sectionTitle}>Business Information</Text>
-              {renderBusinessSetting('businessName', 'Business Name', businessSettings.businessName, 'Enter business name')}
-              {renderBusinessSetting('taxId', 'Tax ID', businessSettings.taxId, 'Enter tax ID')}
-              {renderBusinessSetting('serviceFee', 'Service Fee (%)', businessSettings.serviceFee, 'Enter service fee percentage')}
-              
+              {/* Pay Type */}
               <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Currency</Text>
-                <TouchableOpacity 
-                  style={styles.textInput}
-                  onPress={() => setCurrencyModalVisible(true)}
-                >
-                  <Text style={styles.inputText}>{businessSettings.currency}</Text>
-                  <MaterialCommunityIcons name="chevron-down" size={20} color={COLORS.textMuted} />
-                </TouchableOpacity>
+                <Text style={styles.inputLabel}>Default Pay Type</Text>
+                <View style={styles.textInput}>
+                  <Text style={styles.inputText}>HOURLY</Text>
+                </View>
               </View>
-              
+
+              {/* Shift Rates */}
               <View style={styles.inputGroup}>
-                <Text style={styles.inputLabel}>Payout Schedule</Text>
-                <TouchableOpacity 
+                <Text style={styles.inputLabel}>8 Hour Shift Rate (J$)</Text>
+                <TextInput
                   style={styles.textInput}
-                  onPress={() => setScheduleModalVisible(true)}
-                >
-                  <Text style={styles.inputText}>{businessSettings.payoutSchedule}</Text>
-                  <MaterialCommunityIcons name="chevron-down" size={20} color={COLORS.textMuted} />
-                </TouchableOpacity>
+                  value={String(payrollSettings.shiftRates?.eightHours ?? 5000)}
+                  onChangeText={(text) => setPayrollSettings(prev => ({
+                    ...prev,
+                    shiftRates: { ...prev.shiftRates, eightHours: Number(text) || 0 }
+                  }))}
+                  placeholder="Enter 8-hour shift rate"
+                  placeholderTextColor={COLORS.textMuted}
+                  keyboardType="numeric"
+                />
               </View>
-              
-              {renderBusinessSetting('minimumPayout', 'Minimum Payout ($)', businessSettings.minimumPayout, 'Enter minimum payout amount')}
+
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>12 Hour Shift Rate (J$)</Text>
+                <TextInput
+                  style={styles.textInput}
+                  value={String(payrollSettings.shiftRates?.twelveHours ?? 7000)}
+                  onChangeText={(text) => setPayrollSettings(prev => ({
+                    ...prev,
+                    shiftRates: { ...prev.shiftRates, twelveHours: Number(text) || 0 }
+                  }))}
+                  placeholder="Enter 12-hour shift rate"
+                  placeholderTextColor={COLORS.textMuted}
+                  keyboardType="numeric"
+                />
+              </View>
+
+              {/* Holiday */}
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Holiday Pay Multiplier</Text>
+                <TextInput
+                  style={styles.textInput}
+                  value={String(payrollSettings.holidayMultiplier ?? 2)}
+                  onChangeText={(text) => setPayrollSettings(prev => ({
+                    ...prev,
+                    holidayMultiplier: Number(text) || 1
+                  }))}
+                  placeholder="e.g., 2"
+                  placeholderTextColor={COLORS.textMuted}
+                  keyboardType="numeric"
+                />
+              </View>
+
+              {/* Hourly Rate (derived) */}
+              <View style={styles.inputGroup}>
+                <Text style={styles.inputLabel}>Default Hourly Rate (J$)</Text>
+                <TextInput
+                  style={styles.textInput}
+                  value={String(payrollSettings.defaultHourlyRate)}
+                  onChangeText={(text) => setPayrollSettings(prev => ({ ...prev, defaultHourlyRate: Number(text) || 0 }))}
+                  placeholder="Enter hourly rate"
+                  placeholderTextColor={COLORS.textMuted}
+                  keyboardType="numeric"
+                />
+              </View>
+
             </View>
           </>
         )}
@@ -705,10 +651,8 @@ const PaymentSettingsScreen = ({ navigation }) => {
                 key={currency}
                 style={styles.modalOption}
                 onPress={() => {
-                  // Check if we're updating business settings or bank account
-                  if (viewMode === 'business') {
-                    setBusinessSettings({ ...businessSettings, currency });
-                  } else if (viewMode === 'company' && paymentInfo.selectedAccountIndex !== undefined) {
+                  // Only update bank account currency (payroll doesn't use currency modal)
+                  if (viewMode === 'company' && paymentInfo.selectedAccountIndex !== undefined) {
                     const updated = [...paymentInfo.bankAccounts];
                     if (paymentInfo.selectedAccountNumberIndex !== undefined) {
                       // Update specific account number currency
@@ -726,17 +670,15 @@ const PaymentSettingsScreen = ({ navigation }) => {
               >
                 <Text style={[
                   styles.modalOptionText,
-                  (viewMode === 'business' && businessSettings.currency === currency) ||
                   (viewMode === 'company' && paymentInfo.selectedAccountIndex !== undefined && 
                    paymentInfo.selectedAccountNumberIndex !== undefined &&
                    paymentInfo.bankAccounts[paymentInfo.selectedAccountIndex]?.accountNumbers[paymentInfo.selectedAccountNumberIndex]?.currency === currency) ? styles.modalOptionTextSelected : null
                 ]}>
                   {currency}
                 </Text>
-                {((viewMode === 'business' && businessSettings.currency === currency) ||
-                  (viewMode === 'company' && paymentInfo.selectedAccountIndex !== undefined && 
+                {(viewMode === 'company' && paymentInfo.selectedAccountIndex !== undefined && 
                    paymentInfo.selectedAccountNumberIndex !== undefined &&
-                   paymentInfo.bankAccounts[paymentInfo.selectedAccountIndex]?.accountNumbers[paymentInfo.selectedAccountNumberIndex]?.currency === currency)) && (
+                   paymentInfo.bankAccounts[paymentInfo.selectedAccountIndex]?.accountNumbers[paymentInfo.selectedAccountNumberIndex]?.currency === currency) && (
                   <MaterialCommunityIcons name="check" size={20} color={COLORS.primary} />
                 )}
               </TouchableOpacity>
@@ -745,43 +687,7 @@ const PaymentSettingsScreen = ({ navigation }) => {
         </TouchableOpacity>
       </Modal>
 
-      {/* Schedule Picker Modal */}
-      <Modal
-        visible={scheduleModalVisible}
-        transparent={true}
-        animationType="slide"
-        onRequestClose={() => setScheduleModalVisible(false)}
-      >
-        <TouchableOpacity 
-          style={styles.modalOverlay}
-          activeOpacity={1}
-          onPress={() => setScheduleModalVisible(false)}
-        >
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Select Payout Schedule</Text>
-            {['daily', 'weekly', 'bi-weekly', 'monthly'].map((schedule) => (
-              <TouchableOpacity
-                key={schedule}
-                style={styles.modalOption}
-                onPress={() => {
-                  setBusinessSettings({ ...businessSettings, payoutSchedule: schedule });
-                  setScheduleModalVisible(false);
-                }}
-              >
-                <Text style={[
-                  styles.modalOptionText,
-                  businessSettings.payoutSchedule === schedule && styles.modalOptionTextSelected
-                ]}>
-                  {schedule.charAt(0).toUpperCase() + schedule.slice(1)}
-                </Text>
-                {businessSettings.payoutSchedule === schedule && (
-                  <MaterialCommunityIcons name="check" size={20} color={COLORS.primary} />
-                )}
-              </TouchableOpacity>
-            ))}
-          </View>
-        </TouchableOpacity>
-      </Modal>
+
     </KeyboardAvoidingView>
   );
 };
@@ -892,108 +798,15 @@ const styles = StyleSheet.create({
   },
   tabText: {
     fontSize: 11,
-    fontWeight: '700',
+    fontFamily: 'Poppins_700Bold',
     color: COLORS.white,
     textAlign: 'center',
   },
   inactiveTabText: {
     fontSize: 11,
-    fontWeight: '700',
+    fontFamily: 'Poppins_700Bold',
     color: COLORS.textMuted,
     textAlign: 'center',
-  },
-  addButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    backgroundColor: COLORS.background,
-    borderRadius: 16,
-    borderWidth: 1,
-    borderColor: COLORS.primary,
-  },
-  addButtonText: {
-    marginLeft: 4,
-    fontSize: 14,
-    fontWeight: '600',
-    color: COLORS.primary,
-  },
-  card: {
-    backgroundColor: COLORS.white,
-    borderRadius: 12,
-    padding: 16,
-    shadowColor: COLORS.shadow,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
-    marginBottom: 20,
-  },
-  paymentMethodCard: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    backgroundColor: COLORS.white,
-    borderRadius: 12,
-    padding: 16,
-    marginBottom: 12,
-    shadowColor: COLORS.shadow,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  paymentMethodLeft: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    flex: 1,
-  },
-  paymentMethodIcon: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: COLORS.background,
-    alignItems: 'center',
-    justifyContent: 'center',
-    marginRight: 12,
-  },
-  paymentMethodInfo: {
-    flex: 1,
-  },
-  paymentMethodType: {
-    fontSize: 16,
-    fontWeight: '600',
-    color: COLORS.text,
-    marginBottom: 4,
-  },
-  paymentMethodName: {
-    fontSize: 14,
-    color: COLORS.textMuted,
-    marginBottom: 2,
-  },
-  defaultLabel: {
-    fontSize: 12,
-    color: COLORS.success,
-    fontWeight: '600',
-  },
-  paymentMethodActions: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  actionButton: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 16,
-    backgroundColor: COLORS.background,
-    marginLeft: 8,
-  },
-  removeButton: {
-    backgroundColor: COLORS.errorLight,
-  },
-  actionButtonText: {
-    fontSize: 12,
-    fontWeight: '600',
-    color: COLORS.primary,
   },
   settingRow: {
     flexDirection: 'row',
@@ -1184,6 +997,21 @@ const styles = StyleSheet.create({
   modalOptionTextSelected: {
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.primary,
+  },
+
+  invoiceInitButton: {
+    flexDirection: 'row',
+    gap: 8,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+  },
+  invoiceInitButtonText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.white,
   },
 });
 

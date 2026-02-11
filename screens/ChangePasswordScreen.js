@@ -8,13 +8,17 @@ import {
   TextInput,
   Alert,
   Platform,
+  KeyboardAvoidingView,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { COLORS, GRADIENTS, SPACING } from '../constants';
+import { useAuth } from '../context/AuthContext';
 
 export default function ChangePasswordScreen({ navigation }) {
+  const { changePassword } = useAuth();
   const [formData, setFormData] = useState({
     currentPassword: '',
     newPassword: '',
@@ -24,7 +28,9 @@ export default function ChangePasswordScreen({ navigation }) {
   const [showNew, setShowNew] = useState(false);
   const [showConfirm, setShowConfirm] = useState(false);
 
-  const handleChangePassword = () => {
+  const [isLoading, setIsLoading] = useState(false);
+
+  const handleChangePassword = async () => {
     if (!formData.currentPassword || !formData.newPassword || !formData.confirmPassword) {
       Alert.alert('Error', 'Please fill in all fields');
       return;
@@ -40,15 +46,35 @@ export default function ChangePasswordScreen({ navigation }) {
       return;
     }
 
-    Alert.alert(
-      'Success',
-      'Your password has been changed successfully!',
-      [{ text: 'OK', onPress: () => navigation.goBack() }]
-    );
+    setIsLoading(true);
+    try {
+      const result = await changePassword(formData.currentPassword, formData.newPassword);
+
+      if (result.success) {
+        Alert.alert(
+          'Success',
+          'Your password has been changed successfully!',
+          [{ text: 'OK', onPress: () => navigation.goBack() }]
+        );
+      } else {
+        Alert.alert('Error', result.error || 'Failed to change password');
+      }
+    } catch (error) {
+      Alert.alert('Error', error.message || 'Network error. Please try again.');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
+      
       <LinearGradient
         colors={GRADIENTS.header}
         start={{ x: 0, y: 0 }}
@@ -67,12 +93,16 @@ export default function ChangePasswordScreen({ navigation }) {
         </View>
       </LinearGradient>
 
-      <ScrollView 
-        style={styles.scrollView} 
-        contentContainerStyle={styles.scrollContent}
-        showsVerticalScrollIndicator={false}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        style={{ flex: 1 }}
       >
-        <View style={styles.form}>
+        <ScrollView 
+          style={styles.scrollView} 
+          contentContainerStyle={styles.scrollContent}
+          showsVerticalScrollIndicator={false}
+        >
+          <View style={styles.form}>
           {/* Info Box */}
           <View style={styles.infoBox}>
             <MaterialCommunityIcons name="information" size={24} color={COLORS.info} />
@@ -183,19 +213,30 @@ export default function ChangePasswordScreen({ navigation }) {
           </View>
 
           {/* Update Button */}
-          <TouchableWeb style={styles.updateButton} onPress={handleChangePassword}>
+          <TouchableWeb 
+            style={[styles.updateButton, isLoading && { opacity: 0.7 }]} 
+            onPress={handleChangePassword}
+            disabled={isLoading}
+          >
             <LinearGradient
-              colors={[COLORS.accent, COLORS.accentLight]}
+                colors={GRADIENTS.header}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.updateGradient}
             >
-              <MaterialCommunityIcons name="shield-check" size={20} color={COLORS.white} />
-              <Text style={styles.updateText}>Update Password</Text>
+              <MaterialCommunityIcons 
+                name={isLoading ? "loading" : "shield-check"} 
+                size={20} 
+                color={COLORS.white} 
+              />
+              <Text style={styles.updateText}>
+                {isLoading ? 'Updating...' : 'Update Password'}
+              </Text>
             </LinearGradient>
           </TouchableWeb>
         </View>
-      </ScrollView>
+        </ScrollView>
+      </KeyboardAvoidingView>
     </SafeAreaView>
   );
 }
@@ -204,6 +245,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
   },
   header: {
     paddingHorizontal: 20,
@@ -258,6 +308,7 @@ const styles = StyleSheet.create({
   },
   scrollContent: {
     flexGrow: 1,
+    paddingBottom: 100,
   },
   form: {
     padding: SPACING.lg,

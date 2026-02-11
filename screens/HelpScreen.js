@@ -8,6 +8,7 @@ import {
   Alert,
   Linking,
   TextInput,
+  Image,
 } from 'react-native';
 import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -57,7 +58,7 @@ export default function HelpScreen({ navigation }) {
     {
       id: 2,
       question: 'What services do you provide?',
-      answer: 'We offer a wide range of nursing services including Home Care, Elder Care, Post-Surgery Care, Wound Care, IV Therapy, Health Monitoring, and Emergency Response. Check the Home screen for complete details.',
+      answer: 'We offer a wide range of services including Home Care Assistance, Alternative Post-Op Care, Wound Care, Physiotherapy, In-home Phlebotomy, IV Medication Administration and Monitoring, Appointment Accompaniment, Event Nurses, and more.',
     },
     {
       id: 3,
@@ -127,7 +128,14 @@ export default function HelpScreen({ navigation }) {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
+      
       <LinearGradient
         colors={GRADIENTS.header}
         start={{ x: 0, y: 0 }}
@@ -158,7 +166,7 @@ export default function HelpScreen({ navigation }) {
             <LinearGradient
               colors={GRADIENTS.primary}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.manualGradient}
             >
               <View style={styles.manualIconContainer}>
@@ -166,7 +174,7 @@ export default function HelpScreen({ navigation }) {
               </View>
               <View style={styles.manualContent}>
                 <Text style={styles.manualTitle}>View User Manual</Text>
-                <Text style={styles.manualSubtitle}>Complete guide to using the CARE app</Text>
+                <Text style={styles.manualSubtitle}>Complete guide to using the 876Nurses app</Text>
               </View>
               <MaterialCommunityIcons name="chevron-right" size={24} color={COLORS.white} />
             </LinearGradient>
@@ -174,11 +182,10 @@ export default function HelpScreen({ navigation }) {
         </View>
 
         {/* Feedback Box */}
-        <View style={styles.section}>
+        <View style={styles.feedbackSection}>
           <Text style={styles.sectionTitle}>Send Us Feedback</Text>
           <View style={styles.feedbackBox}>
             <View style={styles.feedbackBoxHeader}>
-              <MaterialCommunityIcons name="message-reply-text" size={24} color={COLORS.accent} />
               <Text style={styles.feedbackBoxTitle}>Share Your Thoughts</Text>
             </View>
             <Text style={styles.feedbackBoxSubtitle}>
@@ -200,9 +207,9 @@ export default function HelpScreen({ navigation }) {
               activeOpacity={0.7}
             >
               <LinearGradient
-                colors={GRADIENTS.accent}
+                colors={GRADIENTS.header}
                 start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
+                end={{ x: 0, y: 1 }}
                 style={styles.sendButtonGradient}
               >
                 <MaterialCommunityIcons name="send" size={20} color={COLORS.white} />
@@ -221,6 +228,70 @@ export default function HelpScreen({ navigation }) {
             ))}
           </View>
         </View>
+
+        {/* Contact Support Section */}
+        <View style={styles.section}>
+          <Text style={styles.sectionTitle}>Contact Support</Text>
+          <View style={styles.contactContainer}>
+            <View style={styles.contactCard}>
+              <MaterialCommunityIcons name="phone" size={24} color={COLORS.primary} />
+              <View style={styles.contactInfo}>
+                <Text style={styles.contactLabel}>Phone (Weekdays 9am-5pm)</Text>
+                <TouchableWeb onPress={() => Linking.openURL(`tel:${CONTACT_INFO.phoneWeekday}`)}>
+                  <Text style={styles.contactValue}>{CONTACT_INFO.phoneWeekday}</Text>
+                </TouchableWeb>
+              </View>
+            </View>
+
+            <View style={styles.contactCard}>
+              <MaterialCommunityIcons name="phone-alert" size={24} color={COLORS.warning} />
+              <View style={styles.contactInfo}>
+                <Text style={styles.contactLabel}>After Hours / Emergency</Text>
+                {CONTACT_INFO.phoneAfterHours.map((phone, idx) => (
+                  <TouchableWeb key={idx} onPress={() => Linking.openURL(`tel:${phone}`)}>
+                    <Text style={styles.contactValue}>{phone}</Text>
+                  </TouchableWeb>
+                ))}
+              </View>
+            </View>
+
+            <View style={styles.contactCard}>
+              <MaterialCommunityIcons name="email" size={24} color={COLORS.accent} />
+              <View style={styles.contactInfo}>
+                <Text style={styles.contactLabel}>Email</Text>
+                <TouchableWeb onPress={() => Linking.openURL(`mailto:${CONTACT_INFO.email}`)}>
+                  <Text style={styles.contactValue}>{CONTACT_INFO.email}</Text>
+                </TouchableWeb>
+              </View>
+            </View>
+
+            <View style={styles.contactCard}>
+              <MaterialCommunityIcons name="whatsapp" size={24} color="#25D366" />
+              <View style={styles.contactInfo}>
+                <Text style={styles.contactLabel}>WhatsApp</Text>
+                <TouchableWeb onPress={() => Linking.openURL(`https://wa.me/${CONTACT_INFO.whatsapp}`)}>
+                  <Text style={styles.contactValue}>{CONTACT_INFO.phone}</Text>
+                </TouchableWeb>
+              </View>
+            </View>
+
+            <View style={styles.contactCard}>
+              <MaterialCommunityIcons name="map-marker" size={24} color={COLORS.error} />
+              <View style={styles.contactInfo}>
+                <Text style={styles.contactLabel}>Address</Text>
+                <Text style={styles.contactValueAddress}>{CONTACT_INFO.address}</Text>
+              </View>
+            </View>
+
+            <View style={styles.contactCard}>
+              <MaterialCommunityIcons name="instagram" size={24} color="#E4405F" />
+              <View style={styles.contactInfo}>
+                <Text style={styles.contactLabel}>Instagram</Text>
+                <Text style={styles.contactValue}>{CONTACT_INFO.instagram}</Text>
+              </View>
+            </View>
+          </View>
+        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -230,6 +301,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
   },
   header: {
     paddingHorizontal: SPACING.lg,
@@ -266,6 +346,10 @@ const styles = StyleSheet.create({
   },
   section: {
     padding: SPACING.lg,
+  },
+  feedbackSection: {
+    padding: SPACING.lg,
+    paddingHorizontal: SPACING.md,
   },
   sectionTitle: {
     fontSize: 16,
@@ -360,20 +444,27 @@ const styles = StyleSheet.create({
     borderColor: COLORS.border,
   },
   sendButton: {
-    borderRadius: 12,
+    borderRadius: 20,
     overflow: 'hidden',
+    shadowColor: COLORS.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
   },
   sendButtonGradient: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
-    paddingVertical: SPACING.md,
-    gap: SPACING.sm,
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    gap: 4,
   },
   sendButtonText: {
-    fontSize: 15,
-    fontFamily: 'Poppins_600SemiBold',
     color: COLORS.white,
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
   },
   faqContainer: {
     backgroundColor: COLORS.white,
@@ -423,5 +514,44 @@ const styles = StyleSheet.create({
     fontFamily: 'Poppins_400Regular',
     color: COLORS.textLight,
     lineHeight: 20,
+  },
+  // Contact Section Styles
+  contactContainer: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    padding: SPACING.md,
+    shadowColor: COLORS.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 8,
+    elevation: 3,
+  },
+  contactCard: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    paddingVertical: SPACING.md,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+    gap: SPACING.md,
+  },
+  contactInfo: {
+    flex: 1,
+  },
+  contactLabel: {
+    fontSize: 12,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.textLight,
+    marginBottom: 4,
+  },
+  contactValue: {
+    fontSize: 15,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.primary,
+  },
+  contactValueAddress: {
+    fontSize: 13,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.text,
+    lineHeight: 19,
   },
 });

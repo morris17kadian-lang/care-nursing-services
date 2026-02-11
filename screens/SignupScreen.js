@@ -12,13 +12,14 @@ import {
   Image,
   Alert,
   Animated,
-  useWindowDimensions,
+  
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS, SPACING, GRADIENTS } from '../constants';
 import { useAuth } from '../context/AuthContext';
+import useWindowDimensions from '../hooks/useWindowDimensions';
 
 export default function SignupScreen({ navigation }) {
   const { height } = useWindowDimensions();
@@ -95,18 +96,22 @@ export default function SignupScreen({ navigation }) {
   };
 
   return (
-    <LinearGradient
-      colors={GRADIENTS.splash}
-      start={{ x: 0, y: 0 }}
-      end={{ x: 0, y: 1 }}
-      style={styles.container}
-    >
+    <View style={styles.outerContainer}>
+      <LinearGradient
+        colors={GRADIENTS.splash}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 0, y: 1 }}
+        style={styles.container}
+      >
       <KeyboardAvoidingView
         behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
         style={styles.keyboardView}
       >
         <ScrollView
-          contentContainerStyle={styles.scrollContent}
+          contentContainerStyle={[
+            styles.scrollContent,
+            { paddingTop: height * 0.4 } // Dynamic height moved to inline style
+          ]}
           showsVerticalScrollIndicator={false}
         >
           {/* Glass Form Content */}
@@ -258,10 +263,15 @@ export default function SignupScreen({ navigation }) {
         </ScrollView>
       </KeyboardAvoidingView>
     </LinearGradient>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
+  outerContainer: {
+    flex: 1,
+    backgroundColor: COLORS.primary,
+  },
   container: {
     flex: 1,
     backgroundColor: COLORS.primary,
@@ -274,7 +284,7 @@ const styles = StyleSheet.create({
     justifyContent: 'flex-end',
     alignItems: 'center',
     padding: SPACING.xl,
-    paddingTop: height * 0.4, // Leave space for the splash logo above
+    // paddingTop moved to inline style to avoid dimension access during StyleSheet creation
     paddingBottom: SPACING.xxl,
   },
   logoContainer: {

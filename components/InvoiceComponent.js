@@ -18,17 +18,7 @@ import InvoiceService from '../services/InvoiceService';
 const InvoiceComponent = ({ invoice, onClose, onPrint, onShare }) => {
   const [isGenerating, setIsGenerating] = useState(false);
 
-  console.log('🧾 InvoiceComponent rendering with invoice:', invoice?.invoiceNumber);
-  console.log('🧾 Invoice data check:', {
-    hasInvoice: !!invoice,
-    invoiceNumber: invoice?.invoiceNumber,
-    billToName: invoice?.billTo?.name,
-    itemsCount: invoice?.items?.length,
-    total: invoice?.total
-  });
-
   if (!invoice) {
-    console.log('❌ No invoice data - showing error state');
     return (
       <View style={styles.container}>
         <View style={styles.header}>
@@ -44,14 +34,10 @@ const InvoiceComponent = ({ invoice, onClose, onPrint, onShare }) => {
       </View>
     );
   }
-
-  console.log('✅ Invoice data present - rendering full component');
   
   try {
     const templateData = InvoiceService.getInvoiceTemplate(invoice);
-    console.log('✅ Template data generated successfully');
   } catch (error) {
-    console.error('❌ Error getting template data:', error);
     return (
       <View style={styles.container}>
         <View style={styles.header}>
@@ -99,17 +85,13 @@ Contact: ${INVOICE_CONFIG.companyInfo.phone}
         title: `Invoice ${invoice.invoiceNumber}`,
       });
     } catch (error) {
-      console.error('Error sharing invoice:', error);
       Alert.alert('Error', 'Failed to share invoice');
     }
   };
 
-  console.log('🎨 About to render main invoice component...');
-
   // TEMPORARY: Simple test render with bright background
   return (
     <View style={[styles.container, { backgroundColor: 'red' }]}>
-      {console.log('🎨 Rendering RED container for testing...')}
       
       <View style={{ 
         flex: 1, 

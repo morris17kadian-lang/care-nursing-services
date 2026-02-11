@@ -1,6 +1,7 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from './AuthContext';
+import ApiService from '../services/ApiService';
 
 const ChatContext = createContext();
 
@@ -49,7 +50,10 @@ export const ChatProvider = ({ children }) => {
 
   const checkBackendConnection = async () => {
     try {
-      const response = await fetch('http://192.168.100.82:5000/api/health');
+      const apiUrl = __DEV__ 
+        ? 'http://192.168.100.82:5000/api/health' // Development
+        : 'https://shielded-coast-08850-f496a70eafdb.herokuapp.com/api/health'; // Production
+      const response = await fetch(apiUrl);
       const data = await response.json();
       
       if (response.ok && data.message) {
@@ -64,6 +68,9 @@ export const ChatProvider = ({ children }) => {
 
   const loadMessages = async () => {
     try {
+      setIsLoading(true);
+
+      // First load from local storage for immediate display
       const storedMessages = await AsyncStorage.getItem('chatMessages');
       const storedUnreadCounts = await AsyncStorage.getItem('chatUnreadCounts');
       const storedLastMessages = await AsyncStorage.getItem('chatLastMessages');
@@ -82,8 +89,20 @@ export const ChatProvider = ({ children }) => {
         setLastReadTimestamps(JSON.parse(storedReadTimestamps));
       }
 
+      // Try to refresh messages from backend if connected
+      if (backendStatus === 'connected') {
+        try {
+          console.log('🔄 Refreshing messages from backend...');
+          await refreshMessagesFromBackend();
+        } catch (error) {
+          console.error('⚠️ Failed to refresh from backend:', error.message);
+        }
+      }
+
     } catch (error) {
       console.error('Error loading messages:', error);
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -112,8 +131,6 @@ export const ChatProvider = ({ children }) => {
   };
 
     const sendMessage = async (conversationId, text, senderType, receiverType, attachment = null) => {
-    console.log('📤 SENDMESSAGE:', { conversationId, sender: senderType, recipient: receiverType, hasAttachment: !!attachment });
-    
     const message = {
       id: `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
       text,
@@ -147,7 +164,7 @@ export const ChatProvider = ({ children }) => {
       ...unreadCounts,
       [receiverKey]: currentCount + 1
     };
-    console.log('📊 Incrementing unread count for', receiverKey, 'from', currentCount, 'to', currentCount + 1);
+
     setUnreadCounts(updatedUnreadCounts);
     saveUnreadCounts(updatedUnreadCounts);
 
@@ -172,13 +189,41 @@ export const ChatProvider = ({ children }) => {
     setLastMessages(updatedLastMessages);
     saveLastMessages(updatedLastMessages);
 
-    // TODO: Send to backend when connected
+    // Send to backend if connected so messages sync across devices
     if (backendStatus === 'connected') {
       try {
-        // Send to backend
+        console.log('📤 Sending message to backend via ApiService.sendMessage()');
+
+        const payload = {
+          conversationId,
+          receiver: receiverType,
+          content: text,
+          messageType: attachment?.type || 'text',
+          attachment: attachment || null,
+        };
+
+        const response = await ApiService.sendMessage(payload);
+
+        if (response?.success && response.data) {
+          console.log('✅ Message sent via backend:', response.data._id || message.id);
+          // Update local message with backend ID if available
+          if (response.data._id) {
+            message.backendId = response.data._id;
+            const updatedConversationMessagesWithId = [...updatedConversationMessages.slice(0, -1), message];
+            const updatedMessagesWithId = {
+              ...messages,
+              [conversationId]: updatedConversationMessagesWithId,
+            };
+            setMessages(updatedMessagesWithId);
+            saveMessages(updatedMessagesWithId);
+          }
+        }
       } catch (error) {
-        console.error('Failed to send to backend:', error);
+        console.error('⚠️ Failed to send message to backend:', error.message);
+        // Message is already saved locally, so don't fail
       }
+    } else {
+      console.log('📱 Backend not connected, message saved locally');
     }
     
     // Return the updated messages for this conversation
@@ -187,7 +232,6 @@ export const ChatProvider = ({ children }) => {
 
   const markAsRead = async (conversationId, userType) => {
     const key = `${conversationId}_${userType}`;
-    console.log('📖 MARK AS READ:', key, 'current count:', unreadCounts[key]);
 
     // Store the timestamp when this user read this conversation
     const timestampKey = `${conversationId}_${userType}_readAt`;
@@ -204,25 +248,65 @@ export const ChatProvider = ({ children }) => {
         ...unreadCounts,
         [key]: 0
       };
-      console.log('✅ MARK AS READ: Setting count to 0, timestamp:', readTimestamp);
       setUnreadCounts(updatedUnreadCounts);
       saveUnreadCounts(updatedUnreadCounts);
-    } else {
-      console.log('⚠️ MARK AS READ: Already 0 or undefined, but saving timestamp:', readTimestamp);
     }
   };
 
   const getConversationMessages = async (conversationId) => {
-    const messages_list = messages[conversationId] || [];
-    return messages_list;
+    // Always start from local cache for instant display
+    let conversationMessages = messages[conversationId] || [];
+
+    // If backend is connected, try to refresh from server
+    if (backendStatus === 'connected') {
+      try {
+        const response = await ApiService.getConversationMessages(conversationId);
+        if (response?.success && Array.isArray(response.messages)) {
+          // Map backend messages into the local message shape
+          const backendMessages = response.messages.map((msg) => {
+            const base = {
+              id: msg._id || `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+              text: msg.content || msg.text || '',
+              sender: msg.sender || msg.senderRole || msg.senderUserId || '',
+              recipient: msg.receiver || msg.receiverRole || msg.receiverUserId || '',
+              timestamp: msg.createdAt || msg.timestamp || new Date().toISOString(),
+              conversationId: msg.conversationId || conversationId,
+            };
+
+            // Preserve attachment metadata if backend stores it
+            if (msg.attachment) {
+              base.attachment = {
+                type: msg.attachment.type,
+                fileName: msg.attachment.fileName,
+                uri: msg.attachment.uri,
+                duration: msg.attachment.duration,
+                size: msg.attachment.size,
+              };
+            }
+
+            return base;
+          });
+
+          conversationMessages = backendMessages.reverse();
+
+          const updatedMessages = {
+            ...messages,
+            [conversationId]: conversationMessages,
+          };
+          setMessages(updatedMessages);
+          saveMessages(updatedMessages);
+        }
+      } catch (error) {
+        console.error('⚠️ Failed to load messages from backend:', error.message);
+      }
+    }
+
+    return conversationMessages;
   };
 
   const getUnreadCount = (conversationId, userType) => {
     const key = `${conversationId}_${userType}`;
     const count = unreadCounts[key] || 0;
-    if (key.includes('admin-001_nurse-001_admin-001')) {
-      console.log('🔍 getUnreadCount:', key, '=', count, '| All keys:', Object.keys(unreadCounts));
-    }
     return count;
   };
 
@@ -239,6 +323,52 @@ export const ChatProvider = ({ children }) => {
   const resetUnreadCounts = async () => {
     setUnreadCounts({});
     await AsyncStorage.removeItem('unreadCounts');
+  };
+
+  // Initialize user-specific chat data (called when user logs in)
+  const initializeUserChats = async (userId, userRole) => {
+    // Clean up any invalid or orphaned unread count keys for this user
+    const validKeys = Object.keys(unreadCounts).filter(key => {
+      // Keep keys that don't belong to this user OR are properly formatted for this user
+      return !key.endsWith(`_${userId}`) || 
+             (key.split('_').length >= 2 && !key.match(/^\d+_/));
+    });
+    
+    const cleanedUnreadCounts = {};
+    validKeys.forEach(key => {
+      cleanedUnreadCounts[key] = unreadCounts[key];
+    });
+    
+    // Only update if there were changes
+    if (Object.keys(cleanedUnreadCounts).length !== Object.keys(unreadCounts).length) {
+      setUnreadCounts(cleanedUnreadCounts);
+      saveUnreadCounts(cleanedUnreadCounts);
+    }
+    
+    // For admin users, ensure they have access to common conversations
+    if (userRole === 'admin') {
+      const commonUsers = ['nurse-001', 'patient-001', 'PATIENT001'];
+      const updatedLastMessages = { ...lastMessages };
+      let hasNewConversations = false;
+      
+      commonUsers.forEach(otherUserId => {
+        const conversationId = getConversationId(userId, otherUserId);
+        if (!lastMessages[conversationId]) {
+          updatedLastMessages[conversationId] = {
+            text: "Start a conversation",
+            time: "Now",
+            timestamp: new Date().toISOString(),
+            sender: "system"
+          };
+          hasNewConversations = true;
+        }
+      });
+      
+      if (hasNewConversations) {
+        setLastMessages(updatedLastMessages);
+        await AsyncStorage.setItem('lastMessages', JSON.stringify(updatedLastMessages));
+      }
+    }
   };
 
   // Clean up invalid unread count keys
@@ -270,10 +400,19 @@ export const ChatProvider = ({ children }) => {
     let userIds = [];
     if (userType === 'admin' || userType === 'admin-001') {
       userIds = ['admin', 'admin-001'];
+    } else if (userType?.startsWith('admin-')) {
+      // Handle admin-002, admin-003, etc.
+      userIds = ['admin', userType];
     } else if (userType === 'nurse' || userType === 'nurse-001') {
       userIds = ['nurse', 'nurse-001'];
+    } else if (userType?.startsWith('nurse-')) {
+      // Handle nurse-002, nurse-003, etc.
+      userIds = ['nurse', userType];
     } else if (userType === 'patient' || userType === 'patient-001' || userType === 'PATIENT001') {
       userIds = ['patient', 'patient-001', 'PATIENT001'];
+    } else if (userType?.startsWith('patient-')) {
+      // Handle patient-002, patient-003, etc.
+      userIds = ['patient', userType];
     } else {
       userIds = [userType]; // Use the provided userType as-is
     }
@@ -281,13 +420,16 @@ export const ChatProvider = ({ children }) => {
     // Track conversations we've already counted to avoid duplicates
     const countedConversations = new Map(); // conversationKey -> count
     
-    Object.keys(unreadCounts)
+    const relevantKeys = Object.keys(unreadCounts)
       .filter(key => {
         // Only count valid conversation keys (should have format: conversationId_receiverId)
         const parts = key.split('_');
         // Check if key ends with any of the valid user IDs
-        return parts.length >= 2 && userIds.some(id => key.endsWith(`_${id}`)) && !key.match(/^\d+_/);
-      })
+        const matches = parts.length >= 2 && userIds.some(id => key.endsWith(`_${id}`)) && !key.match(/^\d+_/);
+        return matches;
+      });
+    
+    relevantKeys
       .forEach(key => {
         const count = unreadCounts[key] || 0;
         
@@ -328,6 +470,91 @@ export const ChatProvider = ({ children }) => {
     return [user1Id, user2Id].sort().join('_');
   };
 
+  const refreshMessagesFromBackend = async () => {
+    if (!user) {
+      console.log('⏭️ User not authenticated, skipping message refresh');
+      return;
+    }
+    
+    try {
+      console.log('🔄 Fetching conversations from backend...');
+      const response = await ApiService.getConversations();
+      
+      if (response.success && response.conversations) {
+        console.log(`📦 Found ${response.conversations.length} conversations from backend`);
+        
+        // Transform backend conversations to local format
+        const backendMessages = {};
+        const backendUnreadCounts = {};
+        const backendLastMessages = {};
+        
+        for (const conversation of response.conversations) {
+          const conversationId = conversation.conversationId;
+          
+          // Fetch messages for each conversation
+          try {
+            const messagesResponse = await ApiService.getConversationMessages(conversationId);
+            if (messagesResponse.success && messagesResponse.messages) {
+              // Transform backend messages to local format
+              const transformedMessages = messagesResponse.messages.map(msg => ({
+                id: msg._id,
+                text: msg.content,
+                sender: msg.sender,
+                recipient: msg.receiver,
+                timestamp: msg.createdAt,
+                conversationId: msg.conversationId,
+                backendId: msg._id
+              }));
+              
+              backendMessages[conversationId] = transformedMessages;
+              
+              // Set unread count
+              const unreadCount = await ApiService.getUnreadCount(conversationId);
+              if (unreadCount.success) {
+                backendUnreadCounts[`${conversationId}_${user.role}`] = unreadCount.count || 0;
+              }
+              
+              // Set last message
+              if (transformedMessages.length > 0) {
+                const lastMsg = transformedMessages[transformedMessages.length - 1];
+                backendLastMessages[conversationId] = {
+                  text: lastMsg.text,
+                  time: new Date(lastMsg.timestamp).toLocaleTimeString('en-US', { 
+                    hour: 'numeric', 
+                    minute: '2-digit',
+                    hour12: true 
+                  }),
+                  timestamp: lastMsg.timestamp,
+                  sender: lastMsg.sender
+                };
+              }
+            }
+          } catch (msgError) {
+            console.warn(`⚠️ Failed to fetch messages for ${conversationId}:`, msgError.message);
+          }
+        }
+        
+        // Merge backend data with local data (backend takes precedence)
+        setMessages(prevMessages => ({ ...prevMessages, ...backendMessages }));
+        setUnreadCounts(prevCounts => ({ ...prevCounts, ...backendUnreadCounts }));
+        setLastMessages(prevLast => ({ ...prevLast, ...backendLastMessages }));
+        
+        // Save merged data locally
+        const mergedMessages = { ...messages, ...backendMessages };
+        const mergedUnreadCounts = { ...unreadCounts, ...backendUnreadCounts };
+        const mergedLastMessages = { ...lastMessages, ...backendLastMessages };
+        
+        await saveMessages(mergedMessages);
+        await saveUnreadCounts(mergedUnreadCounts);
+        await saveLastMessages(mergedLastMessages);
+        
+        console.log('✅ Messages synchronized with backend');
+      }
+    } catch (error) {
+      console.error('⚠️ Failed to refresh messages from backend:', error.message);
+    }
+  };
+
   const refreshConversations = async () => {
     // Debounce: Only refresh if it's been at least 1 second since last refresh
     const now = Date.now();
@@ -356,7 +583,8 @@ export const ChatProvider = ({ children }) => {
     getConversationId,
     refreshConversations,
     cleanupUnreadCounts,
-    resetUnreadCounts
+    resetUnreadCounts,
+    initializeUserChats
   };
 
   return (

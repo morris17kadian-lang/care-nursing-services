@@ -8,17 +8,18 @@ import {
   Switch,
   Alert,
   Linking,
+  Image,
 } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS, SPACING, TYPOGRAPHY, GRADIENTS, CONTACT_INFO } from '../constants';
 import { useAuth } from '../context/AuthContext';
+import { resetOnboarding } from '../components/AppOnboarding';
 
 export default function SettingsScreen({ navigation }) {
   const { user, logout } = useAuth();
   const insets = useSafeAreaInsets();
-  const [emailUpdates, setEmailUpdates] = React.useState(false);
 
   const handleLogout = () => {
     Alert.alert(
@@ -51,23 +52,38 @@ export default function SettingsScreen({ navigation }) {
     navigation.navigate('NotificationSettings');
   };
 
-  const handleHelp = () => {
+  const handleUserManual = () => {
+    navigation.navigate('UserManual');
+  };
+
+  const handleHelpFAQ = () => {
     navigation.navigate('Help');
   };
 
-  const handleContactSupport = () => {
+  const handleRestartTutorial = async () => {
     Alert.alert(
-      'Contact Support',
-      `Choose how you'd like to reach us:`,
+      'Restart Tutorial',
+      'This will restart the app tutorial guide on your next launch.',
       [
         { text: 'Cancel', style: 'cancel' },
-        { 
-          text: 'Call',
-          onPress: () => Linking.openURL(`tel:${CONTACT_INFO.phone}`)
-        },
-        { 
-          text: 'Email',
-          onPress: () => Linking.openURL(`mailto:${CONTACT_INFO.email}`)
+        {
+          text: 'Restart',
+          onPress: async () => {
+            await resetOnboarding();
+            Alert.alert(
+              'Tutorial Reset',
+              'The tutorial will appear when you restart the app or log in again.',
+              [
+                {
+                  text: 'OK',
+                  onPress: () => {
+                    // Optionally log out and back in to trigger immediately
+                    logout();
+                  }
+                }
+              ]
+            );
+          }
         }
       ]
     );
@@ -77,16 +93,6 @@ export default function SettingsScreen({ navigation }) {
     navigation.navigate('About');
   };
 
-  const handleEmailToggle = (value) => {
-    setEmailUpdates(value);
-    if (value) {
-      Alert.alert(
-        'Email Updates Enabled',
-        'You will receive news, updates, and promotional emails from CARE.',
-        [{ text: 'OK' }]
-      );
-    }
-  };
 
   const SettingItem = ({ icon, title, subtitle, onPress, showChevron = true, rightContent }) => (
     <TouchableWeb
@@ -115,7 +121,7 @@ export default function SettingsScreen({ navigation }) {
   );
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       {/* Header */}
       <LinearGradient
         colors={GRADIENTS.header}
@@ -128,9 +134,16 @@ export default function SettingsScreen({ navigation }) {
         </View>
       </LinearGradient>
 
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
+
       <ScrollView 
         style={styles.content} 
-        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 20 }]}
+        contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 120 }]}
         showsVerticalScrollIndicator={false}
       >
         {/* Account Section */}
@@ -157,41 +170,6 @@ export default function SettingsScreen({ navigation }) {
         </View>
 
         {/* Admin Management Hub - Only visible for super admin (ADMIN001) */}
-        {user?.isSuperAdmin && (
-          <>
-            <SectionHeader title="ADMIN MANAGEMENT" />
-            <View style={styles.section}>
-              <SettingItem
-                icon="shield-crown"
-                title="Admin Management Hub"
-                subtitle="Manage admins, prices, staff & analytics"
-                onPress={() => navigation.navigate('AdminManagementHub')}
-              />
-            </View>
-          </>
-        )}
-
-        {/* Inventory Management - Available for all admins */}
-        {user?.role === 'admin' && (
-          <>
-            <SectionHeader title="INVENTORY" />
-            <View style={styles.section}>
-              <SettingItem
-                icon="package-variant"
-                title="Inventory Management"
-                subtitle="Manage store products & stock levels"
-                onPress={() => navigation.navigate('InventoryManagement')}
-              />
-              <SettingItem
-                icon="package-variant-closed"
-                title="Store Orders"
-                subtitle="View and manage customer orders"
-                onPress={() => navigation.navigate('AdminStoreOrders')}
-              />
-            </View>
-          </>
-        )}
-
         {/* Notifications Section */}
         <SectionHeader title="NOTIFICATIONS" />
         <View style={styles.section}>
@@ -201,37 +179,34 @@ export default function SettingsScreen({ navigation }) {
             subtitle="Manage push notifications and preferences"
             onPress={handleNotificationSettings}
           />
+        </View>
+
+        {/* Help & FAQ Section */}
+        <SectionHeader title="HELP & FAQ" />
+        <View style={styles.section}>
           <SettingItem
-            icon="email"
-            title="Email Updates"
-            subtitle="Get news and updates via email"
-            showChevron={false}
-            rightContent={
-              <Switch
-                value={emailUpdates}
-                onValueChange={handleEmailToggle}
-                trackColor={{ false: COLORS.border, true: COLORS.accent }}
-                thumbColor={COLORS.white}
-              />
-            }
+            icon="book-open-page-variant"
+            title="User Manual"
+            subtitle="Complete guide to using the app"
+            onPress={handleUserManual}
+          />
+          <SettingItem
+            icon="help-circle"
+            title="Help & FAQ"
+            subtitle="Common questions and answers"
+            onPress={handleHelpFAQ}
+          />
+          <SettingItem
+            icon="school-outline"
+            title="Restart Tutorial"
+            subtitle="Show app walkthrough again"
+            onPress={handleRestartTutorial}
           />
         </View>
 
         {/* Support Section */}
         <SectionHeader title="SUPPORT" />
         <View style={styles.section}>
-          <SettingItem
-            icon="help-circle"
-            title="Help & FAQ"
-            subtitle="Get help with common questions"
-            onPress={handleHelp}
-          />
-          <SettingItem
-            icon="phone"
-            title="Contact Support"
-            subtitle="Reach out to our team"
-            onPress={handleContactSupport}
-          />
           <SettingItem
             icon="information"
             title="About"
@@ -249,7 +224,7 @@ export default function SettingsScreen({ navigation }) {
           <LinearGradient
             colors={['#FF4757', '#FF6348']}
             start={{ x: 0, y: 0 }}
-            end={{ x: 1, y: 1 }}
+            end={{ x: 0, y: 1 }}
             style={styles.logoutGradient}
           >
             <MaterialCommunityIcons name="logout" size={16} color={COLORS.white} />
@@ -258,7 +233,7 @@ export default function SettingsScreen({ navigation }) {
         </TouchableWeb>
 
         <View style={styles.footer}>
-          <Text style={styles.footerText}>CARE Nursing Services and More</Text>
+          <Text style={styles.footerText}>876 Nurses Home Care Services Limited</Text>
           <Text style={styles.footerSubtext}>© 2025 All rights reserved</Text>
         </View>
       </ScrollView>
@@ -270,6 +245,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
   },
   header: {
     paddingHorizontal: 20,
@@ -302,8 +286,8 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.lg,
     paddingTop: SPACING.xl,
     paddingBottom: SPACING.xl,
-    borderBottomLeftRadius: 32,
-    borderBottomRightRadius: 32,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
   },
   headerTitle: {
     fontSize: 28,
@@ -328,7 +312,7 @@ const styles = StyleSheet.create({
     flex: 1,
   },
   scrollContent: {
-    flexGrow: 1,
+    paddingBottom: 0,
   },
   sectionHeader: {
     fontSize: 12,

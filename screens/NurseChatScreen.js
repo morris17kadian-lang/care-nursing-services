@@ -1,6 +1,6 @@
 import TouchableWeb from "../components/TouchableWeb";
 import React, { useState, useEffect, useRef, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, FlatList, Modal, KeyboardAvoidingView, Platform, Keyboard, Alert, Linking, Image } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TextInput, FlatList, Modal, KeyboardAvoidingView, Platform, Keyboard, Alert, Linking, Image, Animated, PanResponder, Dimensions } from 'react-native';
 import { WebView } from 'react-native-webview';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -62,6 +62,120 @@ const getMessageTime = (lastMsg) => {
   return '';
 };
 
+const { width: screenWidth } = Dimensions.get('window');
+
+// SwipeableChatItem component for swipe-to-delete functionality
+const SwipeableChatItem = ({ 
+  children, 
+  onDelete, 
+  contactName,
+  style 
+}) => {
+  const translateX = useRef(new Animated.Value(0)).current;
+  const [isDeleting, setIsDeleting] = useState(false);
+
+  const panResponder = PanResponder.create({
+    onMoveShouldSetPanResponder: (evt, gestureState) => {
+      return Math.abs(gestureState.dx) > Math.abs(gestureState.dy) && Math.abs(gestureState.dx) > 15;
+    },
+    onPanResponderGrant: () => {
+      // Prevent other touches while panning
+    },
+    onPanResponderMove: (evt, gestureState) => {
+      // Only allow left swipe (negative dx) and limit to max reveal of 100px
+      const newValue = Math.max(gestureState.dx, -100);
+      if (gestureState.dx < 0) {
+        translateX.setValue(newValue);
+      }
+    },
+    onPanResponderRelease: (evt, gestureState) => {
+      const deleteThreshold = -60; // Swipe at least 60px to show delete option
+      
+      if (gestureState.dx < deleteThreshold) {
+        // Keep delete button visible
+        Animated.spring(translateX, {
+          toValue: -80,
+          useNativeDriver: true,
+          tension: 100,
+          friction: 8,
+        }).start();
+      } else {
+        // Animate back to original position
+        Animated.spring(translateX, {
+          toValue: 0,
+          useNativeDriver: true,
+          tension: 100,
+          friction: 8,
+        }).start();
+      }
+    },
+  });
+
+  const handleDeletePress = () => {
+    Alert.alert(
+      'Delete Chat',
+      `Are you sure you want to delete your conversation with ${contactName}? This action cannot be undone.`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+          onPress: () => {
+            // Animate back to original position
+            Animated.spring(translateX, {
+              toValue: 0,
+              useNativeDriver: true,
+            }).start();
+          }
+        },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: () => {
+            setIsDeleting(true);
+            // Animate out then delete
+            Animated.timing(translateX, {
+              toValue: -screenWidth,
+              duration: 300,
+              useNativeDriver: true,
+            }).start(() => {
+              onDelete && onDelete();
+              setIsDeleting(false);
+            });
+          }
+        }
+      ]
+    );
+  };
+
+  return (
+    <View style={[styles.swipeContainer, style]}>
+      {/* Delete button background */}
+      <View style={styles.deleteBackground}>
+        <TouchableWeb
+          style={styles.deleteButton}
+          onPress={handleDeletePress}
+          activeOpacity={0.7}
+        >
+          <MaterialCommunityIcons name="delete" size={20} color="#FFFFFF" />
+          <Text style={styles.deleteText}>Delete</Text>
+        </TouchableWeb>
+      </View>
+      
+      <Animated.View
+        {...panResponder.panHandlers}
+        style={[
+          styles.swipeableRow,
+          {
+            transform: [{ translateX }]
+          }
+        ]}
+      >
+        {children}
+      </Animated.View>
+    </View>
+  );
+};
+
 export default function NurseChatScreen({ navigation: navProp }) {
   const navigation = navProp || useNavigation();
   const { user } = useAuth();
@@ -102,7 +216,6 @@ export default function NurseChatScreen({ navigation: navProp }) {
         
         if (usersData) {
           const users = JSON.parse(usersData);
-          console.log('Loaded users for profile photos:', users.length);
           users.forEach(user => {
             // Check both profilePhoto and profileImage fields
             const photo = user.profilePhoto || user.profileImage;
@@ -111,13 +224,10 @@ export default function NurseChatScreen({ navigation: navProp }) {
               username: user.username,
               role: user.role
             };
-            if (photo) {
-              console.log(`User ${user.username} has profile photo`);
-            }
           });
         }
         
-        // Also load admin profiles separately (for Shertonia/ADMIN001)
+        // Also load admin profiles separately (for Nurse Bernard/ADMIN001)
         try {
           const admin001Profile = await AsyncStorage.getItem('adminProfile_ADMIN001');
           if (admin001Profile) {
@@ -126,14 +236,13 @@ export default function NurseChatScreen({ navigation: navProp }) {
             if (photo) {
               profileMap['admin-001'] = {
                 profilePhoto: photo,
-                username: adminData.username || 'Shertonia Walker',
+                username: adminData.username || 'Nurse Bernard',
                 role: 'admin'
               };
-              console.log('Loaded Shertonia profile photo from adminProfile_ADMIN001');
             }
           }
         } catch (e) {
-          console.log('No admin profile found for ADMIN001');
+          // No admin profile found for ADMIN001
         }
         
         setUserProfiles(profileMap);
@@ -206,42 +315,37 @@ export default function NurseChatScreen({ navigation: navProp }) {
         const formattedUsers = [];
         
         if (usersData) {
-          const users = JSON.parse(usersData);
-          // Filter to show admins and patients (not other nurses)
-          const regularUsers = users
-            .filter(u => u.role === 'admin' || u.role === 'patient')
-            .map(u => ({
-              id: u.id,
-              name: u.username || `${u.firstName || ''} ${u.lastName || ''}`.trim(),
-              email: u.email || '',
-              isAdmin: u.role === 'admin',
+          const allUsersFromStorage = JSON.parse(usersData);
+        
+          if (allUsersFromStorage.length > 0) {
+            // Filter to show all relevant users for nurses - original AsyncStorage logic
+            const regularUsers = allUsersFromStorage
+            .filter(userObj => {
+              // Don't show the current nurse user (themselves)
+              if (userObj.id === user?.id) {
+                return false;
+              }
+              // Allow ADMIN001 (Nurse Bernard) and SuperAdmins to appear in searches
+              if (userObj.code === 'ADMIN001' || userObj.isSuperAdmin || userObj.email === 'nurse@876.com') {
+                return true;
+              }
+              // Allow other admins, nurses, doctors, and patients
+              return userObj.role === 'admin' || userObj.role === 'nurse' || userObj.role === 'doctor' || userObj.role === 'superAdmin' || userObj.role === 'patient';
+            })
+            .map(userObj => ({
+              id: userObj.id,
+              name: userObj.username || `${userObj.firstName || ''} ${userObj.lastName || ''}`.trim(),
+              email: userObj.email || '',
+              isAdmin: userObj.role === 'admin' || userObj.isSuperAdmin,
               status: 'offline',
-              profilePhoto: u.profilePhoto || u.profileImage,
+              profilePhoto: userObj.profilePhoto || userObj.profileImage,
             }));
           
-          formattedUsers.push(...regularUsers);
-        }
-        
-        // Also load Shertonia's profile separately if it exists
-        try {
-          const admin001Profile = await AsyncStorage.getItem('adminProfile_ADMIN001');
-          if (admin001Profile) {
-            const adminData = JSON.parse(admin001Profile);
-            formattedUsers.push({
-              id: 'admin-001',
-              name: adminData.username || 'Shertonia Walker',
-              email: adminData.email || '',
-              isAdmin: true,
-              status: 'offline',
-              profilePhoto: adminData.profilePhoto || adminData.profileImage,
-            });
+            formattedUsers.push(...regularUsers);
           }
-        } catch (e) {
-          console.log('No admin profile found for ADMIN001');
         }
         
         setAllUsers(formattedUsers);
-        console.log('Loaded users for search:', formattedUsers.length);
       } catch (error) {
         console.error('Error loading users:', error);
       }
@@ -263,8 +367,6 @@ export default function NurseChatScreen({ navigation: navProp }) {
         
         // Get all conversations from lastMessages
         const conversationIds = Object.keys(lastMessages);
-        console.log('🔍 NURSE: Conversation IDs from lastMessages:', conversationIds);
-        console.log('🔍 NURSE: Current user ID:', user?.id || 'NURSE001');
         const activeConversations = [];
         const seenUserIds = new Set(); // Track users we've already added
         
@@ -295,7 +397,6 @@ export default function NurseChatScreen({ navigation: navProp }) {
               const existingTimestamp = existingMsg?.timestamp ? new Date(existingMsg.timestamp).getTime() : 0;
               
               if (currentTimestamp > existingTimestamp) {
-                console.log('🔄 NURSE: Found newer message for', otherUserId, 'updating');
                 // Update with the newer message
                 const lastMsg = currentMsg;
                 
@@ -386,11 +487,9 @@ export default function NurseChatScreen({ navigation: navProp }) {
         });
         
         setActiveChats(activeConversations);
-        console.log('Active chats loaded:', activeConversations.length);
         
         // Badge is displayed by ChatTabIcon in App.js, no need to set here
         const totalUnread = getTotalUnreadCount('nurse-001');
-        console.log('📊 NURSE: Total unread count:', totalUnread);
       } catch (error) {
         console.error('Error loading active chats:', error);
       }
@@ -446,8 +545,16 @@ export default function NurseChatScreen({ navigation: navProp }) {
       setSelectedAttachment(null); // Clear attachment
       
       try {
+        // Determine sender/receiver roles for backend
+        const senderRole = 'nurse';
+        const receiverRole = selectedContact.isAdmin || selectedContact.type === 'admin'
+          ? 'admin'
+          : selectedContact.type === 'nurse'
+          ? 'nurse'
+          : 'patient';
+
         // Send message to ChatContext and get the updated messages - pass attachment
-        const updatedMessages = await sendMessage(conversationId, messageContent, user?.id || 'nurse-001', selectedContact.id, selectedAttachment);
+        const updatedMessages = await sendMessage(conversationId, messageContent, senderRole, receiverRole, selectedAttachment);
         
         // Use the updated messages directly from ChatContext
         setCurrentMessages(updatedMessages);
@@ -533,7 +640,6 @@ export default function NurseChatScreen({ navigation: navProp }) {
   };
 
   const openChat = async (contact) => {
-    console.log('👁️ NURSE: Opening chat with', contact.name, 'conversationId will be:', getConversationId(user?.id || 'nurse-001', contact.id));
     setSelectedContact(contact);
     setChatModalVisible(true);
     
@@ -541,17 +647,14 @@ export default function NurseChatScreen({ navigation: navProp }) {
     
     // Load messages for this conversation
     const messages = await getConversationMessages(conversationId);
-    console.log('📩 NURSE: Loaded', messages.length, 'messages');
     setCurrentMessages(messages);
     
     // Mark messages as read when opening chat
-    console.log('📖 NURSE: Calling markAsRead for', conversationId, user?.id || 'nurse-001');
     markAsRead(conversationId, user?.id || 'nurse-001');
     
     // Also mark legacy conversation ID as read (if admin used old 'admin' ID)
     if (contact.id === 'admin-001' || contact.id === 'admin') {
       const legacyConversationId = getConversationId('nurse-001', 'admin');
-      console.log('📖 NURSE: Also marking legacy conversationId as read:', legacyConversationId);
       markAsRead(legacyConversationId, user?.id || 'nurse-001');
     }
     
@@ -559,6 +662,32 @@ export default function NurseChatScreen({ navigation: navProp }) {
     setTimeout(() => {
       scrollToBottom();
     }, 200);
+  };
+
+  const deleteChat = async (contact) => {
+    try {
+      const currentUserId = user?.id || 'nurse-001';
+      const conversationId = getConversationId(currentUserId, contact.id);
+      
+      // Remove from AsyncStorage
+      await AsyncStorage.removeItem(`messages_${conversationId}`);
+      await AsyncStorage.removeItem(`lastRead_${conversationId}`);
+      
+      // Also clear legacy conversation ID formats
+      const legacyConversationId = getConversationId('nurse-001', contact.id === 'admin-001' ? 'admin' : contact.id);
+      if (legacyConversationId !== conversationId) {
+        await AsyncStorage.removeItem(`messages_${legacyConversationId}`);
+        await AsyncStorage.removeItem(`lastRead_${legacyConversationId}`);
+      }
+      
+      // Update local state to remove the chat from the list
+      setActiveChats(prevChats => prevChats.filter(c => c.id !== contact.id));
+      
+      Alert.alert('Success', `Conversation with ${contact.name} has been deleted.`);
+    } catch (error) {
+      console.error('Error deleting chat:', error);
+      Alert.alert('Error', 'Failed to delete conversation. Please try again.');
+    }
   };
 
   const handleAttachFile = () => {
@@ -1074,7 +1203,7 @@ export default function NurseChatScreen({ navigation: navProp }) {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       {/* Header */}
       <LinearGradient
         colors={GRADIENTS.header}
@@ -1150,7 +1279,7 @@ export default function NurseChatScreen({ navigation: navProp }) {
                         )}
                         <View style={styles.searchResultInfo}>
                           <Text style={styles.searchResultName}>{user.name}</Text>
-                          <Text style={styles.searchResultEmail}>{user.email}</Text>
+                          <Text style={styles.searchResultEmail}>{user.contactEmail || user.email}</Text>
                         </View>
                       </TouchableWeb>
                     );
@@ -1169,8 +1298,12 @@ export default function NurseChatScreen({ navigation: navProp }) {
             activeChats.map((contact) => {
               const profilePhoto = userProfiles[contact.id]?.profilePhoto;
               return (
+                <SwipeableChatItem
+                  key={contact.id}
+                  onDelete={() => deleteChat(contact)}
+                  contactName={contact.name}
+                >
                   <TouchableWeb
-                    key={contact.id}
                     style={styles.contactItem}
                     onPress={() => openChat(contact)}
                     activeOpacity={0.95}
@@ -1210,6 +1343,7 @@ export default function NurseChatScreen({ navigation: navProp }) {
                       </View>
                     </View>
                   </TouchableWeb>
+                </SwipeableChatItem>
                 );
               })
             ) : (
@@ -1631,11 +1765,20 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
+  },
   header: {
     paddingHorizontal: 16,
     paddingBottom: 16,
-    borderBottomLeftRadius: 20,
-    borderBottomRightRadius: 20,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
   },
   headerRow: {
     flexDirection: 'row',
@@ -1669,19 +1812,26 @@ const styles = StyleSheet.create({
     paddingHorizontal: 10,
     paddingVertical: 8,
     borderRadius: 20,
-    backgroundColor: '#F0F0F0',
+    backgroundColor: COLORS.white,
     marginRight: 8,
     minHeight: 36,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 1,
   },
   filterPillActive: {
     backgroundColor: COLORS.primary,
+    shadowOpacity: 0.08,
+    elevation: 2,
   },
   filterText: {
     fontSize: 11,
     fontFamily: 'Poppins_700Bold',
-    color: COLORS.text,
+    color: COLORS.textMuted,
     textAlign: 'center',
   },
   filterTextActive: {
@@ -2403,5 +2553,38 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: 'Poppins_400Regular',
     color: COLORS.textLight,
+  },
+  // Swipe to delete styles
+  swipeContainer: {
+    position: 'relative',
+    backgroundColor: COLORS.background,
+  },
+  swipeableRow: {
+    backgroundColor: COLORS.card,
+    zIndex: 2,
+  },
+  deleteBackground: {
+    position: 'absolute',
+    top: 0,
+    right: 0,
+    bottom: 0,
+    width: 80,
+    backgroundColor: '#ff4444',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 1,
+  },
+  deleteButton: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+  },
+  deleteText: {
+    color: '#FFFFFF',
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+    marginTop: 4,
+    textAlign: 'center',
   },
 });

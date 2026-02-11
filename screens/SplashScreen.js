@@ -5,7 +5,6 @@ import {
   Text, 
   StyleSheet, 
   Animated, 
-  useWindowDimensions,
   Image, 
   TextInput, 
   Alert,
@@ -17,112 +16,18 @@ import {
   Modal,
   FlatList
 } from 'react-native';
+import useWindowDimensions from '../hooks/useWindowDimensions';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GRADIENTS, COLORS, SPACING } from '../constants';
 import { useAuth } from '../context/AuthContext';
+import FirebaseService from '../services/FirebaseService';
+import { confirmPasswordReset } from 'firebase/auth';
+import { auth } from '../config/firebase';
 
-// Country list with currency - All countries worldwide
-const COUNTRIES = [
-  { name: 'Afghanistan', code: 'AF', currency: 'AFN', symbol: '؋' },
-  { name: 'Albania', code: 'AL', currency: 'ALL', symbol: 'L' },
-  { name: 'Algeria', code: 'DZ', currency: 'DZD', symbol: 'د.ج' },
-  { name: 'Argentina', code: 'AR', currency: 'ARS', symbol: '$' },
-  { name: 'Armenia', code: 'AM', currency: 'AMD', symbol: '֏' },
-  { name: 'Australia', code: 'AU', currency: 'AUD', symbol: 'A$' },
-  { name: 'Austria', code: 'AT', currency: 'EUR', symbol: '€' },
-  { name: 'Azerbaijan', code: 'AZ', currency: 'AZN', symbol: '₼' },
-  { name: 'Bahrain', code: 'BH', currency: 'BHD', symbol: '.د.ب' },
-  { name: 'Bangladesh', code: 'BD', currency: 'BDT', symbol: '৳' },
-  { name: 'Belarus', code: 'BY', currency: 'BYN', symbol: 'Br' },
-  { name: 'Belgium', code: 'BE', currency: 'EUR', symbol: '€' },
-  { name: 'Bolivia', code: 'BO', currency: 'BOB', symbol: 'Bs.' },
-  { name: 'Brazil', code: 'BR', currency: 'BRL', symbol: 'R$' },
-  { name: 'Bulgaria', code: 'BG', currency: 'BGN', symbol: 'лв' },
-  { name: 'Cambodia', code: 'KH', currency: 'KHR', symbol: '៛' },
-  { name: 'Canada', code: 'CA', currency: 'CAD', symbol: 'C$' },
-  { name: 'Chile', code: 'CL', currency: 'CLP', symbol: '$' },
-  { name: 'China', code: 'CN', currency: 'CNY', symbol: '¥' },
-  { name: 'Colombia', code: 'CO', currency: 'COP', symbol: '$' },
-  { name: 'Croatia', code: 'HR', currency: 'EUR', symbol: '€' },
-  { name: 'Czech Republic', code: 'CZ', currency: 'CZK', symbol: 'Kč' },
-  { name: 'Denmark', code: 'DK', currency: 'DKK', symbol: 'kr' },
-  { name: 'Dominican Republic', code: 'DO', currency: 'DOP', symbol: '$' },
-  { name: 'Ecuador', code: 'EC', currency: 'USD', symbol: '$' },
-  { name: 'Egypt', code: 'EG', currency: 'EGP', symbol: '£' },
-  { name: 'Estonia', code: 'EE', currency: 'EUR', symbol: '€' },
-  { name: 'Ethiopia', code: 'ET', currency: 'ETB', symbol: 'Br' },
-  { name: 'Finland', code: 'FI', currency: 'EUR', symbol: '€' },
-  { name: 'France', code: 'FR', currency: 'EUR', symbol: '€' },
-  { name: 'Georgia', code: 'GE', currency: 'GEL', symbol: '₾' },
-  { name: 'Germany', code: 'DE', currency: 'EUR', symbol: '€' },
-  { name: 'Ghana', code: 'GH', currency: 'GHS', symbol: '₵' },
-  { name: 'Greece', code: 'GR', currency: 'EUR', symbol: '€' },
-  { name: 'Guatemala', code: 'GT', currency: 'GTQ', symbol: 'Q' },
-  { name: 'Hong Kong', code: 'HK', currency: 'HKD', symbol: 'HK$' },
-  { name: 'Hungary', code: 'HU', currency: 'HUF', symbol: 'Ft' },
-  { name: 'Iceland', code: 'IS', currency: 'ISK', symbol: 'kr' },
-  { name: 'India', code: 'IN', currency: 'INR', symbol: '₹' },
-  { name: 'Indonesia', code: 'ID', currency: 'IDR', symbol: 'Rp' },
-  { name: 'Iran', code: 'IR', currency: 'IRR', symbol: '﷼' },
-  { name: 'Iraq', code: 'IQ', currency: 'IQD', symbol: 'ع.د' },
-  { name: 'Ireland', code: 'IE', currency: 'EUR', symbol: '€' },
-  { name: 'Israel', code: 'IL', currency: 'ILS', symbol: '₪' },
-  { name: 'Italy', code: 'IT', currency: 'EUR', symbol: '€' },
-  { name: 'Jamaica', code: 'JM', currency: 'JMD', symbol: 'J$' },
-  { name: 'Japan', code: 'JP', currency: 'JPY', symbol: '¥' },
-  { name: 'Jordan', code: 'JO', currency: 'JOD', symbol: 'د.ا' },
-  { name: 'Kazakhstan', code: 'KZ', currency: 'KZT', symbol: '₸' },
-  { name: 'Kenya', code: 'KE', currency: 'KES', symbol: 'KSh' },
-  { name: 'Kuwait', code: 'KW', currency: 'KWD', symbol: 'د.ك' },
-  { name: 'Latvia', code: 'LV', currency: 'EUR', symbol: '€' },
-  { name: 'Lebanon', code: 'LB', currency: 'LBP', symbol: 'ل.ل' },
-  { name: 'Lithuania', code: 'LT', currency: 'EUR', symbol: '€' },
-  { name: 'Luxembourg', code: 'LU', currency: 'EUR', symbol: '€' },
-  { name: 'Malaysia', code: 'MY', currency: 'MYR', symbol: 'RM' },
-  { name: 'Mexico', code: 'MX', currency: 'MXN', symbol: '$' },
-  { name: 'Morocco', code: 'MA', currency: 'MAD', symbol: 'د.م.' },
-  { name: 'Netherlands', code: 'NL', currency: 'EUR', symbol: '€' },
-  { name: 'New Zealand', code: 'NZ', currency: 'NZD', symbol: 'NZ$' },
-  { name: 'Nigeria', code: 'NG', currency: 'NGN', symbol: '₦' },
-  { name: 'Norway', code: 'NO', currency: 'NOK', symbol: 'kr' },
-  { name: 'Oman', code: 'OM', currency: 'OMR', symbol: 'ر.ع.' },
-  { name: 'Pakistan', code: 'PK', currency: 'PKR', symbol: '₨' },
-  { name: 'Panama', code: 'PA', currency: 'PAB', symbol: 'B/.' },
-  { name: 'Peru', code: 'PE', currency: 'PEN', symbol: 'S/' },
-  { name: 'Philippines', code: 'PH', currency: 'PHP', symbol: '₱' },
-  { name: 'Poland', code: 'PL', currency: 'PLN', symbol: 'zł' },
-  { name: 'Portugal', code: 'PT', currency: 'EUR', symbol: '€' },
-  { name: 'Qatar', code: 'QA', currency: 'QAR', symbol: 'ر.ق' },
-  { name: 'Romania', code: 'RO', currency: 'RON', symbol: 'lei' },
-  { name: 'Russia', code: 'RU', currency: 'RUB', symbol: '₽' },
-  { name: 'Saudi Arabia', code: 'SA', currency: 'SAR', symbol: '﷼' },
-  { name: 'Serbia', code: 'RS', currency: 'RSD', symbol: 'дин.' },
-  { name: 'Singapore', code: 'SG', currency: 'SGD', symbol: 'S$' },
-  { name: 'Slovakia', code: 'SK', currency: 'EUR', symbol: '€' },
-  { name: 'Slovenia', code: 'SI', currency: 'EUR', symbol: '€' },
-  { name: 'South Africa', code: 'ZA', currency: 'ZAR', symbol: 'R' },
-  { name: 'South Korea', code: 'KR', currency: 'KRW', symbol: '₩' },
-  { name: 'Spain', code: 'ES', currency: 'EUR', symbol: '€' },
-  { name: 'Sri Lanka', code: 'LK', currency: 'LKR', symbol: '₨' },
-  { name: 'Sweden', code: 'SE', currency: 'SEK', symbol: 'kr' },
-  { name: 'Switzerland', code: 'CH', currency: 'CHF', symbol: 'CHF' },
-  { name: 'Taiwan', code: 'TW', currency: 'TWD', symbol: 'NT$' },
-  { name: 'Thailand', code: 'TH', currency: 'THB', symbol: '฿' },
-  { name: 'Tunisia', code: 'TN', currency: 'TND', symbol: 'د.ت' },
-  { name: 'Turkey', code: 'TR', currency: 'TRY', symbol: '₺' },
-  { name: 'Ukraine', code: 'UA', currency: 'UAH', symbol: '₴' },
-  { name: 'United Arab Emirates', code: 'AE', currency: 'AED', symbol: 'د.إ' },
-  { name: 'United Kingdom', code: 'GB', currency: 'GBP', symbol: '£' },
-  { name: 'United States', code: 'US', currency: 'USD', symbol: '$' },
-  { name: 'Uruguay', code: 'UY', currency: 'UYU', symbol: '$U' },
-  { name: 'Venezuela', code: 'VE', currency: 'VES', symbol: 'Bs.S' },
-  { name: 'Vietnam', code: 'VN', currency: 'VND', symbol: '₫' },
-  { name: 'Yemen', code: 'YE', currency: 'YER', symbol: '﷼' },
-  { name: 'Zambia', code: 'ZM', currency: 'ZMW', symbol: 'ZK' },
-  { name: 'Zimbabwe', code: 'ZW', currency: 'ZWL', symbol: 'Z$' },
-].sort((a, b) => a.name.localeCompare(b.name));
+// import { seedDefaultChatUsers } from '../utils/chatSeedData';
+
 
 export default function SplashScreen({ onFinish }) {
   // Get screen dimensions
@@ -135,16 +40,27 @@ export default function SplashScreen({ onFinish }) {
   const [password, setPassword] = useState('');
   const [signupUsername, setSignupUsername] = useState('');
   const [email, setEmail] = useState('');
+  const [phone, setPhone] = useState('');
+  const [address, setAddress] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [showConfirmPassword, setShowConfirmPassword] = useState(false);
   const [rememberMe, setRememberMe] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
-  const [selectedCountry, setSelectedCountry] = useState(COUNTRIES.find(country => country.code === 'JM') || COUNTRIES[0]);
-  const [showCountryModal, setShowCountryModal] = useState(false);
-  const [countrySearch, setCountrySearch] = useState('');
-  const { login, signup } = useAuth();
+  const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [forgotEmail, setForgotEmail] = useState('');
+  const [forgotPasswordStep, setForgotPasswordStep] = useState('email'); // 'email', 'sent', or 'reset'
+  const [resetToken, setResetToken] = useState('');
+  const [resetNewPassword, setResetNewPassword] = useState('');
+  const [resetConfirmPassword, setResetConfirmPassword] = useState('');
+  const [showResetPassword, setShowResetPassword] = useState(false);
+  const [showResetConfirmPassword, setShowResetConfirmPassword] = useState(false);
+  const [forgotPasswordLoading, setForgotPasswordLoading] = useState(false);
+  const [forgotPasswordMessage, setForgotPasswordMessage] = useState('');
+  const [sentToEmail, setSentToEmail] = useState('');
+
+  const { login, signup, resetPassword } = useAuth();
   
   // Animation values
   const fadeAnim = useRef(new Animated.Value(0)).current; // Start invisible for entrance animation
@@ -154,8 +70,13 @@ export default function SplashScreen({ onFinish }) {
   const authFormsTranslateY = useRef(new Animated.Value(50)).current;
 
   useEffect(() => {
+    // Seed default chat users (e.g., ADMIN001/Nurse Bernard) into AsyncStorage
+    // seedDefaultChatUsers();
+
     // Load saved credentials if remember me was checked
     loadSavedCredentials();
+    
+
     
     // Keyboard event listeners
     const keyboardDidShowListener = Keyboard.addListener(
@@ -171,12 +92,12 @@ export default function SplashScreen({ onFinish }) {
     Animated.parallel([
       Animated.timing(fadeAnim, {
         toValue: 1,
-        duration: 400,
+        duration: 300,
         useNativeDriver: true,
       }),
       Animated.timing(scaleAnim, {
         toValue: 1,
-        duration: 400,
+        duration: 300,
         useNativeDriver: true,
       }),
     ]).start(() => {
@@ -185,12 +106,11 @@ export default function SplashScreen({ onFinish }) {
         Animated.parallel([
           Animated.timing(scaleAnim, {
             toValue: 0.6, // Scale down for login page
-            duration: 600,
+            duration: 800,
             useNativeDriver: true,
           }),
           Animated.timing(translateYAnim, {
-            toValue: -height * 0.45, // Move logo up
-            duration: 600,
+            toValue: Platform.OS === 'android' ? -height * 0.42 : -height * 0.46,            duration: 800,
             useNativeDriver: true,
           }),
         ]).start(() => {
@@ -199,17 +119,17 @@ export default function SplashScreen({ onFinish }) {
           Animated.parallel([
             Animated.timing(authFormsOpacity, {
               toValue: 1,
-              duration: 600,
+              duration: 800,
               useNativeDriver: true,
             }),
             Animated.timing(authFormsTranslateY, {
               toValue: 0,
-              duration: 600,
+              duration: 800,
               useNativeDriver: true,
             }),
           ]).start();
         });
-      }, 1300); // Show full logo for 1.3 seconds
+      }, 800); // Show full logo for 0.8 seconds (reduced from 1.3)
     });
 
     // Cleanup keyboard listeners
@@ -229,7 +149,7 @@ export default function SplashScreen({ onFinish }) {
         setRememberMe(rememberMe);
       }
     } catch (error) {
-      console.error('Error loading saved credentials:', error);
+      // Error loading saved credentials
     }
   };
 
@@ -242,7 +162,7 @@ export default function SplashScreen({ onFinish }) {
       };
       await AsyncStorage.setItem('savedCredentials', JSON.stringify(credentials));
     } catch (error) {
-      console.error('Error saving credentials:', error);
+      // Error saving credentials
     }
   };
 
@@ -250,9 +170,11 @@ export default function SplashScreen({ onFinish }) {
     try {
       await AsyncStorage.removeItem('savedCredentials');
     } catch (error) {
-      console.error('Error clearing saved credentials:', error);
+      // Error clearing saved credentials
     }
   };
+
+
 
   const handleRememberMeToggle = async () => {
     const newRememberMe = !rememberMe;
@@ -266,72 +188,46 @@ export default function SplashScreen({ onFinish }) {
 
   const handleToggleAuth = (isLoginMode) => {
     setIsLogin(isLoginMode);
-    // Clear form fields when switching modes
-    if (isLoginMode) {
-      // Switching to login - clear signup fields
-      setSignupUsername('');
-      setEmail('');
-      setConfirmPassword('');
-      // Load saved credentials if available for login
-      loadSavedCredentials();
-    } else {
-      // Switching to signup - clear login fields and remember me
-      setUsername('');
-      setPassword('');
-      setRememberMe(false);
-    }
     setShowPassword(false);
     setShowConfirmPassword(false);
+    setForgotPasswordMessage('');
   };
 
   const handleLogin = async () => {
-    if (!username.trim() || !password.trim()) {
-      Alert.alert('Error', 'Please fill in all fields');
+    const loginIdentifier = username.trim();
+
+    if (!loginIdentifier) {
+      Alert.alert('Error', 'Please enter your username or email');
+      return;
+    }
+
+    if (!password) {
+      Alert.alert('Error', 'Please enter your password');
       return;
     }
 
     setIsLoading(true);
-    console.log('Attempting login with:', { username: username.trim(), password: '***' });
-    
-    const result = await login(username.trim(), password);
-    console.log('Login result:', result);
-    
-    setIsLoading(false);
+    try {
+      const result = await login(loginIdentifier, password);
 
-    if (!result.success) {
-      Alert.alert('Login Failed', result.error);
-    } else {
-      // Handle remember me functionality
-      if (rememberMe) {
-        await saveCredentials(username.trim(), password);
+      if (result?.success) {
+        if (rememberMe) {
+          await saveCredentials(loginIdentifier, password);
+        } else {
+          await clearSavedCredentials();
+        }
       } else {
-        await clearSavedCredentials();
+        Alert.alert('Sign In Failed', result?.error || 'Unable to sign in. Please try again.');
       }
-      
-      console.log('Login successful, calling onFinish');
-      // Call onFinish to hide splash screen and navigate to main app
-      if (onFinish) {
-        onFinish();
-      }
+    } catch (error) {
+      console.error('Login handler error:', error);
+      Alert.alert('Error', 'Unable to sign in right now. Please try again.');
+    } finally {
+      setIsLoading(false);
     }
   };
 
-  const filteredCountries = COUNTRIES.filter(country =>
-    country.name.toLowerCase().includes(countrySearch.toLowerCase()) ||
-    country.code.toLowerCase().includes(countrySearch.toLowerCase())
-  );
-
   const handleSignup = async () => {
-    if (!signupUsername.trim() || !email.trim() || !password.trim() || !confirmPassword.trim() || !selectedCountry) {
-      Alert.alert('Error', 'Please fill in all fields');
-      return;
-    }
-
-    if (!email.includes('@')) {
-      Alert.alert('Error', 'Please enter a valid email address');
-      return;
-    }
-
     if (password.length < 6) {
       Alert.alert('Error', 'Password must be at least 6 characters');
       return;
@@ -343,18 +239,180 @@ export default function SplashScreen({ onFinish }) {
     }
 
     setIsLoading(true);
-    const result = await signup(signupUsername.trim(), email.trim(), password);
+    const result = await signup(
+      signupUsername.trim(),
+      email.trim(),
+      password,
+      phone.trim(),
+      address.trim()
+    );
     setIsLoading(false);
 
     if (!result.success) {
       Alert.alert('Signup Failed', result.error);
     } else {
-      console.log('Signup successful, calling onFinish');
-      // Call onFinish to hide splash screen and navigate to main app
-      if (onFinish) {
-        onFinish();
-      }
+      // Show success message and switch to login
+      Alert.alert(
+        'Account Created',
+        'Your account has been created successfully! Please sign in with your email and password.',
+        [
+          {
+            text: 'Sign In',
+            onPress: () => {
+              // Reset signup form and switch to login
+              setSignupUsername('');
+              setEmail('');
+              setPassword('');
+              setConfirmPassword('');
+              setPhone('');
+              setAddress('');
+              setIsLogin(true);
+            }
+          }
+        ]
+      );
     }
+  };
+
+  const resolveAccountEmail = async () => {
+    const loginInput = username.trim();
+
+    if (!loginInput) {
+      Alert.alert('Account Required', 'Enter your username or email in the login field first.');
+      return null;
+    }
+
+    try {
+      if (loginInput.includes('@')) {
+        const lookup = await FirebaseService.getUserByEmail(loginInput.toLowerCase());
+        if (lookup?.success && lookup.user?.email) {
+          return lookup.user.email.trim();
+        }
+        Alert.alert('Account Not Found', 'We could not find an account registered with that email.');
+        return null;
+      }
+
+      const normalizedUsername = loginInput.toUpperCase();
+      const lookup = await FirebaseService.getUserByUsername(normalizedUsername);
+      if (lookup?.success && lookup.user?.email) {
+        return lookup.user.email.trim();
+      }
+
+      Alert.alert('Account Not Found', 'We could not find an email associated with that username or staff code.');
+      return null;
+    } catch (error) {
+      console.error('Error resolving reset email:', error);
+      Alert.alert('Error', 'Unable to confirm your account email. Please try again.');
+      return null;
+    }
+  };
+
+  const handleForgotPasswordPress = async () => {
+    setForgotPasswordMessage('');
+    setForgotPasswordStep('email');
+    setSentToEmail('');
+    setForgotEmail('');
+
+    setForgotPasswordLoading(true);
+    const resolvedEmail = await resolveAccountEmail();
+    setForgotPasswordLoading(false);
+
+    if (!resolvedEmail) {
+      return;
+    }
+
+    setForgotEmail(resolvedEmail);
+    setShowForgotPassword(true);
+  };
+
+  const handleForgotPasswordRequest = async () => {
+    if (!forgotEmail.trim()) {
+      Alert.alert('Error', 'We could not confirm your registered email. Close this window and try again.');
+      return;
+    }
+
+    setForgotPasswordLoading(true);
+    setForgotPasswordMessage('');
+    try {
+      const normalizedEmail = forgotEmail.trim().toLowerCase();
+      const result = await resetPassword(normalizedEmail);
+
+      if (result?.success) {
+        setForgotPasswordStep('sent');
+        setSentToEmail(normalizedEmail);
+        setForgotPasswordMessage('Reset link sent. Check your inbox.');
+      } else {
+        const errorMessage = result?.error || 'Error resetting password';
+        setForgotPasswordMessage(`Error: ${errorMessage}`);
+        Alert.alert('Error', errorMessage);
+      }
+    } catch (error) {
+      console.error('Forgot password request error:', error);
+      setForgotPasswordMessage('Error sending reset link. Please try again.');
+      Alert.alert('Error', 'Unable to send reset link. Please try again.');
+    } finally {
+      setForgotPasswordLoading(false);
+    }
+  };
+
+  const handleResetPassword = async () => {
+    if (!resetToken.trim()) {
+      Alert.alert('Error', 'Paste the reset token from your email before continuing.');
+      return;
+    }
+
+    if (!resetNewPassword || resetNewPassword.length < 6) {
+      Alert.alert('Error', 'New password must be at least 6 characters.');
+      return;
+    }
+
+    if (resetNewPassword !== resetConfirmPassword) {
+      Alert.alert('Error', 'New password and confirmation do not match.');
+      return;
+    }
+
+    setForgotPasswordLoading(true);
+    setForgotPasswordMessage('');
+    try {
+      await confirmPasswordReset(auth, resetToken.trim(), resetNewPassword);
+
+      Alert.alert('Success', 'Your password has been reset. Please sign in with your new password.');
+      setShowForgotPassword(false);
+      setForgotEmail('');
+      setResetToken('');
+      setResetNewPassword('');
+      setResetConfirmPassword('');
+      setForgotPasswordStep('email');
+      setForgotPasswordMessage('Password updated successfully.');
+      setSentToEmail('');
+    } catch (error) {
+      console.error('Error resetting password:', error);
+      let errorMessage = 'Unable to reset password. Please check the token and try again.';
+
+      if (error?.code === 'auth/invalid-action-code') {
+        errorMessage = 'Invalid or expired reset token. Please request a new email.';
+      } else if (error?.code === 'auth/expired-action-code') {
+        errorMessage = 'This reset link has expired. Please request a new one.';
+      } else if (error?.code === 'auth/weak-password') {
+        errorMessage = 'Password is too weak. Please choose at least 6 characters.';
+      }
+
+      setForgotPasswordMessage(`Error: ${errorMessage}`);
+      Alert.alert('Error', errorMessage);
+    } finally {
+      setForgotPasswordLoading(false);
+    }
+  };
+
+  const handleCloseForgotPassword = () => {
+    setShowForgotPassword(false);
+    setForgotEmail('');
+    setResetToken('');
+    setResetNewPassword('');
+    setResetConfirmPassword('');
+    setForgotPasswordStep('email');
+    setForgotPasswordMessage('');
+    setSentToEmail('');
   };
 
   return (
@@ -374,13 +432,31 @@ export default function SplashScreen({ onFinish }) {
               { scale: scaleAnim },
               { translateY: translateYAnim },
             ],
+            // Dynamic positioning based on auth forms visibility and type
+            // Keep layout consistent before and after the transition so there is no jump
+            // Push logo up when keyboard is visible on sign in
+            top: !isLogin 
+              ? (Platform.OS === 'ios' ? '19%' : '18%') 
+              : (isKeyboardVisible 
+                  ? (Platform.OS === 'ios' ? '20%' : '17%')
+                  : (Platform.OS === 'ios' ? '37%' : '33%')),
+            marginTop: 0,
           },
         ]}
       >
         <Image
-          source={require('../assets/Images/CARElogo.png')}
-          style={styles.logo}
+          source={require('../assets/Images/Nurses-logo.png')}
+          style={[
+            styles.logo,
+            {
+              // Safe inline dimensions
+              width: width * 0.3,
+              height: height * 0.3,
+            }
+          ]}
           resizeMode="contain"
+          onError={(error) => {}}
+          onLoad={() => {}} // Logo image loaded
         />
       </Animated.View>
 
@@ -395,25 +471,21 @@ export default function SplashScreen({ onFinish }) {
               styles.authContainer,
               {
                 opacity: authFormsOpacity,
-                transform: [{ translateY: authFormsTranslateY }]
+                transform: [{ translateY: authFormsTranslateY }],
               }
             ]}
           >
-            <LinearGradient
-              colors={GRADIENTS.header}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 0, y: 1 }}
-              style={styles.fixedAuthBox}
-            >
+            <View style={styles.fixedAuthBox}>
               <ScrollView 
                 contentContainerStyle={[
                   styles.scrollContainer,
-                  isKeyboardVisible && styles.scrollContainerKeyboard
+                  isKeyboardVisible && styles.scrollContainerKeyboard,
+                  !isLogin && styles.scrollContainerSignup
                 ]}
                 showsVerticalScrollIndicator={false}
                 keyboardShouldPersistTaps="handled"
-                bounces={false}
-                scrollEnabled={isKeyboardVisible}
+                bounces={true}
+                scrollEnabled={isKeyboardVisible || !isLogin}
               >
                 <View style={[
                   styles.authContent,
@@ -423,115 +495,191 @@ export default function SplashScreen({ onFinish }) {
           {/* Toggle Buttons */}
           <View style={styles.toggleContainer}>
             <TouchableWeb
-              style={[styles.toggleButton, isLogin && styles.activeToggle]}
+              style={styles.toggleButton}
               onPress={() => handleToggleAuth(true)}
             >
-              <Text style={[styles.toggleText, isLogin && styles.activeToggleText]}>
-                Sign In
-              </Text>
+              {isLogin ? (
+                <LinearGradient
+                  colors={GRADIENTS.header}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={styles.activeToggleGradient}
+                >
+                  <Text style={styles.activeToggleText}>Sign In</Text>
+                </LinearGradient>
+              ) : (
+                <Text style={styles.toggleText}>Sign In</Text>
+              )}
             </TouchableWeb>
             <TouchableWeb
-              style={[styles.toggleButton, !isLogin && styles.activeToggle]}
+              style={styles.toggleButton}
               onPress={() => handleToggleAuth(false)}
             >
-              <Text style={[styles.toggleText, !isLogin && styles.activeToggleText]}>
-                Sign Up
-              </Text>
+              {!isLogin ? (
+                <LinearGradient
+                  colors={GRADIENTS.header}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={styles.activeToggleGradient}
+                >
+                  <Text style={styles.activeToggleText}>Sign Up</Text>
+                </LinearGradient>
+              ) : (
+                <Text style={styles.toggleText}>Sign Up</Text>
+              )}
             </TouchableWeb>
           </View>
 
           {/* Form Fields */}
           <View style={styles.formContainer}>
             {!isLogin && (
-              <View style={styles.inputContainer}>
-                <MaterialCommunityIcons name="account" size={20} color="rgba(255, 255, 255, 0.8)" />
-                <TextInput
-                  style={styles.input}
-                  placeholder="Username"
-                  value={signupUsername}
-                  onChangeText={setSignupUsername}
-                  placeholderTextColor="rgba(255, 255, 255, 0.7)"
+              <View style={styles.inputWrapper}>
+                <View style={styles.inputContainer}>
+                  <MaterialCommunityIcons name="account" size={20} color="rgba(0, 0, 0, 0.7)" />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Username"
+                    value={signupUsername}
+                    onChangeText={setSignupUsername}
+                    placeholderTextColor="rgba(0, 0, 0, 0.5)"
+                  />
+                </View>
+                <LinearGradient
+                  colors={GRADIENTS.header}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.inputGradientLine}
                 />
               </View>
             )}
 
-            <View style={styles.inputContainer}>
-              <MaterialCommunityIcons 
-                name={isLogin ? "account" : "email"} 
-                size={20} 
-                color="rgba(255, 255, 255, 0.8)" 
-              />
-              <TextInput
-                style={styles.input}
-                placeholder={isLogin ? "Username" : "Email"}
-                value={isLogin ? username : email}
-                onChangeText={isLogin ? setUsername : setEmail}
-                placeholderTextColor="rgba(255, 255, 255, 0.7)"
-                autoCapitalize="none"
-                keyboardType={!isLogin ? "email-address" : "default"}
-              />
-            </View>
-
-            {!isLogin && (
-              <TouchableWeb
-                onPress={() => setShowCountryModal(true)}
-                style={styles.countryContainer}
-              >
-                <MaterialCommunityIcons name="map-marker" size={20} color="rgba(255, 255, 255, 0.8)" />
-                <Text style={styles.countryDisplay}>
-                  {selectedCountry.name} ({selectedCountry.symbol})
-                </Text>
-                <MaterialCommunityIcons
-                  name="chevron-down"
-                  size={18}
-                  color="rgba(255, 255, 255, 0.8)"
-                />
-              </TouchableWeb>
-            )}
-
-            <View style={styles.inputContainer}>
-              <MaterialCommunityIcons name="lock" size={20} color="rgba(255, 255, 255, 0.8)" />
-              <TextInput
-                style={styles.input}
-                placeholder="Password"
-                value={password}
-                onChangeText={setPassword}
-                placeholderTextColor="rgba(255, 255, 255, 0.7)"
-                secureTextEntry={!showPassword}
-              />
-              <TouchableWeb
-                onPress={() => setShowPassword(!showPassword)}
-                style={styles.eyeIcon}
-              >
-                <MaterialCommunityIcons
-                  name={showPassword ? 'eye-off' : 'eye'}
-                  size={20}
-                  color="#4A90E2"
-                />
-              </TouchableWeb>
-            </View>
-
-            {!isLogin && (
+            <View style={styles.inputWrapper}>
               <View style={styles.inputContainer}>
-                <MaterialCommunityIcons name="lock-check" size={24} color="#4A90E2" />
+                <MaterialCommunityIcons 
+                  name={isLogin ? "account" : "email"} 
+                  size={20} 
+                  color="rgba(0, 0, 0, 0.7)" 
+                />
                 <TextInput
                   style={styles.input}
-                  placeholder="Confirm Password"
-                  value={confirmPassword}
-                  onChangeText={setConfirmPassword}
-                  placeholderTextColor="#666"
-                  secureTextEntry={!showConfirmPassword}
+                  placeholder={isLogin ? "Username" : "Email"}
+                  value={isLogin ? username : email}
+                  onChangeText={isLogin ? setUsername : setEmail}
+                  placeholderTextColor="rgba(0, 0, 0, 0.5)"
+                  autoCapitalize="none"
+                  keyboardType={!isLogin ? "email-address" : "default"}
+                />
+              </View>
+              <LinearGradient
+                colors={GRADIENTS.header}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.inputGradientLine}
+              />
+            </View>
+
+            {!isLogin && (
+              <View style={styles.inputWrapper}>
+                <View style={styles.inputContainer}>
+                  <MaterialCommunityIcons name="phone" size={20} color="rgba(0, 0, 0, 0.7)" />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Phone Number"
+                    value={phone}
+                    onChangeText={setPhone}
+                    placeholderTextColor="rgba(0, 0, 0, 0.5)"
+                    keyboardType="phone-pad"
+                  />
+                </View>
+                <LinearGradient
+                  colors={GRADIENTS.header}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.inputGradientLine}
+                />
+              </View>
+            )}
+
+            {!isLogin && (
+              <View style={styles.inputWrapper}>
+                <View style={styles.inputContainer}>
+                  <MaterialCommunityIcons name="home" size={20} color="rgba(0, 0, 0, 0.7)" />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Address"
+                    value={address}
+                    onChangeText={setAddress}
+                    placeholderTextColor="rgba(0, 0, 0, 0.5)"
+                  />
+                </View>
+                <LinearGradient
+                  colors={GRADIENTS.header}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.inputGradientLine}
+                />
+              </View>
+            )}
+
+            <View style={styles.inputWrapper}>
+              <View style={styles.inputContainer}>
+                <MaterialCommunityIcons name="lock" size={20} color="rgba(0, 0, 0, 0.7)" />
+                <TextInput
+                  style={styles.input}
+                  placeholder="Password"
+                  value={password}
+                  onChangeText={setPassword}
+                  placeholderTextColor="rgba(0, 0, 0, 0.5)"
+                  secureTextEntry={!showPassword}
                 />
                 <TouchableWeb
-                  onPress={() => setShowConfirmPassword(!showConfirmPassword)}
+                  onPress={() => setShowPassword(!showPassword)}
                   style={styles.eyeIcon}
                 >
                   <MaterialCommunityIcons
-                    name={showConfirmPassword ? 'eye-off' : 'eye'}
+                    name={showPassword ? 'eye-off' : 'eye'}
                     size={20}
                     color="#4A90E2"
                   />
                 </TouchableWeb>
+              </View>
+              <LinearGradient
+                colors={GRADIENTS.header}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 0 }}
+                style={styles.inputGradientLine}
+              />
+            </View>
+
+            {!isLogin && (
+              <View style={styles.inputWrapper}>
+                <View style={styles.inputContainer}>
+                  <MaterialCommunityIcons name="lock-check" size={20} color="rgba(0, 0, 0, 0.7)" />
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Confirm Password"
+                    value={confirmPassword}
+                    onChangeText={setConfirmPassword}
+                    placeholderTextColor="rgba(0, 0, 0, 0.5)"
+                    secureTextEntry={!showConfirmPassword}
+                  />
+                  <TouchableWeb
+                    onPress={() => setShowConfirmPassword(!showConfirmPassword)}
+                    style={styles.eyeIcon}
+                  >
+                    <MaterialCommunityIcons
+                      name={showConfirmPassword ? 'eye-off' : 'eye'}
+                      size={20}
+                      color="#4A90E2"
+                    />
+                  </TouchableWeb>
+                </View>
+                <LinearGradient
+                  colors={GRADIENTS.header}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 0 }}
+                  style={styles.inputGradientLine}
+                />
               </View>
             )}
           </View>
@@ -546,11 +694,11 @@ export default function SplashScreen({ onFinish }) {
                 <MaterialCommunityIcons
                   name={rememberMe ? "checkbox-marked" : "checkbox-blank-outline"}
                   size={20}
-                  color="rgba(255, 255, 255, 0.9)"
+                  color="rgba(51, 51, 51, 0.8)"
                 />
                 <Text style={styles.rememberMeText}>Remember Me</Text>
               </TouchableWeb>
-              <TouchableWeb style={styles.forgotPassword}>
+              <TouchableWeb style={styles.forgotPassword} onPress={handleForgotPasswordPress}>
                 <Text style={styles.forgotPasswordText}>Forgot Password?</Text>
               </TouchableWeb>
             </View>
@@ -571,13 +719,20 @@ export default function SplashScreen({ onFinish }) {
             onPress={!isLogin ? handleSignup : handleLogin}
             disabled={isLoading}
           >
-            {isLoading ? (
-              <ActivityIndicator color="#4A90E2" size="small" />
-            ) : (
-              <Text style={styles.submitButtonText}>
-                {!isLogin ? 'Sign Up' : 'Sign In'}
-              </Text>
-            )}
+            <LinearGradient
+              colors={isLoading ? ['#CCCCCC', '#CCCCCC'] : GRADIENTS.header}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 0, y: 1 }}
+              style={styles.submitButtonGradient}
+            >
+              {isLoading ? (
+                <ActivityIndicator color="#fff" size="small" />
+              ) : (
+                <Text style={styles.submitButtonText}>
+                  {!isLogin ? 'Sign Up' : 'Sign In'}
+                </Text>
+              )}
+            </LinearGradient>
           </TouchableWeb>
 
           {/* Divider */}
@@ -586,6 +741,8 @@ export default function SplashScreen({ onFinish }) {
             <Text style={styles.dividerText}>or</Text>
             <View style={styles.dividerLine} />
           </View>
+
+
 
           {/* Register/Login Link */}
           <View style={styles.linkContainer}>
@@ -600,25 +757,26 @@ export default function SplashScreen({ onFinish }) {
           </View>
                 </View>
               </ScrollView>
-            </LinearGradient>
+            </View>
           </Animated.View>
         </KeyboardAvoidingView>
       )}
 
-      {/* Country Modal */}
+      {/* Forgot Password Modal */}
       <Modal
-        visible={showCountryModal}
+        visible={showForgotPassword}
         transparent={true}
-        animationType="slide"
-        onRequestClose={() => setShowCountryModal(false)}
+        animationType="fade"
+        onRequestClose={handleCloseForgotPassword}
       >
-        <View style={styles.modalContainer}>
-          <View style={styles.modalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalTitle}>Select Country</Text>
+        <View style={styles.forgotPasswordOverlay}>
+          <View style={styles.forgotPasswordContainer}>
+            {/* Header */}
+            <View style={styles.forgotPasswordHeader}>
+              <Text style={styles.forgotPasswordTitle}>Reset Password</Text>
               <TouchableWeb
-                onPress={() => setShowCountryModal(false)}
-                style={styles.modalCloseButton}
+                onPress={handleCloseForgotPassword}
+                style={styles.forgotPasswordCloseButton}
               >
                 <MaterialCommunityIcons
                   name="close"
@@ -628,46 +786,178 @@ export default function SplashScreen({ onFinish }) {
               </TouchableWeb>
             </View>
 
-            <View style={styles.searchContainer}>
-              <MaterialCommunityIcons
-                name="magnify"
-                size={20}
-                color={COLORS.textMuted}
-                style={styles.searchIcon}
-              />
-              <TextInput
-                style={styles.searchInput}
-                placeholder="Search countries..."
-                placeholderTextColor={COLORS.textMuted}
-                value={countrySearch}
-                onChangeText={setCountrySearch}
-              />
-            </View>
+            <ScrollView style={styles.forgotPasswordContent} showsVerticalScrollIndicator={false}>
+              {forgotPasswordStep === 'email' ? (
+                <>
+                  <Text style={styles.forgotPasswordDescription}>
+                    We'll send a reset link to the email you used when signing up.
+                  </Text>
 
-            <FlatList
-              data={filteredCountries}
-              keyExtractor={(item) => item.code}
-              renderItem={({ item }) => (
-                <TouchableWeb
-                  onPress={() => {
-                    setSelectedCountry(item);
-                    setShowCountryModal(false);
-                    setCountrySearch('');
-                  }}
-                  style={[
-                    styles.countryOption,
-                    selectedCountry.code === item.code && styles.countryOptionSelected,
-                  ]}
-                >
-                  <Text style={styles.countryOptionText}>
-                    {item.name}
+                  <View style={styles.forgotPasswordForm}>
+                    <Text style={styles.inputLabel}>Registered Email</Text>
+                    <View style={styles.forgotPasswordLockedInput}>
+                      <MaterialCommunityIcons name="email-lock" size={20} color={COLORS.textMuted} style={{ marginRight: 8 }} />
+                      <Text style={styles.lockedEmailText}>{forgotEmail}</Text>
+                    </View>
+                    <Text style={styles.lockedEmailHint}>
+                      Need to use a different account? Close this window and update the login email field first.
+                    </Text>
+
+                    {forgotPasswordMessage ? (
+                      <Text style={[styles.forgotPasswordMessage, { color: forgotPasswordMessage.includes('Error') ? COLORS.error : COLORS.success }]}>
+                        {forgotPasswordMessage}
+                      </Text>
+                    ) : null}
+
+                    <TouchableWeb
+                      style={[styles.forgotPasswordButton, forgotPasswordLoading && styles.disabledButton]}
+                      onPress={handleForgotPasswordRequest}
+                      disabled={forgotPasswordLoading}
+                    >
+                      {forgotPasswordLoading ? (
+                        <ActivityIndicator color="#fff" size="small" />
+                      ) : (
+                        <Text style={styles.forgotPasswordButtonText}>Send Reset Link</Text>
+                      )}
+                    </TouchableWeb>
+                  </View>
+                </>
+              ) : forgotPasswordStep === 'sent' ? (
+                <>
+                  <View style={styles.successIcon}>
+                    <MaterialCommunityIcons
+                      name="email-check"
+                      size={48}
+                      color="#51cf66"
+                    />
+                  </View>
+                  <Text style={styles.forgotPasswordDescription}>
+                    A password reset link has been sent to:
                   </Text>
-                  <Text style={styles.currencyOptionText}>
-                    {item.currency} ({item.symbol})
+                  <Text style={styles.emailHighlight}>{sentToEmail}</Text>
+                  <Text style={styles.forgotPasswordDescription}>
+                    Click the link in the email to reset your password. You can also paste the reset token below if needed.
                   </Text>
-                </TouchableWeb>
+
+                  <View style={styles.forgotPasswordForm}>
+                    <Text style={styles.inputLabel}>Reset Token (from email link)</Text>
+                    <TextInput
+                      style={styles.forgotPasswordInput}
+                      placeholder="Paste token from email"
+                      placeholderTextColor={COLORS.textMuted}
+                      value={resetToken}
+                      onChangeText={setResetToken}
+                      multiline={true}
+                      autoCapitalize="none"
+                    />
+
+                    <TouchableWeb
+                      style={styles.forgotPasswordButton}
+                      onPress={() => {
+                        if (resetToken.trim()) {
+                          setForgotPasswordStep('reset');
+                        } else {
+                          Alert.alert('Info', 'Please paste the token from the email link, or wait for the email and click the link directly.');
+                        }
+                      }}
+                    >
+                      <Text style={styles.forgotPasswordButtonText}>Continue with Token</Text>
+                    </TouchableWeb>
+
+                    <TouchableWeb
+                      style={styles.backToEmailButton}
+                      onPress={() => setForgotPasswordStep('email')}
+                    >
+                      <Text style={styles.backToEmailButtonText}>Send to Different Email</Text>
+                    </TouchableWeb>
+                  </View>
+                </>
+              ) : (
+                <>
+                  <Text style={styles.forgotPasswordDescription}>
+                    Enter your new password below to update your account.
+                  </Text>
+
+                  <View style={styles.forgotPasswordForm}>
+                    <Text style={styles.inputLabel}>New Password</Text>
+                    <View style={styles.passwordInputContainer}>
+                      <TextInput
+                        style={styles.forgotPasswordInput}
+                        placeholder="Enter new password"
+                        placeholderTextColor={COLORS.textMuted}
+                        value={resetNewPassword}
+                        onChangeText={setResetNewPassword}
+                        editable={!forgotPasswordLoading}
+                        secureTextEntry={!showResetPassword}
+                      />
+                      <TouchableWeb
+                        style={styles.togglePasswordButton}
+                        onPress={() => setShowResetPassword(!showResetPassword)}
+                      >
+                        <MaterialCommunityIcons
+                          name={showResetPassword ? "eye-off" : "eye"}
+                          size={20}
+                          color={COLORS.textMuted}
+                        />
+                      </TouchableWeb>
+                    </View>
+
+                    <Text style={styles.inputLabel}>Confirm Password</Text>
+                    <View style={styles.passwordInputContainer}>
+                      <TextInput
+                        style={styles.forgotPasswordInput}
+                        placeholder="Confirm new password"
+                        placeholderTextColor={COLORS.textMuted}
+                        value={resetConfirmPassword}
+                        onChangeText={setResetConfirmPassword}
+                        editable={!forgotPasswordLoading}
+                        secureTextEntry={!showResetConfirmPassword}
+                      />
+                      <TouchableWeb
+                        style={styles.togglePasswordButton}
+                        onPress={() => setShowResetConfirmPassword(!showResetConfirmPassword)}
+                      >
+                        <MaterialCommunityIcons
+                          name={showResetConfirmPassword ? "eye-off" : "eye"}
+                          size={20}
+                          color={COLORS.textMuted}
+                        />
+                      </TouchableWeb>
+                    </View>
+
+                    {forgotPasswordMessage ? (
+                      <Text style={[styles.forgotPasswordMessage, { color: forgotPasswordMessage.includes('Error') ? COLORS.error : COLORS.success }]}>
+                        {forgotPasswordMessage}
+                      </Text>
+                    ) : null}
+
+                    <TouchableWeb
+                      style={[styles.forgotPasswordButton, forgotPasswordLoading && styles.disabledButton]}
+                      onPress={handleResetPassword}
+                      disabled={forgotPasswordLoading}
+                    >
+                      {forgotPasswordLoading ? (
+                        <ActivityIndicator color="#fff" size="small" />
+                      ) : (
+                        <Text style={styles.forgotPasswordButtonText}>Update Password</Text>
+                      )}
+                    </TouchableWeb>
+
+                    <TouchableWeb
+                      style={styles.backToEmailButton}
+                      onPress={() => {
+                        setForgotPasswordStep('sent');
+                        setResetNewPassword('');
+                        setResetConfirmPassword('');
+                        setForgotPasswordMessage('');
+                      }}
+                    >
+                      <Text style={styles.backToEmailButtonText}>Back</Text>
+                    </TouchableWeb>
+                  </View>
+                </>
               )}
-            />
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -681,18 +971,15 @@ const styles = StyleSheet.create({
   },
   logoContainer: {
     position: 'absolute',
-    top: '50%',
     left: 0,
     right: 0,
-    marginTop: -height * 0.175,
     zIndex: 1000,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: 'transparent',
   },
   logo: {
-    width: width * 0.7,
-    height: height * 0.3,
+    // Dimensions set inline to prevent module-time evaluation
   },
   textLogo: {
     alignItems: 'center',
@@ -729,12 +1016,12 @@ const styles = StyleSheet.create({
     position: 'absolute',
     left: 0,
     right: 0,
-    top: height * 0.100, // Start below the logo
+    top: 0,
     bottom: 0,
     justifyContent: 'center',
     alignItems: 'center',
     paddingHorizontal: 20,
-    paddingVertical: 70,
+    paddingTop: 85,
   },
   staticContainer: {
     padding: 30,
@@ -744,92 +1031,90 @@ const styles = StyleSheet.create({
   },
   fixedAuthBox: {
     width: '100%',
-    maxWidth: 400,
-    height: '80%', // Use more of available space below logo
-    borderRadius: 24,
-    borderWidth: 2,
-    borderColor: 'rgba(255, 255, 255, 0.4)',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 8 },
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    elevation: 8,
-    overflow: 'hidden',
+    maxWidth: 450,
   },
   scrollContainer: {
     flexGrow: 1,
-    padding: 30,
-    justifyContent: 'center',
+    paddingHorizontal: 30,
   },
   scrollContainerKeyboard: {
     justifyContent: 'flex-start', // When keyboard is visible, start from top instead of center
     paddingVertical: 20, // Reduce vertical padding to fit more content
     minHeight: 700, // Ensure content is tall enough to scroll
   },
+  scrollContainerSignup: {
+    justifyContent: 'flex-start', // Start from top for signup to accommodate more fields
+    paddingVertical: 25, // Adjust padding for better spacing
+    minHeight: 650, // Ensure enough height for all signup fields
+  },
   authContent: {
     alignItems: 'center',
     minHeight: 400, // Content height
+    width: '100%',
   },
   authContentExpanded: {
-    minHeight: 520, // Expanded content height for signup
+    minHeight: 580, // Increased height for signup form
+    paddingBottom: 30, // Extra bottom padding for signup
   },
   authContentKeyboard: {
-    minHeight: 550, // Taller content when keyboard is visible to ensure scrolling
-    paddingBottom: 50, // Extra bottom padding to ensure last elements are reachable
+    minHeight: 600, // Taller content when keyboard is visible to ensure scrolling
+    paddingBottom: 60, // Extra bottom padding to ensure last elements are reachable
   },
   toggleContainer: {
     flexDirection: 'row',
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    backgroundColor: 'rgba(0, 0, 0, 0.05)',
     borderRadius: 25,
     marginBottom: 20,
     overflow: 'hidden',
     width: '100%',
+    padding: 4,
   },
   toggleButton: {
     flex: 1,
+    borderRadius: 21,
+    overflow: 'hidden',
+  },
+  activeToggleGradient: {
     paddingVertical: 12,
     alignItems: 'center',
-    backgroundColor: 'transparent',
-  },
-  activeToggle: {
-    backgroundColor: 'rgba(255, 255, 255, 0.9)',
+    justifyContent: 'center',
   },
   toggleText: {
     fontSize: 16,
     fontWeight: '600',
-    color: 'rgba(255, 255, 255, 0.8)',
+    color: 'rgba(0, 0, 0, 0.7)',
+    textAlign: 'center',
+    paddingVertical: 12,
   },
   activeToggleText: {
-    color: '#4A90E2',
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
   },
   formContainer: {
     marginBottom: 20,
     width: '100%',
+  },
+  inputWrapper: {
+    marginBottom: 20,
   },
   inputContainer: {
     flexDirection: 'row',
     alignItems: 'center',
     paddingHorizontal: 5,
     paddingVertical: 8,
-    marginBottom: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.6)',
+    backgroundColor: 'transparent', // Subtle faded background
   },
-  countryContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 5,
-    paddingVertical: 8,
-    marginBottom: 20,
-    borderBottomWidth: 1,
-    borderBottomColor: 'rgba(255, 255, 255, 0.6)',
+  inputGradientLine: {
+    height: 2,
+    width: '100%',
   },
   input: {
     flex: 1,
     paddingVertical: 8,
     marginLeft: 12,
     fontSize: 16,
-    color: '#fff',
+    color: '#000',
   },
   eyeIcon: {
     padding: 4,
@@ -848,7 +1133,7 @@ const styles = StyleSheet.create({
   },
   rememberMeText: {
     fontSize: 14,
-    color: '#fff',
+    color: '#333',
     marginLeft: 8,
   },
   forgotPassword: {
@@ -857,15 +1142,17 @@ const styles = StyleSheet.create({
   forgotPasswordText: {
     fontSize: 14,
     fontWeight: '500',
-    color: '#fff',
+    color: '#4A90E2',
   },
+
   termsText: {
     fontSize: 11,
-    color: '#fff',
+    color: '#666',
     textAlign: 'center',
-    marginBottom: 15,
-    marginTop: -30,
+    marginBottom: 20,
+    marginTop: -10, // Reduced negative margin for better spacing
     lineHeight: 16,
+    paddingHorizontal: 10, // Add horizontal padding for better text wrapping
   },
   termsLink: {
     color: '#1005efff',
@@ -881,12 +1168,12 @@ const styles = StyleSheet.create({
   dividerLine: {
     flex: 1,
     height: 1,
-    backgroundColor: 'rgba(255, 255, 255, 0.3)',
+    backgroundColor: 'rgba(51, 51, 51, 0.3)',
   },
   dividerText: {
     marginHorizontal: 15,
     fontSize: 14,
-    color: '#1005efff',
+    color: '#666',
   },
   linkContainer: {
     flexDirection: 'row',
@@ -896,7 +1183,7 @@ const styles = StyleSheet.create({
   },
   linkText: {
     fontSize: 14,
-    color: '#000', // Changed to black
+    color: '#333',
   },
   linkButton: {
     fontSize: 14,
@@ -907,15 +1194,18 @@ const styles = StyleSheet.create({
   submitButton: {
     borderRadius: 50,
     overflow: 'hidden',
-    backgroundColor: '#FFF',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.2,
     shadowRadius: 8,
     elevation: 5,
     width: '100%',
+  },
+  submitButtonGradient: {
     paddingVertical: 15,
     alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 50,
   },
   disabledButton: {
     backgroundColor: '#CCCCCC',
@@ -925,81 +1215,143 @@ const styles = StyleSheet.create({
   submitButtonText: {
     fontSize: 16,
     fontWeight: '600',
-    color: '#4A90E2',
+    color: '#fff', // White text on gradient background
   },
-  countryDisplay: {
+  forgotPasswordOverlay: {
     flex: 1,
-    marginLeft: 12,
-    fontSize: 16,
-    color: '#fff',
+    backgroundColor: 'rgba(0, 0, 0, 0.7)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: SPACING.md,
   },
-  modalContainer: {
-    flex: 1,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
-    justifyContent: 'flex-end',
-  },
-  modalContent: {
-    backgroundColor: COLORS.white,
-    borderTopLeftRadius: 24,
-    borderTopRightRadius: 24,
+  forgotPasswordContainer: {
+    backgroundColor: COLORS.card,
+    borderRadius: 16,
+    width: '90%',
     maxHeight: '80%',
-    paddingTop: 0,
+    paddingHorizontal: 0,
+    paddingVertical: 0,
+    elevation: 5,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.3,
+    shadowRadius: 4,
   },
-  modalHeader: {
+  forgotPasswordHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: SPACING.lg,
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: SPACING.md,
     borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
+    borderBottomColor: 'rgba(255, 255, 255, 0.1)',
   },
-  modalTitle: {
+  forgotPasswordTitle: {
     fontSize: 18,
     fontWeight: '600',
     color: COLORS.text,
   },
-  modalCloseButton: {
-    padding: SPACING.sm,
+  forgotPasswordCloseButton: {
+    padding: 5,
   },
-  searchContainer: {
+  forgotPasswordContent: {
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: SPACING.lg,
+  },
+  forgotPasswordDescription: {
+    fontSize: 14,
+    color: COLORS.textMuted,
+    marginBottom: SPACING.lg,
+    lineHeight: 20,
+  },
+  forgotPasswordForm: {
+    gap: SPACING.md,
+  },
+  forgotPasswordInput: {
+    backgroundColor: COLORS.inputBackground,
+    borderRadius: 8,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.md,
+    color: COLORS.text,
+    fontSize: 14,
+    minHeight: 48,
+  },
+  forgotPasswordLockedInput: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginHorizontal: SPACING.lg,
+    backgroundColor: COLORS.inputBackground,
+    borderRadius: 10,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.md,
+    minHeight: 52,
+  },
+  lockedEmailText: {
+    flex: 1,
+    fontSize: 16,
+    color: COLORS.text,
+  },
+  lockedEmailHint: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+    lineHeight: 18,
+  },
+  forgotPasswordButton: {
+    backgroundColor: '#4A90E2',
+    borderRadius: 8,
+    paddingVertical: SPACING.md,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: SPACING.sm,
+  },
+  forgotPasswordButtonText: {
+    color: '#fff',
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  forgotPasswordMessage: {
+    fontSize: 13,
+    marginVertical: SPACING.sm,
+    paddingHorizontal: SPACING.sm,
+    fontWeight: '500',
+  },
+  backToEmailButton: {
+    paddingVertical: SPACING.md,
+    alignItems: 'center',
+  },
+  backToEmailButtonText: {
+    color: '#4A90E2',
+    fontSize: 14,
+    fontWeight: '500',
+  },
+  passwordInputContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.inputBackground,
+    borderRadius: 8,
+    paddingRight: SPACING.sm,
+  },
+  togglePasswordButton: {
+    padding: SPACING.md,
+  },
+  inputLabel: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+    marginBottom: SPACING.xs,
+  },
+  successIcon: {
+    alignItems: 'center',
+    marginBottom: SPACING.lg,
+  },
+  emailHighlight: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: '#4A90E2',
+    textAlign: 'center',
     marginVertical: SPACING.md,
     paddingHorizontal: SPACING.md,
-    backgroundColor: COLORS.background,
-    borderRadius: 12,
-  },
-  searchIcon: {
-    marginRight: SPACING.sm,
-  },
-  searchInput: {
-    flex: 1,
     paddingVertical: SPACING.sm,
-    fontSize: 15,
-    color: COLORS.text,
-  },
-  countryOption: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    paddingVertical: SPACING.md,
-    paddingHorizontal: SPACING.lg,
-    borderBottomWidth: 1,
-    borderBottomColor: COLORS.border,
-  },
-  countryOptionSelected: {
-    backgroundColor: 'rgba(76, 175, 80, 0.1)',
-  },
-  countryOptionText: {
-    fontSize: 15,
-    fontWeight: '500',
-    color: COLORS.text,
-    flex: 1,
-  },
-  currencyOptionText: {
-    fontSize: 13,
-    color: COLORS.textMuted,
-    marginLeft: SPACING.md,
+    backgroundColor: 'rgba(74, 144, 226, 0.1)',
+    borderRadius: 8,
   },
 });

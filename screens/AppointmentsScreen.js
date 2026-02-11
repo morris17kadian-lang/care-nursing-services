@@ -1,5 +1,5 @@
 import TouchableWeb from "../components/TouchableWeb";
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import {
   View,
   Text,
@@ -7,28 +7,643 @@ import {
   ScrollView,
   Alert,
   Modal,
+  Image,
+  TextInput,
+  Platform,
 } from 'react-native';
+import DateTimePicker from '@react-native-community/datetimepicker';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { useFocusEffect } from '@react-navigation/native';
 import { COLORS, GRADIENTS, SPACING } from '../constants';
+import { buttonStyles } from '../styles/ButtonStyles';
 import { useAuth } from '../context/AuthContext';
 import { useAppointments } from '../context/AppointmentContext';
 import { useShifts } from '../context/ShiftContext';
 import { useNotifications } from '../context/NotificationContext';
+import { useNurses } from '../context/NurseContext';
+import { useServices } from '../context/ServicesContext';
+import RecurringShiftDetailsModal from '../components/RecurringShiftDetailsModal';
 import InvoiceService from '../services/InvoiceService';
+import ApiService from '../services/ApiService';
+import FygaroPaymentService from '../services/FygaroPaymentService';
+import { getNurseName, formatTimeTo12Hour } from '../utils/formatters';
+import NurseInfoCard from '../components/NurseInfoCard';
+import NotesAccordionList from '../components/NotesAccordionList';
 
-export default function AppointmentsScreen({ navigation }) {
+export default function AppointmentsScreen({ navigation, route }) {
   const { user } = useAuth();
-  const { getUpcomingAppointments, getAppointmentHistory, appointments, clearAllAppointments, cancelAppointment } = useAppointments();
+  const { getUpcomingAppointments, getAppointmentHistory, appointments, clearAllAppointments, cancelAppointment, refreshAppointments } = useAppointments();
   const { shiftRequests } = useShifts(); // Add shift context to show approved shifts to patient
   const { sendNotificationToUser } = useNotifications();
+  const { nurses } = useNurses(); // Get nurses list to resolve nurse names
+  const { services } = useServices();
   const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState('upcoming');
   const [refreshKey, setRefreshKey] = useState(0);
   const [detailsModalVisible, setDetailsModalVisible] = useState(false);
+  const [recurringShiftDetailsModalVisible, setRecurringShiftDetailsModalVisible] = useState(false);
   const [selectedAppointment, setSelectedAppointment] = useState(null);
+  const [appointmentInvoices, setAppointmentInvoices] = useState([]);
+  const [selectedInvoicePreview, setSelectedInvoicePreview] = useState(null);
+  const [isLoadingInvoices, setIsLoadingInvoices] = useState(false);
+  const lastAutoInvoiceAttemptRef = useRef({ key: null, at: 0 });
+  const [isEditing, setIsEditing] = useState(false);
+  const [editForm, setEditForm] = useState({});
+  
+  // Nurse Notes Access Control
+  const [nurseNotesUnlocked, setNurseNotesUnlocked] = useState({});
+  const [showConfidentialityModal, setShowConfidentialityModal] = useState(false);
+  const [confidentialityAccepted, setConfidentialityAccepted] = useState(false);
+  const [currentAppointmentForNotes, setCurrentAppointmentForNotes] = useState(null);
+  const [shouldReopenDetailsAfterConfidentiality, setShouldReopenDetailsAfterConfidentiality] = useState(false);
+  
+  // Date/Time Picker State
+  const [showDatePicker, setShowDatePicker] = useState(false);
+  const [showTimePicker, setShowTimePicker] = useState(false);
+  const [pickerDate, setPickerDate] = useState(new Date());
+  const [pickerTime, setPickerTime] = useState(new Date());
+
+  const companyDetails = {
+    companyName: '876 Nurses Home Care Services Limited',
+    fullName: '876 NURSES HOME CARE SERVICES LIMITED',
+    address: '60 Knutsford Blvd, Panjam Building, 9th Floor - Regus, Kingston 5, Jamaica, West Indies',
+    phone: '(876) 618-9876',
+    email: '876nurses@gmail.com',
+    taxId: '',
+    website: 'www.876nurses.com'
+  };
+
+  const paymentInfo = {
+    bankAccounts: [
+      { 
+        id: '1', 
+        bankName: 'NCB', 
+        recipientType: 'Individual',
+        accountNumbers: [
+          { id: '1', number: '123456789', currency: 'JMD' }
+        ],
+        payee: '',
+        branch: '',
+        swiftCode: '',
+        sortCode: ''
+      }
+    ],
+    cashAccepted: true,
+    posAvailable: false
+  };
+
+  // Handle deep linking/navigation from other screens
+  useEffect(() => {
+    if (route.params?.highlightId || route.params?.openAppointmentDetails) {
+      const highlightId = route.params.highlightId || route.params.appointmentId;
+
+      const normalizeClockMs = (value) => {
+        if (!value) return null;
+        if (typeof value === 'number') return Number.isFinite(value) ? value : null;
+
+        // Firestore Timestamp
+        if (typeof value === 'object') {
+          if (typeof value.toDate === 'function') {
+            const d = value.toDate();
+            const ms = d instanceof Date ? d.getTime() : NaN;
+            return Number.isFinite(ms) ? ms : null;
+          }
+          if (typeof value.seconds === 'number') {
+            const ms = value.seconds * 1000 + (typeof value.nanoseconds === 'number' ? Math.floor(value.nanoseconds / 1e6) : 0);
+            return Number.isFinite(ms) ? ms : null;
+          }
+        }
+
+        const ms = Date.parse(value);
+        return Number.isFinite(ms) ? ms : null;
+      };
+
+      const hasClockedOutForAnyNurse = (shift) => {
+        const clockMap = shift?.clockByNurse;
+        if (!clockMap || typeof clockMap !== 'object') return false;
+        const entries = Object.values(clockMap).filter((v) => v && typeof v === 'object');
+        if (entries.length === 0) return false;
+
+        return entries.some((entry) => {
+          const inTime = entry.lastClockInTime || entry.actualStartTime || entry.clockInTime || entry.startedAt;
+          const outTime = entry.lastClockOutTime || entry.actualEndTime || entry.clockOutTime || entry.completedAt;
+          if (!outTime) return false;
+          const inMs = normalizeClockMs(inTime);
+          const outMs = normalizeClockMs(outTime);
+          if (!Number.isFinite(outMs)) return false;
+          if (Number.isFinite(inMs)) return outMs > inMs;
+          return true;
+        });
+      };
+      
+      // Find the appointment in upcoming or past lists
+      // We need to wait for appointments to be loaded, but since we're using context, 
+      // we can try to find it in the current lists
+      
+      const findAndHighlight = () => {
+        const upcoming = getUpcomingAppointments();
+        const past = getAppointmentHistory();
+        const shifts = shiftRequests || [];
+        
+        // Check upcoming appointments
+        const foundUpcoming = upcoming.find(a => a.id === highlightId);
+        if (foundUpcoming) {
+          setActiveTab('upcoming');
+          setSelectedAppointment(foundUpcoming);
+          
+          // Check if it's recurring to open correct modal
+          const isRecurring = foundUpcoming.isRecurring || foundUpcoming.recurringScheduleId || foundUpcoming.recurringSchedule;
+          if (isRecurring) {
+            setRecurringShiftDetailsModalVisible(true);
+          } else {
+            setDetailsModalVisible(true);
+          }
+          return;
+        }
+        
+        // Check shifts (which are also displayed)
+        const foundShift = shifts.find(s => s.id === highlightId);
+        if (foundShift) {
+          // Determine if it's upcoming or past based on status/date
+          // Treat clocked-out shifts as Past even if status remains 'approved' (kept booked).
+          const isPast =
+            String(foundShift.status || '').toLowerCase() === 'completed' ||
+            hasClockedOutForAnyNurse(foundShift);
+          setActiveTab(isPast ? 'past' : 'upcoming');
+          setSelectedAppointment(foundShift);
+          setRecurringShiftDetailsModalVisible(true); // Shifts use recurring modal usually
+          return;
+        }
+
+        // Check past appointments
+        const foundPast = past.find(a => a.id === highlightId);
+        if (foundPast) {
+          setActiveTab('past');
+          setSelectedAppointment(foundPast);
+          const isRecurring = foundPast.isRecurring || foundPast.recurringScheduleId || foundPast.recurringSchedule;
+          if (isRecurring) {
+            setRecurringShiftDetailsModalVisible(true);
+          } else {
+            setDetailsModalVisible(true);
+          }
+          return;
+        }
+      };
+
+      // Small delay to ensure data is ready if coming from a fresh load
+      setTimeout(findAndHighlight, 500);
+      
+      // Clear the param so it doesn't trigger again on simple re-renders
+      navigation.setParams({ highlightId: null, openAppointmentDetails: null, appointmentId: null });
+    }
+  }, [route.params?.highlightId, route.params?.openAppointmentDetails, appointments, shiftRequests]);
+
+  // Refresh appointments when screen comes into focus
+  useFocusEffect(
+    React.useCallback(() => {
+      // Throttle refresh to prevent rapid API calls
+      const now = Date.now();
+      const lastRefresh = global.lastAppointmentRefresh || 0;
+      
+      if (now - lastRefresh > 2000) { // Only refresh if 2+ seconds since last call
+        global.lastAppointmentRefresh = now;
+        refreshAppointments();
+      }
+    }, [refreshAppointments])
+  );
+
+  // Helper function to format address object to string
+  const formatAddress = (address) => {
+    if (!address) return 'Address on file';
+    
+    // If it's already a string, return it
+    if (typeof address === 'string') return address;
+    
+    // If it's an object, format it
+    if (typeof address === 'object') {
+      const parts = [];
+      if (address.street) parts.push(address.street);
+      if (address.parish) parts.push(address.parish);
+      if (address.city) parts.push(address.city);
+      if (address.postalCode) parts.push(address.postalCode);
+      if (address.country) parts.push(address.country);
+      
+      return parts.length > 0 ? parts.join(', ') : 'Address on file';
+    }
+    
+    return 'Address on file';
+  };
+
+  // Helper function to resolve nurse name from nurseId if nurseName is missing
+  const resolveNurseName = (appointment) => {
+    if (appointment.nurseName) {
+      return appointment.nurseName;
+    }
+    
+    if (appointment.nurseId) {
+      // Try to find nurse in nurses list
+      const foundNurse = nurses.find(n => n.id === appointment.nurseId);
+      if (foundNurse) {
+        return getNurseName(foundNurse);
+      }
+    }
+    
+    return null;
+  };
+
+  const resolveAssignedNurse = (appointment) => {
+    if (!appointment) return null;
+
+    const candidateId =
+      appointment.nurseId ||
+      appointment.assignedNurseId ||
+      appointment.assignedNurse?.id ||
+      appointment.assignedNurse?._id ||
+      appointment.nurse?.id ||
+      appointment.nurse?._id;
+
+    const matchedNurse = nurses.find((nurse) =>
+      String(nurse.id || nurse._id || nurse.nurseId) === String(candidateId)
+    );
+
+    if (matchedNurse) {
+      return matchedNurse;
+    }
+
+    const fallbackName =
+      resolveNurseName(appointment) ||
+      appointment.assignedNurse?.name ||
+      appointment.nurse?.name;
+
+    if (!fallbackName) {
+      return null;
+    }
+
+    return {
+      id: candidateId || appointment.nurseId || appointment.assignedNurseId,
+      name: fallbackName,
+      nurseName: fallbackName,
+      nurseCode:
+        appointment.assignedNurse?.nurseCode ||
+        appointment.nurseCode ||
+        appointment.nurse?.nurseCode,
+      nurseIdPhoto:
+        appointment.assignedNurse?.nurseIdPhoto ||
+        appointment.nurseIdPhoto,
+      profilePhoto:
+        appointment.assignedNurse?.profilePhoto ||
+        appointment.profilePhoto,
+      profileImage:
+        appointment.assignedNurse?.profileImage ||
+        appointment.profileImage,
+      photoUrl: appointment.assignedNurse?.photoUrl || appointment.photoUrl,
+      specialty:
+        appointment.assignedNurse?.specialty ||
+        appointment.nurse?.specialty,
+      specialization:
+        appointment.assignedNurse?.specialization ||
+        appointment.nurse?.specialization,
+      phone: appointment.assignedNurse?.phone || appointment.nurse?.phone,
+      email: appointment.assignedNurse?.email || appointment.nurse?.email,
+    };
+  };
+
+  const resolveRequestedNurse = (appointment) => {
+    if (!appointment) return null;
+
+    const candidateId =
+      appointment.preferredNurseId ||
+      appointment.requestedNurseId ||
+      appointment.preferredNurse?.id ||
+      appointment.preferredNurse?._id ||
+      appointment.requestedNurse?.id ||
+      appointment.requestedNurse?._id ||
+      appointment.primaryNurseId ||
+      null;
+
+    const matchedNurse = candidateId
+      ? nurses.find((nurse) =>
+          String(nurse.id || nurse._id || nurse.nurseId) === String(candidateId)
+        )
+      : null;
+
+    if (matchedNurse) {
+      return matchedNurse;
+    }
+
+    const fallbackName =
+      appointment.preferredNurseName ||
+      appointment.requestedNurseName ||
+      appointment.requestedNurse ||
+      appointment.preferredNurse?.name ||
+      appointment.requestedNurse?.name ||
+      null;
+
+    if (!fallbackName) {
+      return null;
+    }
+
+    return {
+      id: candidateId,
+      name: fallbackName,
+      nurseName: fallbackName,
+      nurseCode:
+        appointment.preferredNurseCode ||
+        appointment.requestedNurseCode ||
+        appointment.preferredNurse?.nurseCode ||
+        appointment.requestedNurse?.nurseCode,
+    };
+  };
+
+  const assignedNurseForModal = selectedAppointment
+    ? resolveAssignedNurse(selectedAppointment)
+    : null;
+
+  const requestedNurseForModal = selectedAppointment
+    ? resolveRequestedNurse(selectedAppointment)
+    : null;
+
+  const selectedAppointmentStatusLower = String(selectedAppointment?.status || '').toLowerCase();
+  const isPendingLikeAppointment = ['pending', 'requested', 'awaiting', 'unassigned'].includes(selectedAppointmentStatusLower);
+
+  const parseDateValue = (value) => {
+    if (!value) {
+      return null;
+    }
+
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? null : new Date(value.getTime());
+    }
+
+    if (typeof value?.toDate === 'function') {
+      try {
+        const date = value.toDate();
+        return Number.isNaN(date?.getTime()) ? null : date;
+      } catch (error) {
+        return null;
+      }
+    }
+
+    if (typeof value === 'object' && typeof value.seconds === 'number') {
+      const millis = value.seconds * 1000 + (typeof value.nanoseconds === 'number' ? Math.floor(value.nanoseconds / 1e6) : 0);
+      const date = new Date(millis);
+      return Number.isNaN(date.getTime()) ? null : date;
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) {
+        return null;
+      }
+
+      // Handle YYYY-MM-DD strings as local dates to avoid timezone shifts
+      const dateOnlyMatch = trimmed.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+      if (dateOnlyMatch) {
+        const [, yearStr, monthStr, dayStr] = dateOnlyMatch;
+        const year = Number(yearStr);
+        const month = Number(monthStr) - 1;
+        const day = Number(dayStr);
+        const date = new Date(year, month, day, 0, 0, 0, 0);
+        return Number.isNaN(date.getTime()) ? null : date;
+      }
+
+      const parsed = Date.parse(trimmed);
+      if (!Number.isNaN(parsed)) {
+        return new Date(parsed);
+      }
+    }
+
+    return null;
+  };
+
+  const getShiftScheduleBounds = (shift) => {
+    if (!shift) {
+      return { startDate: null, endDate: null, isRecurringShift: false };
+    }
+
+    const startFieldCandidates = [
+      shift.date,
+      shift.startDate,
+      shift.recurringStartDate,
+      shift.recurringPeriodStart,
+      shift.recurringStart,
+      shift.scheduledDate,
+      shift.shiftDate,
+      shift.preferredDate,
+      shift.appointmentDate,
+    ];
+
+    let startDate = null;
+    for (const field of startFieldCandidates) {
+      const parsed = parseDateValue(field);
+      if (parsed) {
+        startDate = parsed;
+        break;
+      }
+    }
+
+    const endFieldCandidates = [
+      shift.recurringEndDate,
+      shift.recurringPeriodEnd,
+      shift.recurringEnd,
+      shift.endDate,
+      shift.shiftEndDate,
+      shift.expectedEndDate,
+    ];
+
+    let endDate = null;
+    for (const field of endFieldCandidates) {
+      const parsed = parseDateValue(field);
+      if (parsed) {
+        endDate = parsed;
+        break;
+      }
+    }
+
+    const isRecurringShift = Boolean(
+      shift.isRecurring ||
+      shift.adminRecurring ||
+      shift.recurringScheduleId ||
+      shift.recurringDaysOfWeek?.length ||
+      (typeof shift.assignmentType === 'string' && shift.assignmentType.toLowerCase().includes('split')) ||
+      (typeof shift.service === 'string' && shift.service.toLowerCase().includes('recurring'))
+    );
+
+    return { startDate, endDate, isRecurringShift };
+  };
+
+  const normalizeIdentifier = (value) => {
+    if (value === undefined || value === null) {
+      return null;
+    }
+    const stringValue = String(value).trim();
+    return stringValue ? stringValue.toLowerCase() : null;
+  };
+
+  const patientIdCandidates = React.useMemo(() => {
+    const ids = new Set();
+    const addId = (val) => {
+      const normalized = normalizeIdentifier(val);
+      if (normalized) {
+        ids.add(normalized);
+      }
+    };
+
+    addId(patientId);
+    addId(user?.id);
+    addId(user?._id);
+    addId(user?.uid);
+    addId(user?.userId);
+    addId(user?.clientId);
+    addId(user?.patientId);
+    addId(user?.profileId);
+    addId(user?.legacyPatientId);
+
+    if (Array.isArray(user?.linkedPatientIds)) {
+      user.linkedPatientIds.forEach(addId);
+    }
+
+    const username = user?.username ? String(user.username).toLowerCase() : '';
+    if (username === 'testpatient') {
+      ['PATIENT001', 'patient-001', 'patient001', '1'].forEach(addId);
+    }
+
+    if (patientId && String(patientId).toUpperCase() === 'PATIENT001') {
+      ['PATIENT001', 'patient-001', 'patient001', '1'].forEach(addId);
+    }
+
+    return ids;
+  }, [patientId, user]);
+
+  const patientNameCandidates = React.useMemo(() => {
+    const names = new Set();
+    const addName = (val) => {
+      if (!val) {
+        return;
+      }
+      const name = String(val).trim();
+      if (!name) {
+        return;
+      }
+      names.add(name.toLowerCase());
+    };
+
+    addName(user?.name);
+    addName(user?.displayName);
+    addName(user?.legalName);
+    addName(user?.username && !user.username.includes('@') ? user.username : null);
+
+    if (user?.firstName || user?.lastName) {
+      addName(`${user?.firstName || ''} ${user?.lastName || ''}`);
+    }
+
+    if (Array.isArray(user?.knownAliases)) {
+      user.knownAliases.forEach(addName);
+    }
+
+    return names;
+  }, [user]);
+
+  const patientEmailCandidates = React.useMemo(() => {
+    const emails = new Set();
+    const addEmail = (val) => {
+      if (!val) {
+        return;
+      }
+      const email = String(val).trim().toLowerCase();
+      if (!email) {
+        return;
+      }
+      emails.add(email);
+    };
+
+    addEmail(user?.email);
+    addEmail(user?.contactEmail);
+
+    if (Array.isArray(user?.emails)) {
+      user.emails.forEach(addEmail);
+    }
+
+    return emails;
+  }, [user]);
+
+  const matchesCurrentPatient = React.useCallback(
+    (record) => {
+      if (!record) {
+        return false;
+      }
+
+      const recordIdCandidates = [
+        record.clientId,
+        record.client?._id,
+        record.client?.id,
+        record.clientUid,
+        record.clientUserId,
+        record.patientId,
+        record.patient?._id,
+        record.patient?.id,
+        record.patientUid,
+        record.patientUserId,
+        record.patientProfileId,
+        record.patientProfile?._id,
+        record.patientProfile?.id,
+        record.userId,
+        record.user?._id,
+        record.user?.id,
+        record.userUid,
+        record.contactId,
+        record.contact?._id,
+        record.contact?.id,
+        record.contactUid,
+      ]
+        .map(normalizeIdentifier)
+        .filter(Boolean);
+
+      if (recordIdCandidates.some((id) => patientIdCandidates.has(id))) {
+        return true;
+      }
+
+      const recordNames = [
+        record.clientName,
+        record.client?.name,
+        record.clientFullName,
+        record.patientName,
+        record.patient?.name,
+        record.patientFullName,
+        record.contactName,
+        record.contact?.name,
+      ]
+        .filter(Boolean)
+        .map((name) => name.toString().trim().toLowerCase())
+        .filter(Boolean);
+
+      if (recordNames.some((name) => patientNameCandidates.has(name))) {
+        return true;
+      }
+
+      const recordEmails = [
+        record.clientEmail,
+        record.client?.email,
+        record.patientEmail,
+        record.patient?.email,
+        record.contactEmail,
+        record.contact?.email,
+      ]
+        .filter(Boolean)
+        .map((email) => email.toString().trim().toLowerCase())
+        .filter(Boolean);
+
+      if (recordEmails.some((email) => patientEmailCandidates.has(email))) {
+        return true;
+      }
+
+      return false;
+    },
+    [patientEmailCandidates, patientIdCandidates, patientNameCandidates]
+  );
 
   // Log user and context state on mount and updates
   // useEffect(() => {
@@ -59,40 +674,100 @@ export default function AppointmentsScreen({ navigation }) {
   // Handle viewing invoice with full data generation
   const handleViewInvoice = async (appointment) => {
     try {
+      // Check if appointment is recurring
+      const isRecurring = appointment.isRecurring || 
+                         appointment.recurring || 
+                         (appointment.serviceType && appointment.serviceType.includes('Recurring')) ||
+                         (appointment.service && appointment.service.includes('Recurring'));
+
+      const isShiftLike = Boolean(
+        appointment?.isShiftRequest ||
+        appointment?.isShift ||
+        appointment?.clockByNurse ||
+        appointment?.nurseSchedule ||
+        String(appointment?.assignmentType || '').toLowerCase() === 'split-schedule'
+      );
+
+      // Allow invoice generation for shift-like items even if flagged recurring.
+      if (isRecurring && !isShiftLike) {
+        Alert.alert(
+          'Recurring Appointment',
+          'Invoices for recurring appointments are generated biweekly and sent via email. You can view them in your email or the Invoices section.',
+          [{ text: 'OK' }]
+        );
+        return;
+      }
+
+      const resolvedShiftId =
+        appointment?.shiftRequestId ||
+        appointment?.shiftId ||
+        appointment?.requestId ||
+        appointment?.assignmentId ||
+        appointment?.documentId ||
+        appointment?.id ||
+        appointment?._id ||
+        null;
+
+      const dateKey = (() => {
+        const raw = appointment?.date || appointment?.appointmentDate || appointment?.startDate || appointment?.scheduledDate || null;
+        if (!raw) return null;
+        if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.trim())) return raw.trim();
+        const d = new Date(raw);
+        if (!Number.isFinite(d.getTime())) return null;
+        const yyyy = String(d.getFullYear());
+        const mm = String(d.getMonth() + 1).padStart(2, '0');
+        const dd = String(d.getDate()).padStart(2, '0');
+        return `${yyyy}-${mm}-${dd}`;
+      })();
+
+      const visitKey = resolvedShiftId && dateKey ? `${resolvedShiftId}:${dateKey}` : null;
+
+      const resolvedAppointmentId =
+        (isShiftLike && visitKey) ||
+        appointment?.id ||
+        appointment?.appointmentId ||
+        appointment?._id ||
+        resolvedShiftId;
+
       // Create comprehensive appointment data for invoice
       const appointmentData = {
-        id: appointment.id,
-        clientId: 'patient-current',
-        clientName: 'You',
-        clientEmail: 'patient@example.com',
-        clientPhone: appointment.phone || '876-555-0100',
-        clientAddress: appointment.address || '6 Reece Road, Kingston 10',
+        id: resolvedAppointmentId,
+        relatedAppointmentId: resolvedAppointmentId,
+        shiftRequestId: resolvedShiftId,
+        clientId: user?.id || 'patient-current',
+        clientName: appointment.patientName || user?.name || 'Valued Client',
+        clientEmail: appointment.patientEmail || user?.email || 'client@example.com',
+        clientPhone: appointment.patientPhone || user?.phone || appointment.phone || 'N/A',
+        clientAddress: appointment.address || user?.address || 'Address on file',
         serviceName: appointment.service,
         serviceType: appointment.service,
         appointmentDate: appointment.date,
-        appointmentTime: appointment.time || appointment.scheduledTime || '10:00 AM',
+        appointmentTime: formatTimeTo12Hour(appointment.time || appointment.scheduledTime) || '10:00 AM',
         status: 'completed',
-        notes: appointment.notes || 'Professional nursing services provided',
-        duration: '45 mins',
+        notes: appointment.completionNotes || appointment.nurseNotes || appointment.notes || 'Professional nursing services provided',
+        duration: appointment.duration || '1 hour',
+        hoursWorked: appointment.hoursWorked || 1,
         nurseId: appointment.nurseId || 'NURSE001',
-        nurseName: appointment.nurseName || 'Care Professional',
+        nurseName: resolveNurseName(appointment) || 'Care Professional',
         paymentMethod: 'Credit Card',
         isRecurring: false,
         totalSessions: 1
       };
 
-      console.log('🔥 GENERATING INVOICE FOR PATIENT APPOINTMENT');
+      // Update company info before generating
+      await InvoiceService.updateCompanyInfo();
+      
       const result = await InvoiceService.createInvoice(appointmentData);
       
       if (result.success) {
-        console.log('✅ INVOICE GENERATED SUCCESSFULLY');
-        
         // Close details modal and navigate to invoice display
         setDetailsModalVisible(false);
         setTimeout(() => {
           navigation.navigate('InvoiceDisplay', {
             invoiceData: result.invoice,
-            clientName: 'You'
+            clientName: appointmentData.clientName,
+            returnToAppointmentModal: true,
+            appointmentId: appointment.id
           });
         }, 300);
       } else {
@@ -109,95 +784,744 @@ export default function AppointmentsScreen({ navigation }) {
     setRefreshKey(prev => prev + 1);
   }, [appointments, shiftRequests]);
 
+  // Reset states when modal closes
+  useEffect(() => {
+    if (!detailsModalVisible && !recurringShiftDetailsModalVisible) {
+      // Use setTimeout to defer state updates and prevent UI freeze during modal close animation
+      const timer = setTimeout(() => {
+        setIsEditing(false);
+        setShowDatePicker(false);
+        setShowTimePicker(false);
+        setAppointmentInvoices([]);
+        setSelectedInvoicePreview(null);
+        setIsLoadingInvoices(false);
+      }, 300); // Wait for animation to complete
+      return () => clearTimeout(timer);
+    }
+  }, [detailsModalVisible, recurringShiftDetailsModalVisible]);
+
+  // Load invoices when selectedAppointment changes or modal opens
+  useEffect(() => {
+    const loadInvoicesForAppointment = async () => {
+      if (!selectedAppointment) {
+        return;
+      }
+
+      setIsLoadingInvoices(true);
+      try {
+        const isShiftLike = Boolean(
+          selectedAppointment?.isShiftRequest ||
+            selectedAppointment?.isShift ||
+            selectedAppointment?.clockByNurse ||
+            selectedAppointment?.nurseSchedule ||
+            String(selectedAppointment?.assignmentType || '').toLowerCase() === 'split-schedule'
+        );
+
+        const dateKey = (() => {
+          const raw =
+            selectedAppointment?.date ||
+            selectedAppointment?.appointmentDate ||
+            selectedAppointment?.startDate ||
+            selectedAppointment?.scheduledDate ||
+            selectedAppointment?.shiftDetails?.date ||
+            selectedAppointment?.shiftDetails?.startDate ||
+            selectedAppointment?.shift?.date ||
+            selectedAppointment?.shift?.startDate ||
+            selectedAppointment?.completedAt ||
+            selectedAppointment?.actualEndTime ||
+            null;
+          if (!raw) return null;
+          if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.trim())) return raw.trim();
+          const d = new Date(raw);
+          if (!Number.isFinite(d.getTime())) return null;
+          const yyyy = String(d.getFullYear());
+          const mm = String(d.getMonth() + 1).padStart(2, '0');
+          const dd = String(d.getDate()).padStart(2, '0');
+          return `${yyyy}-${mm}-${dd}`;
+        })();
+
+        const shiftId =
+          selectedAppointment?.shiftRequestId ||
+          selectedAppointment?.shiftId ||
+          selectedAppointment?.requestId ||
+          selectedAppointment?.assignmentId ||
+          selectedAppointment?.documentId ||
+          selectedAppointment?.id ||
+          selectedAppointment?._id ||
+          null;
+
+        const visitKey = shiftId && dateKey ? `${shiftId}:${dateKey}` : null;
+
+        const appointmentIdentifiers = [
+          selectedAppointment?.id,
+          selectedAppointment?.appointmentId,
+          selectedAppointment?._id,
+          selectedAppointment?.shiftId,
+          selectedAppointment?.shiftRequestId,
+          selectedAppointment?.requestId,
+          selectedAppointment?.assignmentId,
+          selectedAppointment?.documentId,
+          selectedAppointment?.relatedAppointmentId,
+          selectedAppointment?.relatedShiftId,
+          selectedAppointment?.originalShiftId,
+          selectedAppointment?.sourceShiftId,
+          selectedAppointment?.shift?.id,
+          selectedAppointment?.shift?._id,
+          selectedAppointment?.shiftDetails?.id,
+          selectedAppointment?.shiftDetails?._id,
+          visitKey,
+        ]
+          .filter((v) => v !== undefined && v !== null && String(v).trim() !== '')
+          .map((v) => String(v));
+
+        const normalizeDateValue = (value) => {
+          if (!value) return null;
+
+          // Firestore Timestamp
+          if (typeof value === 'object') {
+            if (typeof value.toDate === 'function') {
+              const date = value.toDate();
+              const ms = date instanceof Date ? date.getTime() : NaN;
+              return Number.isFinite(ms) ? ms : null;
+            }
+            if (typeof value.seconds === 'number') {
+              const ms = value.seconds * 1000 + (typeof value.nanoseconds === 'number' ? Math.floor(value.nanoseconds / 1e6) : 0);
+              return Number.isFinite(ms) ? ms : null;
+            }
+          }
+
+          // ISO string / date string
+          const ms = Date.parse(value);
+          return Number.isFinite(ms) ? ms : null;
+        };
+
+        const extractInvoiceSequence = (invoiceIdValue) => {
+          if (!invoiceIdValue || typeof invoiceIdValue !== 'string') return null;
+          const match = invoiceIdValue.match(/(\d{1,})\s*$/);
+          if (!match) return null;
+          const seq = parseInt(match[1], 10);
+          return Number.isFinite(seq) ? seq : null;
+        };
+
+        // Fetch fresh data directly from service (backend) to ensure status is up to date
+        // This mirrors the logic in AdminClientsScreen handleShowClientDetails
+        const allInvoices = await InvoiceService.getAllInvoices();
+
+        const matchingInvoices = allInvoices.filter((inv) => {
+          const invoiceIds = [
+            inv?.relatedAppointmentId,
+            inv?.appointmentId,
+            inv?.shiftRequestId,
+            inv?.shiftRequestID,
+            inv?.shiftId,
+            inv?.relatedShiftId,
+            inv?.visitKey,
+            inv?.appointmentKey,
+            inv?.sourceAppointmentId,
+            inv?.sourceShiftId,
+            inv?.originalShiftId,
+            inv?.firestoreId,
+            inv?.id,
+            inv?.metadata?.appointmentId,
+            inv?.metadata?.shiftRequestId,
+            inv?.meta?.appointmentId,
+            inv?.meta?.shiftRequestId,
+            inv?.paymentMetadata?.appointmentId,
+            inv?.paymentMetadata?.shiftRequestId,
+          ]
+            .filter((v) => v !== undefined && v !== null && String(v).trim() !== '')
+            .map((v) => String(v));
+
+          if (invoiceIds.length === 0) return false;
+          return invoiceIds.some((id) => appointmentIdentifiers.includes(id));
+        });
+
+        // Debug logging removed
+
+        const canCreateInvoiceFromClient = ['admin', 'superAdmin', 'nurse'].includes(String(user?.role || '').trim());
+
+        // Auto-backfill: only for staff roles (admin/nurse). Patients should never attempt
+        // client-side invoice generation; they should only view invoices already created.
+        if (canCreateInvoiceFromClient && activeTab === 'past' && isShiftLike && visitKey && matchingInvoices.length === 0) {
+          const lastAttempt = lastAutoInvoiceAttemptRef.current;
+          const now = Date.now();
+          const canAttempt = lastAttempt.key !== visitKey || now - (lastAttempt.at || 0) > 15000;
+
+          const clockMap = selectedAppointment?.clockByNurse;
+          const clockEntries =
+            clockMap && typeof clockMap === 'object'
+              ? Object.entries(clockMap)
+                  .filter(([, v]) => v && typeof v === 'object')
+                  .map(([key, entry]) => ({ key, entry }))
+              : [];
+
+          const isSplitSchedule =
+            String(selectedAppointment?.assignmentType || '').toLowerCase() === 'split-schedule' ||
+            (selectedAppointment?.nurseSchedule && typeof selectedAppointment.nurseSchedule === 'object') ||
+            clockEntries.length > 1;
+
+          const normalizeClockMs = (value) => {
+            if (!value) return null;
+
+            if (typeof value === 'number') {
+              return Number.isFinite(value) ? value : null;
+            }
+
+            // Firestore Timestamp
+            if (typeof value === 'object') {
+              if (typeof value.toDate === 'function') {
+                const d = value.toDate();
+                const ms = d instanceof Date ? d.getTime() : NaN;
+                return Number.isFinite(ms) ? ms : null;
+              }
+              if (typeof value.seconds === 'number') {
+                const ms = value.seconds * 1000 + (typeof value.nanoseconds === 'number' ? Math.floor(value.nanoseconds / 1e6) : 0);
+                return Number.isFinite(ms) ? ms : null;
+              }
+            }
+
+            // ISO string / date string
+            const ms = Date.parse(value);
+            return Number.isFinite(ms) ? ms : null;
+          };
+
+          const allClockedOut = (() => {
+            if (!isSplitSchedule) return false;
+            if (clockEntries.length < 2) return false;
+            return clockEntries.every(({ entry }) => {
+              const inTime = entry.lastClockInTime || entry.actualStartTime || entry.clockInTime || entry.startedAt;
+              const outTime = entry.lastClockOutTime || entry.actualEndTime || entry.clockOutTime || entry.completedAt;
+              if (!outTime) return false;
+              const inMs = normalizeClockMs(inTime);
+              const outMs = normalizeClockMs(outTime);
+              if (!Number.isFinite(outMs)) return false;
+              if (Number.isFinite(inMs)) return outMs > inMs;
+              return true;
+            });
+          })();
+
+          // Debug logging removed
+
+          if (canCreateInvoiceFromClient && canAttempt && isSplitSchedule && allClockedOut) {
+            lastAutoInvoiceAttemptRef.current = { key: visitKey, at: now };
+
+            const appointmentData = {
+              id: visitKey,
+              relatedAppointmentId: visitKey,
+              shiftRequestId: shiftId,
+              clientId: user?.id || 'patient-current',
+              clientName: selectedAppointment.patientName || user?.name || 'Valued Client',
+              clientEmail: selectedAppointment.patientEmail || user?.email || 'client@example.com',
+              clientPhone: selectedAppointment.patientPhone || user?.phone || selectedAppointment.phone || 'N/A',
+              clientAddress: selectedAppointment.address || user?.address || 'Address on file',
+              serviceName: selectedAppointment.service,
+              serviceType: selectedAppointment.service,
+              appointmentDate: dateKey || selectedAppointment.date,
+              appointmentTime: formatTimeTo12Hour(selectedAppointment.time || selectedAppointment.scheduledTime) || '10:00 AM',
+              status: 'completed',
+              notes:
+                selectedAppointment.completionNotes ||
+                selectedAppointment.nurseNotes ||
+                selectedAppointment.notes ||
+                'Professional nursing services provided',
+              duration: selectedAppointment.duration || '1 hour',
+              hoursWorked: selectedAppointment.hoursWorked || 1,
+              nurseId: selectedAppointment.nurseId || 'NURSE001',
+              nurseName: resolveNurseName(selectedAppointment) || 'Care Professional',
+              paymentMethod: 'Credit Card',
+              isRecurring: false,
+              totalSessions: 1,
+            };
+
+            try {
+              await InvoiceService.updateCompanyInfo();
+              const result = await InvoiceService.createInvoice(appointmentData);
+
+              // Debug logging removed
+
+              if (result?.success && result?.invoice) {
+                setAppointmentInvoices([result.invoice]);
+                setSelectedInvoicePreview(null);
+                return;
+              }
+            } catch (e) {
+              // Intentionally silent to avoid console noise
+            }
+          }
+        }
+
+        // Pick the latest invoice deterministically (handles Firestore Timestamp values and sequencing)
+        const sortedInvoices = matchingInvoices.sort((a, b) => {
+          const aMs = normalizeDateValue(a?.updatedAt) ?? normalizeDateValue(a?.createdAt) ?? normalizeDateValue(a?.issueDate) ?? normalizeDateValue(a?.date);
+          const bMs = normalizeDateValue(b?.updatedAt) ?? normalizeDateValue(b?.createdAt) ?? normalizeDateValue(b?.issueDate) ?? normalizeDateValue(b?.date);
+
+          if (aMs !== null && bMs !== null && aMs !== bMs) return bMs - aMs;
+          if (aMs !== null && bMs === null) return -1;
+          if (aMs === null && bMs !== null) return 1;
+
+          const aSeq = extractInvoiceSequence(a?.invoiceId || a?.invoiceNumber);
+          const bSeq = extractInvoiceSequence(b?.invoiceId || b?.invoiceNumber);
+          if (aSeq !== null && bSeq !== null && aSeq !== bSeq) return bSeq - aSeq;
+          if (aSeq !== null && bSeq === null) return -1;
+          if (aSeq === null && bSeq !== null) return 1;
+
+          return String(b?.invoiceId || '').localeCompare(String(a?.invoiceId || ''));
+        });
+
+        const primaryInvoice = sortedInvoices.length > 0 ? sortedInvoices[0] : null;
+        setAppointmentInvoices(primaryInvoice ? [primaryInvoice] : []);
+        setSelectedInvoicePreview(null); // No preview in modal
+      } catch (error) {
+        console.error('Error loading invoices for appointment:', error);
+        setAppointmentInvoices([]);
+        setSelectedInvoicePreview(null);
+      } finally {
+        setIsLoadingInvoices(false);
+      }
+    };
+
+    // Only load when a details modal is visible to ensure freshest data when viewing
+    if (detailsModalVisible || recurringShiftDetailsModalVisible) {
+      loadInvoicesForAppointment();
+    }
+  }, [activeTab, selectedAppointment, detailsModalVisible, recurringShiftDetailsModalVisible]);
+
   // Get patient ID first
   const patientId = user?.id;
   
   // Get real appointment data from context
   const upcomingAppointments = getUpcomingAppointments();
-  const pastAppointments = getAppointmentHistory();
+  // AppointmentContext history can include shift-request items as appointments.
+  // We merge in shiftRequests separately, so filter those out here to avoid duplicates.
+  const pastAppointments = (getAppointmentHistory() || []).filter((apt) => !apt?.isShiftRequest);
   
   // Get pending appointments that need patient action
   const pendingAppointments = React.useMemo(() => {
     return appointments.filter(appointment => {
       const matchesPatient = 
         appointment.patientId === patientId ||
+        String(appointment.patientId) === String(patientId) ||
         appointment.clientId === patientId ||
+        String(appointment.clientId) === String(patientId) ||
         appointment.userId === patientId ||
+        String(appointment.userId) === String(patientId) ||
         (appointment.patientName === user?.name) ||
-        (user?.role === 'patient' && !appointment.patientId); // Unassigned for testing
+        (appointment.patientName && user?.name && appointment.patientName.toLowerCase() === user.name.toLowerCase());
       
-      return appointment.status === 'pending' && matchesPatient;
+      // Show both pending (no nurse assigned) and assigned (nurse assigned but not accepted) appointments
+      return (appointment.status === 'pending' || appointment.status === 'assigned') && matchesPatient;
     });
   }, [appointments, patientId, user?.name, user?.role]);
   
   const approvedShifts = React.useMemo(() => {
-    console.log('🔍 PATIENT PORTAL: Filtering approved shifts...');
-    console.log('  Total shiftRequests:', shiftRequests?.length || 0);
-    console.log('  Patient ID:', patientId);
-    console.log('  User name:', user?.name);
+    const now = new Date();
+    now.setHours(0, 0, 0, 0); // Set to start of today for comparison
     
+    // Debug logging removed
+    
+    const hasClockedOutForAnyNurse = (shift) => {
+      const clockByNurse = shift?.clockByNurse;
+      if (!clockByNurse || typeof clockByNurse !== 'object') return false;
+      const entries = Object.values(clockByNurse);
+      if (!Array.isArray(entries) || entries.length === 0) return false;
+
+      return entries.some((entry) => {
+        if (!entry || typeof entry !== 'object') return false;
+        const inTime = entry.lastClockInTime || entry.clockInTime || entry.startedAt || entry.actualStartTime;
+        const outTime = entry.lastClockOutTime || entry.clockOutTime || entry.completedAt || entry.actualEndTime;
+        if (!inTime || !outTime) return false;
+        const inMs = Date.parse(inTime);
+        const outMs = Date.parse(outTime);
+        if (!Number.isFinite(outMs)) return false;
+        if (Number.isFinite(inMs)) return outMs > inMs;
+        return true;
+      });
+    };
+
     const filtered = shiftRequests.filter(shift => {
-      const isApproved = shift.status === 'approved';
-      
-      // Enhanced client matching logic
-      const matchesClient = 
-        shift.clientId === patientId ||                    // Exact match
-        shift.clientId === parseInt(patientId) ||          // String to number
-        String(shift.clientId) === patientId ||            // Number to string
-        shift.clientName === user?.name ||                 // Match by name
-        (shift.clientId === 1 && patientId === 'PATIENT001') || // Test mapping: clientId 1 = PATIENT001
-        (shift.clientId === '1' && patientId === 'PATIENT001') || // String version
-        (shift.clientId === 1 && user?.username === 'testpatient') || // Username mapping
-        (!shift.clientId && user?.role === 'patient') ||   // Unassigned shifts for patients
-        (user?.role === 'patient' && shift.clientName && shift.clientName.toLowerCase().includes('test')); // Test users get test shifts
-      
-      if (isApproved) {
-        console.log('  Shift:', shift.id, 'Status:', shift.status, 'ClientId:', shift.clientId, 'ClientName:', shift.clientName, 'Matches:', matchesClient);
+      // Exclude completed/clocked-out shifts from Upcoming - they belong in Past
+      if (shift.status === 'completed' || hasClockedOutForAnyNurse(shift)) {
+        return false;
       }
       
-      return isApproved && matchesClient;
+      // Keep patient-created requests under Pending.
+      // Only treat 'pending' as viewable in Upcoming when it is an admin-created recurring schedule.
+      const isApproved =
+        shift.status === 'approved' ||
+        shift.status === 'confirmed' ||
+        shift.status === 'in-progress' ||
+        shift.status === 'clocked-in' ||
+        shift.status === 'active' ||
+        Boolean(shift.recurringApproved) ||
+        Boolean(shift.approvedAt) ||
+        (shift.status === 'pending' && shift.adminRecurring === true);
+      
+      // Debug logging removed
+      
+      // Enhanced client matching logic
+      const matchesClient = matchesCurrentPatient(shift);
+      
+      const { startDate, endDate, isRecurringShift } = getShiftScheduleBounds(shift);
+
+      let dateValid = false;
+      try {
+        if (startDate) {
+          const startClone = new Date(startDate.getTime());
+          startClone.setHours(0, 0, 0, 0);
+          if (startClone >= now) {
+            dateValid = true;
+          }
+          // Debug logging removed
+        }
+
+        if (!dateValid && isRecurringShift) {
+          if (!endDate) {
+            dateValid = true; // Ongoing recurring schedule
+          } else {
+            const endClone = new Date(endDate.getTime());
+            endClone.setHours(0, 0, 0, 0);
+            dateValid = endClone >= now;
+            // Debug logging removed
+          }
+        }
+      } catch (e) {
+        // Debug logging removed
+        dateValid = false;
+      }
+      
+      return isApproved && matchesClient && dateValid;
     });
     
-    console.log('✅ PATIENT PORTAL: Filtered approved shifts:', filtered.length);
-    if (filtered.length > 0) {
-      console.log('  Approved shifts:', filtered.map(s => ({ id: s.id, service: s.service, clientId: s.clientId })));
-    }
+    // Debug logging removed
     
     return filtered;
-  }, [shiftRequests, patientId, user?.name, user?.username, user?.role]);
+  }, [shiftRequests, matchesCurrentPatient, user?.role]);
 
   // Get completed shifts assigned to this patient for past appointments
   const completedShifts = React.useMemo(() => {
+    // Helper to check if any nurse has clocked out
+    const hasClockedOut = (shift) => {
+      if (!shift?.clockByNurse || typeof shift.clockByNurse !== 'object') return false;
+
+      const entries = Object.values(shift.clockByNurse);
+      if (!Array.isArray(entries) || entries.length === 0) return false;
+
+      return entries.some((entry) => {
+        if (!entry || typeof entry !== 'object') return false;
+
+        const inTime = entry.lastClockInTime || entry.clockInTime || entry.startedAt || entry.actualStartTime;
+        const outTime = entry.lastClockOutTime || entry.clockOutTime || entry.completedAt || entry.actualEndTime;
+
+        if (!inTime || !outTime) return false;
+
+        const inMs = Date.parse(inTime);
+        const outMs = Date.parse(outTime);
+
+        if (!Number.isFinite(outMs)) return false;
+        if (Number.isFinite(inMs)) return outMs > inMs;
+        return true;
+      });
+    };
+    
     const filtered = shiftRequests.filter(shift => {
-      const isCompleted = shift.status === 'completed';
+      // Some flows keep status as 'approved' even after clock-out; treat clock-out as completion.
+      const isCompleted = shift.status === 'completed' || hasClockedOut(shift);
       
       // Match client
-      const matchesClient = 
-        shift.clientId === patientId ||                    // Exact match
-        shift.clientId === parseInt(patientId) ||          // String to number
-        String(shift.clientId) === patientId ||            // Number to string
-        shift.clientName === user?.name ||                 // Match by name
-        (shift.clientId === 1 && patientId === 'PATIENT001') || // Test mapping: clientId 1 = PATIENT001
-        (shift.clientId === '1' && patientId === 'PATIENT001') || // String version
-        (shift.clientId === 1 && user?.username === 'testpatient') || // Username mapping
-        (user?.role === 'patient' && shift.clientName && shift.clientName.toLowerCase().includes('test')); // Test users get test shifts
+      const matchesClient = matchesCurrentPatient(shift);
       
       return isCompleted && matchesClient;
     });
     
     return filtered;
-  }, [shiftRequests, patientId, user?.name, user?.username, user?.role]);
+  }, [shiftRequests, matchesCurrentPatient, user?.role]);
   
-  // Combine appointments with approved shifts for patient
-  const allUpcomingAppointments = [...upcomingAppointments, ...approvedShifts];
-  const allPastAppointments = [...pastAppointments, ...completedShifts];
+  // Filter out appointments that have corresponding active shifts to avoid duplicates
+  const filteredUpcomingAppointments = upcomingAppointments.filter(appointment => {
+    const toDateKey = (raw) => {
+      if (!raw) return null;
+      if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.trim())) return raw.trim();
+      const d = new Date(raw);
+      if (!Number.isFinite(d.getTime())) return null;
+      const yyyy = String(d.getFullYear());
+      const mm = String(d.getMonth() + 1).padStart(2, '0');
+      const dd = String(d.getDate()).padStart(2, '0');
+      return `${yyyy}-${mm}-${dd}`;
+    };
+
+    const appointmentShiftId =
+      appointment?.shiftRequestId ||
+      appointment?.shiftId ||
+      appointment?.requestId ||
+      appointment?.assignmentId ||
+      appointment?.documentId ||
+      null;
+
+    const appointmentDateKey = toDateKey(
+      appointment?.date || appointment?.appointmentDate || appointment?.startDate || appointment?.scheduledDate || null
+    );
+
+    // Check if there's an active shift for this appointment
+    const hasActiveShift = approvedShifts.some(shift => {
+      const isActive = shift.status === 'active' || shift.status === 'clocked-in' || shift.status === 'in-progress';
+      const sameService = shift.service === appointment.service;
+      const sameDate = shift.date === appointment.date;
+      return isActive && sameService && sameDate;
+    });
+
+    // If the visit has already been completed (shift completed/clocked-out), do NOT show
+    // the original appointment under Upcoming as well.
+    const hasCompletedShift = completedShifts.some((shift) => {
+      const shiftId = shift?.id || shift?.shiftRequestId || shift?.shiftId || shift?.requestId || shift?.assignmentId || shift?.documentId || null;
+      if (appointmentShiftId && shiftId && String(appointmentShiftId) === String(shiftId)) {
+        return true;
+      }
+
+      if (shift?.service !== appointment?.service) return false;
+
+      const schedule = getShiftScheduleBounds(shift);
+      const shiftDateKey = toDateKey(shift?.date || shift?.appointmentDate || shift?.startDate || schedule?.startDate || null);
+      if (!shiftDateKey || !appointmentDateKey) return false;
+      return shiftDateKey === appointmentDateKey;
+    });
+
+    // Also exclude appointments that already look completed locally.
+    const appointmentLooksCompleted =
+      String(appointment?.status || '').toLowerCase() === 'completed' ||
+      Boolean(appointment?.completedAt);
+
+    return !hasActiveShift && !hasCompletedShift && !appointmentLooksCompleted;
+  });
+
+  // Get pending shift requests (including recurring shifts) for the patient
+  const pendingShiftRequests = React.useMemo(() => {
+    return shiftRequests.filter(shift => {
+      const isPending = shift.status === 'pending';
+      const matchesClient = matchesCurrentPatient(shift);
+      
+      return isPending && matchesClient;
+    });
+  }, [shiftRequests, matchesCurrentPatient]);
+
+  // Combine filtered appointments with approved shifts for patient
+  const allUpcomingAppointments = [...filteredUpcomingAppointments, ...approvedShifts];
+  
+  // Deduplicate past appointments by service + date to avoid showing same shift twice
+  const allPastAppointmentsCombined = [...pastAppointments, ...completedShifts];
+  const allPastAppointments = allPastAppointmentsCombined.filter((item, index, self) => {
+    // Find the first occurrence with matching service and date
+    const firstIndex = self.findIndex(other => 
+      other.service === item.service && 
+      other.date === item.date &&
+      (other.startTime === item.startTime || other.time === item.time)
+    );
+    // Keep only if this is the first occurrence
+    return firstIndex === index;
+  });
+  
+  const allPendingItems = [...pendingAppointments, ...pendingShiftRequests];
   
   // Get displayed appointments based on active tab
   const displayedAppointments = activeTab === 'upcoming' 
     ? allUpcomingAppointments 
     : activeTab === 'pending' 
-    ? pendingAppointments 
+    ? allPendingItems 
     : allPastAppointments;
+
+  // Helper to check if appointment is recurring
+  const isRecurringAppointment = (appointment) => {
+    if (!appointment) return false;
+    return appointment.isRecurring || 
+           appointment.recurring || 
+           (appointment.serviceType && appointment.serviceType.includes('Recurring')) ||
+           (appointment.service && appointment.service.includes('Recurring'));
+  };
+
+  // Helper to format currency for invoices
+  const formatInvoiceCurrency = (amount, currency = 'USD', service = '') => {
+    const numericAmount = parseFloat(amount) || 0;
+    const symbol = currency === 'JMD' ? 'J$' : '$';
+    
+    // If it's a recurring service and amount is 0, show "Bi-weekly Billing"
+    if (numericAmount === 0 && service.toLowerCase().includes('recurring')) {
+      return 'Bi-weekly Billing';
+    }
+    
+    return `${symbol}${numericAmount.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
+  // Helper to format date for invoices
+  const formatInvoiceDate = (dateString) => {
+    if (!dateString) return 'N/A';
+    try {
+      const date = new Date(dateString);
+      if (isNaN(date.getTime())) return dateString;
+      return date.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric'
+      });
+    } catch (e) {
+      return dateString;
+    }
+  };
+
+  // Helper to get status styles for invoices
+  const getInvoiceStatusStyles = (status) => {
+    const s = status?.toLowerCase() || 'pending';
+    switch (s) {
+      case 'paid':
+        return { backgroundColor: COLORS.success + '15', textColor: COLORS.success, icon: 'check-circle' };
+      case 'overdue':
+        return { backgroundColor: COLORS.error + '15', textColor: COLORS.error, icon: 'alert-circle' };
+      case 'sent':
+      case 'pending':
+        return { backgroundColor: COLORS.warning + '15', textColor: COLORS.warning, icon: null };
+      default:
+        return { backgroundColor: COLORS.border + '30', textColor: COLORS.textLight, icon: 'file-document-outline' };
+    }
+  };
+
+  // Render the invoice preview component
+  const renderInvoicePreview = () => {
+    if (!selectedInvoicePreview) return null;
+
+    const invoice = selectedInvoicePreview;
+    const statusStyles = getInvoiceStatusStyles(invoice.status);
+    const items = invoice.items || [
+      { 
+        description: invoice.service || 'Nursing Services', 
+        quantity: 1, 
+        rate: invoice.total || invoice.amount || 0, 
+        amount: invoice.total || invoice.amount || 0 
+      }
+    ];
+
+    return (
+      <View style={styles.invoicePreviewContainer}>
+        <View style={styles.invoicePreviewHeader}>
+          <Text style={styles.invoicePreviewTitle}>Invoice Preview</Text>
+          <TouchableWeb
+            onPress={() => {
+              setDetailsModalVisible(false);
+              setTimeout(() => {
+                navigation.navigate('InvoiceDisplay', {
+                  invoiceData: invoice,
+                  clientName: user?.name,
+                  returnToAppointmentModal: true,
+                  appointmentId: selectedAppointment?.id
+                });
+              }, 300);
+            }}
+            style={styles.previewShareButton}
+            activeOpacity={0.7}
+          >
+            <MaterialCommunityIcons name="share-variant" size={16} color={COLORS.primary} />
+            <Text style={styles.previewShareText}>Share PDF</Text>
+          </TouchableWeb>
+        </View>
+
+        <View style={styles.invoicePreviewCard}>
+          {/* PDF Header */}
+          <View style={styles.pdfHeader}>
+            <View style={styles.pdfHeaderTop}>
+              <View style={styles.pdfCompanyInfo}>
+                <Image 
+                  source={require('../assets/Images/Nurses-logo.png')} 
+                  style={styles.nursesLogoHeader}
+                  resizeMode="cover"
+                />
+              </View>
+              <View style={styles.pdfInvoiceInfo}>
+                <Text style={styles.pdfInvoiceTitle}>INVOICE</Text>
+                <Text style={styles.pdfInvoiceNumber}>{invoice.invoiceId?.replace('CARE-INV', 'NUR-INV')}</Text>
+                <Text style={styles.pdfInvoiceDate}>Issue Date: {InvoiceService.formatDateForInvoice(invoice.issueDate || invoice.createdAt)}</Text>
+                <Text style={styles.pdfInvoiceDate}>Due Date: {InvoiceService.formatDateForInvoice(invoice.dueDate)}</Text>
+              </View>
+            </View>
+            <View style={styles.pdfBlueLine} />
+          </View>
+
+          {/* Bill To and Service Provider */}
+          <View style={styles.pdfClientSection}>
+            <View style={styles.pdfClientRow}>
+              <View style={styles.pdfBillTo}>
+                <Text style={styles.pdfSectionTitle}>BILL TO:</Text>
+                <Text style={styles.pdfClientName}>{user?.name || invoice.clientName}</Text>
+                <Text style={styles.pdfClientInfo}>{user?.email || invoice.clientEmail}</Text>
+                <Text style={styles.pdfClientInfo}>{user?.phone || invoice.clientPhone}</Text>
+                <Text style={styles.pdfClientInfo}>{user?.address || invoice.clientAddress}</Text>
+              </View>
+              <View style={styles.pdfServiceProvider}>
+                <Text style={styles.pdfSectionTitle}>SERVICE PROVIDED BY:</Text>
+                <Text style={styles.pdfProviderName}>{companyDetails.companyName}</Text>
+                <Text style={styles.pdfProviderInfo}>{companyDetails.address}</Text>
+                <Text style={styles.pdfProviderInfo}>Phone: {companyDetails.phone}</Text>
+                <Text style={styles.pdfProviderInfo}>Email: {companyDetails.email}</Text>
+              </View>
+            </View>
+          </View>
+
+          {/* Service Table */}
+          <View style={styles.pdfServiceSection}>
+            <View style={styles.pdfTable}>
+              <View style={styles.pdfTableHeader}>
+                <Text style={[styles.pdfTableHeaderText, { flex: 2 }]}>Description</Text>
+                <Text style={styles.pdfTableHeaderText}>Qty</Text>
+                <Text style={styles.pdfTableHeaderText}>Rate</Text>
+                <Text style={styles.pdfTableHeaderText}>Amount</Text>
+              </View>
+              {items.map((item, index) => (
+                <View key={index} style={styles.pdfTableRow}>
+                  <Text style={[styles.pdfTableCell, { flex: 2 }]}>{item.description}</Text>
+                  <Text style={styles.pdfTableCell}>{item.quantity || 1}</Text>
+                  <Text style={styles.pdfTableCell}>{InvoiceService.formatCurrency(item.rate || item.price || (invoice.total / (item.quantity || 1)))}</Text>
+                  <Text style={styles.pdfTableCellAmount}>{InvoiceService.formatCurrency(item.amount || item.total || invoice.total)}</Text>
+                </View>
+              ))}
+            </View>
+
+            {/* Bottom Section */}
+            <View style={styles.pdfBottomSection}>
+              <View style={styles.pdfPaymentSection}>
+                <Text style={styles.pdfPaymentTitle}>Payment Information</Text>
+                {paymentInfo.bankAccounts.map((account) => (
+                  <View key={account.id} style={styles.bankAccountGroup}>
+                    <Text style={styles.pdfPaymentInfo}>{account.bankName}</Text>
+                    {account.accountNumbers.map((accNum) => (
+                      <Text key={accNum.id} style={styles.pdfPaymentInfo}>
+                        {accNum.currency}: {accNum.number}
+                      </Text>
+                    ))}
+                  </View>
+                ))}
+              </View>
+
+              <View style={styles.pdfTotalsSection}>
+                <View style={styles.pdfTotalRow}>
+                  <Text style={styles.pdfTotalLabel}>Deposit:</Text>
+                  <Text style={styles.pdfTotalValue}>${invoice.total || invoice.amount}</Text>
+                </View>
+                <View style={styles.pdfBlueLine} />
+                <View style={styles.pdfFinalTotalRow}>
+                  <Text style={styles.pdfFinalTotalLabel}>Total Amount:</Text>
+                  <Text style={styles.pdfFinalTotalAmount}>${invoice.total || invoice.amount}</Text>
+                </View>
+                
+                {invoice.status === 'Paid' && (
+                  <View style={styles.paidStampContainer}>
+                    <View style={styles.paidStamp}>
+                      <Text style={styles.paidStampText}>PAID</Text>
+                    </View>
+                  </View>
+                )}
+              </View>
+            </View>
+          </View>
+        </View>
+      </View>
+    );
+  };
 
   const getStatusColor = (status) => {
     switch (status) {
@@ -238,24 +1562,19 @@ export default function AppointmentsScreen({ navigation }) {
                        (appointment.serviceType && appointment.serviceType.includes('Recurring')) ||
                        (appointment.service && appointment.service.includes('Recurring'));
     
-    console.log('🔍 Checking if appointment is non-recurring:', {
-      appointmentId: appointment.id,
-      isRecurring: appointment.isRecurring,
-      hasRecurringAppointments: appointment.hasRecurringAppointments,
-      userHasRecurring: user?.hasRecurringAppointments,
-      service: appointment.service,
-      finalIsRecurring: isRecurring,
-      shouldShowInvoice: !isRecurring
-    });
-    
     return !isRecurring;
   };
 
   // Handle appointment cancellation
   const handleCancelAppointment = (appointment) => {
+    const hasDeposit = appointment.depositPaid || appointment.depositAmount > 0;
+    const depositMessage = hasDeposit 
+      ? `\n\n⚠️ Note: Your deposit of J$${appointment.depositAmount?.toLocaleString() || '0'} is non-refundable.`
+      : '';
+    
     Alert.alert(
       'Cancel Appointment',
-      `Are you sure you want to cancel your appointment for ${appointment.service} on ${appointment.date}?`,
+      `Are you sure you want to cancel your appointment for ${appointment.service} on ${appointment.date}?${depositMessage}`,
       [
         { text: 'No', style: 'cancel' },
         { 
@@ -263,17 +1582,16 @@ export default function AppointmentsScreen({ navigation }) {
           style: 'destructive',
           onPress: async () => {
             try {
-              // In a real app, this would call an API to cancel the appointment
-              // For now, we'll just show a success message
+              await cancelAppointment(appointment.id, 'Cancelled by user');
               Alert.alert(
                 'Appointment Cancelled',
-                'Your appointment has been cancelled successfully. You can rebook at any time.',
+                'Your appointment has been cancelled successfully.',
                 [
-                  { text: 'Book New Appointment', onPress: () => navigation.navigate('Book') },
                   { text: 'OK' }
                 ]
               );
             } catch (error) {
+              console.error('Error cancelling appointment:', error);
               Alert.alert('Error', 'Failed to cancel appointment. Please try again.');
             }
           }
@@ -306,8 +1624,208 @@ export default function AppointmentsScreen({ navigation }) {
     );
   };
 
+  const canEditAppointment = (appointment) => {
+    const timestamp = appointment.createdAt || appointment.requestedAt;
+    if (!timestamp) return false;
+
+    let createdTime;
+    
+    // Handle Firestore Timestamp objects (which have seconds/nanoseconds or toDate())
+    if (timestamp.toDate && typeof timestamp.toDate === 'function') {
+      createdTime = timestamp.toDate().getTime();
+    } else if (timestamp.seconds) {
+      createdTime = timestamp.seconds * 1000;
+    } else if (timestamp instanceof Date) {
+      createdTime = timestamp.getTime();
+    } else {
+      // Handle string or number timestamps
+      createdTime = new Date(timestamp).getTime();
+    }
+
+    if (isNaN(createdTime)) return false;
+
+    const now = new Date().getTime();
+    const oneHour = 60 * 60 * 1000;
+    return (now - createdTime) < oneHour;
+  };
+
+  const handleEdit = (appointment) => {
+    setEditForm({
+      service: appointment.service,
+      date: appointment.date,
+      time: appointment.time || appointment.scheduledTime,
+      location: appointment.location || appointment.address || '',
+      notes: appointment.notes || '',
+    });
+    
+    // Initialize pickers
+    if (appointment.date) {
+      setPickerDate(new Date(appointment.date));
+    } else {
+      setPickerDate(new Date());
+    }
+    
+    // Initialize time picker
+    // Try to parse time string "10:00 AM" or similar
+    const timeStr = appointment.time || appointment.scheduledTime;
+    if (timeStr) {
+      const now = new Date();
+      try {
+        // Simple parsing for "HH:MM AM/PM"
+        const [time, period] = timeStr.split(' ');
+        if (time && period) {
+          let [hours, minutes] = time.split(':');
+          hours = parseInt(hours);
+          minutes = parseInt(minutes);
+          
+          if (period.toUpperCase() === 'PM' && hours < 12) hours += 12;
+          if (period.toUpperCase() === 'AM' && hours === 12) hours = 0;
+          
+          const date = new Date();
+          date.setHours(hours, minutes, 0, 0);
+          setPickerTime(date);
+        } else {
+          setPickerTime(new Date());
+        }
+      } catch (e) {
+        setPickerTime(new Date());
+      }
+    } else {
+      setPickerTime(new Date());
+    }
+
+    setIsEditing(true);
+    setSelectedAppointment(appointment);
+    setDetailsModalVisible(true);
+  };
+
+  const onDateChange = (event, date) => {
+    if (Platform.OS === 'android') {
+      setShowDatePicker(false);
+      if (event.type === 'set' && date) {
+        setPickerDate(date);
+        const formattedDate = date.toLocaleDateString('en-US', {
+          month: 'short',
+          day: '2-digit',
+          year: 'numeric'
+        });
+        setEditForm(prev => ({ ...prev, date: formattedDate }));
+      }
+    } else {
+      if (date) setPickerDate(date);
+    }
+  };
+
+  const onTimeChange = (event, time) => {
+    if (Platform.OS === 'android') {
+      setShowTimePicker(false);
+      if (event.type === 'set' && time) {
+        setPickerTime(time);
+        const formattedTime = time.toLocaleTimeString('en-US', { 
+          hour: 'numeric', 
+          minute: '2-digit',
+          hour12: true 
+        });
+        setEditForm(prev => ({ ...prev, time: formattedTime }));
+      }
+    } else {
+      if (time) setPickerTime(time);
+    }
+  };
+
+  const confirmDateSelection = () => {
+    const formattedDate = pickerDate.toLocaleDateString('en-US', {
+      month: 'short',
+      day: '2-digit',
+      year: 'numeric'
+    });
+    setEditForm(prev => ({ ...prev, date: formattedDate }));
+    setShowDatePicker(false);
+  };
+
+  const confirmTimeSelection = () => {
+    const formattedTime = pickerTime.toLocaleTimeString('en-US', { 
+      hour: 'numeric', 
+      minute: '2-digit',
+      hour12: true 
+    });
+    setEditForm(prev => ({ ...prev, time: formattedTime }));
+    setShowTimePicker(false);
+  };
+
+  const handleSaveEdit = async () => {
+    try {
+      if (!editForm.service || !editForm.date || !editForm.time) {
+        Alert.alert('Error', 'Please fill in all required fields');
+        return;
+      }
+
+      await ApiService.updateAppointment(selectedAppointment.id, editForm);
+      
+      await sendNotificationToUser(
+        'ADMIN001', 
+        'admin', 
+        'Appointment Updated', 
+        `${user?.name} updated their appointment for ${editForm.service} on ${editForm.date}.`,
+        {
+          type: 'appointment_update',
+          appointmentId: selectedAppointment.id,
+          patientId: user?.id
+        }
+      );
+
+      Alert.alert('Success', 'Appointment updated successfully');
+      setIsEditing(false);
+      setDetailsModalVisible(false);
+      refreshAppointments();
+    } catch (error) {
+      console.error('Error updating appointment:', error);
+      Alert.alert('Error', 'Failed to update appointment');
+    }
+  };
+
+  // Temporarily close the appointment details modal before showing the confidentiality agreement
+  const handleUnlockNurseNotes = () => {
+    if (!selectedAppointment) {
+      console.log('No selected appointment');
+      return;
+    }
+    
+    // Bypass payment and directly unlock notes
+    console.log('Unlocking nurse notes for appointment (bypassed payment):', selectedAppointment.id);
+    setNurseNotesUnlocked(prev => ({
+      ...prev,
+      [selectedAppointment.id]: true
+    }));
+  };
+
+  const handleCloseConfidentialityModal = (reopenDetails = true) => {
+    if (!showConfidentialityModal) {
+      console.log('Confidentiality modal not showing');
+      return;
+    }
+
+    console.log('Closing confidentiality modal, reopen details:', reopenDetails);
+    setShowConfidentialityModal(false);
+    
+    setTimeout(() => {
+      setConfidentialityAccepted(false);
+      setCurrentAppointmentForNotes(null);
+      
+      if (reopenDetails && shouldReopenDetailsAfterConfidentiality) {
+        console.log('Reopening details modal');
+        setTimeout(() => {
+          setDetailsModalVisible(true);
+          setShouldReopenDetailsAfterConfidentiality(false);
+        }, 100);
+      } else {
+        setShouldReopenDetailsAfterConfidentiality(false);
+      }
+    }, 100);
+  };
+
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       {/* Header */}
       <LinearGradient
         colors={GRADIENTS.header}
@@ -322,6 +1840,13 @@ export default function AppointmentsScreen({ navigation }) {
         </View>
       </LinearGradient>
 
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
+
       {/* Tab Selector */}
       <View style={styles.tabContainer}>
         <TouchableWeb
@@ -333,7 +1858,7 @@ export default function AppointmentsScreen({ navigation }) {
             <LinearGradient
               colors={GRADIENTS.header}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.activeTabGradient}
             >
               <Text style={styles.activeTabText}>
@@ -357,7 +1882,7 @@ export default function AppointmentsScreen({ navigation }) {
             <LinearGradient
               colors={GRADIENTS.header}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.activeTabGradient}
             >
               <Text style={styles.activeTabText}>
@@ -381,7 +1906,7 @@ export default function AppointmentsScreen({ navigation }) {
             <LinearGradient
               colors={GRADIENTS.header}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.activeTabGradient}
             >
               <Text style={styles.activeTabText}>
@@ -432,10 +1957,23 @@ export default function AppointmentsScreen({ navigation }) {
           </View>
         ) : (
           <View style={styles.appointmentsList}>
-            {displayedAppointments.map((appointment) => {
-              // Check if this is a shift or appointment
-              const isShift = appointment.startTime && appointment.endTime && appointment.status === 'approved';
-              const isConfirmed = appointment.status === 'confirmed' || appointment.status === 'approved' || appointment.status === 'nurse_assigned';
+            {displayedAppointments.map((appointment, index) => {
+              // Check if this is a shift or appointment - shifts have startTime/endTime and shift-related status
+              const isShift = Boolean(
+                appointment?.isShift ||
+                (appointment?.startTime && appointment?.endTime &&
+                  (
+                    appointment.status === 'approved' ||
+                    appointment.status === 'active' ||
+                    appointment.status === 'clocked-in' ||
+                    appointment.status === 'in-progress' ||
+                    appointment.status === 'pending' ||
+                    appointment.status === 'completed' ||
+                    appointment.nurseId ||
+                    appointment.nurseName
+                  ))
+              );
+              const isConfirmed = appointment.status === 'confirmed' || appointment.status === 'approved' || appointment.status === 'assigned' || appointment.status === 'scheduled';
               const isRecurringInstance = appointment.isRecurringInstance || false;
               const recurringInfo = isRecurringInstance ? {
                 instanceNumber: appointment.instanceNumber,
@@ -444,197 +1982,77 @@ export default function AppointmentsScreen({ navigation }) {
                 seriesId: appointment.seriesId
               } : null;
               
+              // Generate a unique key to prevent duplicates when mixing appointments and shifts
+              const uniqueKey = appointment.id ? `${appointment.id}-${isShift ? 'shift' : 'appt'}-${index}` : `item-${index}`;
+              
+              // Check if shift is clocked in/active
+              const isClockedIn = appointment.status === 'active' || appointment.status === 'clocked-in' || appointment.status === 'in-progress';
+              const cardStyle = isClockedIn ? [styles.appointmentCard, styles.clockedInCard] : styles.appointmentCard;
+
               return (
-              <View key={appointment.id} style={styles.appointmentCard}>
-                {/* Simplified card for confirmed appointments (including shifts), pending appointments, and past appointments */}
-                {((activeTab === 'upcoming' && isConfirmed) || activeTab === 'past' || activeTab === 'pending') ? (
-                  <View style={styles.compactHeader}>
-                    <MaterialCommunityIcons 
-                      name={activeTab === 'pending' ? "alert" : (isShift ? "briefcase-check" : (isRecurringInstance ? "calendar-repeat" : "medical-bag"))} 
-                      size={20} 
-                      color={activeTab === 'past' ? COLORS.textLight : activeTab === 'pending' ? COLORS.warning : (isShift ? COLORS.accent : COLORS.primary)} 
-                    />
-                    <View style={styles.compactInfo}>
-                      <Text style={styles.compactService}>
-                        {appointment.service}
-                        {isRecurringInstance && ` (${recurringInfo.instanceNumber}/${recurringInfo.totalInstances})`}
-                      </Text>
-                      {isRecurringInstance && (
-                        <Text style={styles.recurringBadge}>
-                          🔄 Recurring • {recurringInfo.frequency}
-                        </Text>
-                      )}
-                    </View>
+              <View key={uniqueKey} style={cardStyle}>
+                {/* Compact card for all appointments - matching admin style */}
+                <View style={styles.compactHeader}>
+                  <MaterialCommunityIcons 
+                    name={activeTab === 'pending' ? "alert" : (isShift ? "repeat" : (isRecurringInstance ? "calendar-refresh" : "medical-bag"))} 
+                    size={20} 
+                    color={activeTab === 'past' ? COLORS.textLight : activeTab === 'pending' ? COLORS.warning : (isClockedIn ? COLORS.success : (isShift ? COLORS.primary : COLORS.primary))} 
+                  />
+                  <View style={styles.compactInfo}>
+                    <Text style={styles.compactClient}>
+                      {appointment.service}
+                      {isRecurringInstance && ` (${recurringInfo.instanceNumber}/${recurringInfo.totalInstances})`}
+                    </Text>
+                  </View>
+                  
+                  {activeTab === 'pending' && canEditAppointment(appointment) && (
                     <TouchableWeb
-                      style={styles.detailsButton}
+                      style={[styles.detailsButton, { marginRight: 8 }]}
                       activeOpacity={0.7}
-                      onPress={() => {
-                        setSelectedAppointment(appointment);
-                        setDetailsModalVisible(true);
-                      }}
+                      onPress={() => handleEdit(appointment)}
                     >
                       <LinearGradient
-                        colors={GRADIENTS.header}
+                        colors={['#f59e0b', '#d97706']}
                         start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
+                        end={{ x: 0, y: 1 }}
                         style={styles.detailsButtonGradient}
                       >
-                        <Text style={styles.detailsButtonText}>
-                          {activeTab === 'pending' ? 'Details' : 'View'}
-                        </Text>
+                        <Text style={styles.detailsButtonText}>Edit</Text>
                       </LinearGradient>
                     </TouchableWeb>
-                  </View>
-                ) : (
-                  // Original detailed card for other statuses
-                  <>
-                <View style={styles.appointmentHeader}>
-                  <View style={styles.appointmentTitleRow}>
-                    <MaterialCommunityIcons 
-                      name={isShift ? "briefcase-check" : "medical-bag"} 
-                      size={24} 
-                      color={isShift ? COLORS.accent : COLORS.primary} 
-                    />
-                    <Text style={styles.appointmentService}>
-                      {isShift ? appointment.service : appointment.service}
-                      {isShift ? ' (Confirmed)' : ''}
-                    </Text>
-                  </View>
-                  <LinearGradient
-                    colors={
-                      isConfirmed
-                        ? ['#4CAF50', '#2E7D32']
-                        : [getStatusColor(appointment.status), getStatusColor(appointment.status)]
-                    }
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.statusBadgeGradient}
+                  )}
+
+                  <TouchableWeb
+                    style={styles.detailsButton}
+                    activeOpacity={0.7}
+                    onPress={() => {
+                      setSelectedAppointment(appointment);
+                      const isRecurring = appointment.isRecurring || appointment.isRecurringInstance || appointment.recurringScheduleId || appointment.recurringSchedule || appointment.recurringFrequency || appointment.seriesId || isShift;
+                      if (isRecurring || isShift) {
+                        setRecurringShiftDetailsModalVisible(true);
+                      } else {
+                        setDetailsModalVisible(true);
+                      }
+                    }}
                   >
-                    <Text style={styles.statusText}>
-                      {isConfirmed
-                        ? 'CONFIRMED' 
-                        : appointment.status.toUpperCase()
-                      }
-                    </Text>
-                  </LinearGradient>
+                    <LinearGradient
+                      colors={GRADIENTS.header}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 0, y: 1 }}
+                      style={styles.detailsButtonGradient}
+                    >
+                      <Text style={styles.detailsButtonText}>View</Text>
+                    </LinearGradient>
+                  </TouchableWeb>
                 </View>
-
-                <View style={styles.appointmentDetails}>
-                  <View style={styles.detailRow}>
-                    <MaterialCommunityIcons name="calendar" size={18} color={COLORS.textLight} />
-                    <Text style={styles.detailText}>
-                      {isShift 
-                        ? (appointment.date && !isNaN(new Date(appointment.date)) 
-                            ? new Date(appointment.date).toLocaleDateString('en-US', { 
-                                month: 'short', 
-                                day: 'numeric', 
-                                year: 'numeric' 
-                              })
-                            : appointment.date || appointment.preferredDate || 'N/A')
-                        : (appointment.date && !isNaN(new Date(appointment.date)) 
-                            ? new Date(appointment.date).toLocaleDateString('en-US', { 
-                                month: 'short', 
-                                day: 'numeric', 
-                                year: 'numeric' 
-                              })
-                            : appointment.date || appointment.preferredDate || 'N/A')
-                      }
-                    </Text>
-                  </View>
-                  <View style={styles.detailRow}>
-                    <MaterialCommunityIcons name="clock-outline" size={18} color={COLORS.textLight} />
-                    <Text style={styles.detailText}>
-                      {isShift 
-                        ? `${appointment.startTime} - ${appointment.endTime}`
-                        : (appointment.time || appointment.scheduledTime)
-                      }
-                    </Text>
-                  </View>
-                  <View style={styles.detailRow}>
-                    <MaterialCommunityIcons name="account-circle" size={18} color={COLORS.textLight} />
-                    <Text style={styles.detailText}>
-                      {appointment.nurseName || 'Assigned Nurse'}
-                    </Text>
-                  </View>
-                  {!isShift && (
-                    <View style={styles.detailRow}>
-                      <MaterialCommunityIcons name="map-marker" size={18} color={COLORS.textLight} />
-                      <Text style={styles.detailText}>
-                        {appointment.address || 'Home Visit'}
-                      </Text>
-                    </View>
-                  )}
-                </View>
-
-                <View style={styles.appointmentFooter}>
-                  {activeTab === 'upcoming' && !isShift && !isConfirmed && (
-                    <>
-                      <View style={styles.priceContainer}>
-                        <Text style={styles.priceLabel}>Service Fee:</Text>
-                        <Text style={styles.priceValue}>J$12,050</Text>
-                      </View>
-                      <View style={styles.actionButtons}>
-                        <TouchableWeb style={styles.actionButton} activeOpacity={0.7}>
-                          <MaterialCommunityIcons name="pencil" size={18} color={COLORS.primary} />
-                        </TouchableWeb>
-                        <TouchableWeb style={[styles.actionButton, styles.cancelButton]} activeOpacity={0.7}>
-                          <MaterialCommunityIcons name="close" size={18} color={COLORS.error} />
-                        </TouchableWeb>
-                      </View>
-                    </>
-                  )}
-                  {isShift && activeTab === 'upcoming' && (
-                    <View style={styles.priceContainer}>
-                      <Text style={styles.priceLabel}>Nurse:</Text>
-                      <Text style={styles.priceValue}>{appointment.nurseName}</Text>
-                    </View>
-                  )}
-                  {activeTab === 'pending' && !isShift && (
-                    <View style={styles.centeredActionButtons}>
-                      <TouchableWeb 
-                        style={styles.rescheduleButton} 
-                        activeOpacity={0.7}
-                        onPress={() => handleRescheduleAppointment(appointment)}
-                      >
-                        <MaterialCommunityIcons name="calendar-edit" size={18} color={COLORS.primary} />
-                        <Text style={styles.rescheduleButtonText}>Reschedule</Text>
-                      </TouchableWeb>
-                      <TouchableWeb 
-                        style={styles.cancelAppointmentButton} 
-                        activeOpacity={0.7}
-                        onPress={() => handleCancelAppointment(appointment)}
-                      >
-                        <MaterialCommunityIcons name="close-circle" size={18} color={COLORS.error} />
-                        <Text style={styles.cancelAppointmentButtonText}>Cancel</Text>
-                      </TouchableWeb>
-                    </View>
-                  )}
-                </View>
-                  </>
-                )}
+                {/* Patient cards now only show icon, title, and details button like admin cards */}
               </View>
             );
             })}
           </View>
         )}
 
-        {displayedAppointments.length > 0 && activeTab === 'upcoming' && (
-          <TouchableWeb
-            style={styles.addMoreButton}
-            onPress={() => navigation.navigate('Book')}
-            activeOpacity={0.8}
-          >
-            <LinearGradient
-              colors={GRADIENTS.accent}
-              start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
-              style={styles.addMoreGradient}
-            >
-              <MaterialCommunityIcons name="plus-circle" size={20} color={COLORS.white} />
-              <Text style={styles.addMoreText}>Book Another Appointment</Text>
-            </LinearGradient>
-          </TouchableWeb>
-        )}
+
 
         <View style={styles.bottomPadding} />
       </ScrollView>
@@ -646,8 +2064,16 @@ export default function AppointmentsScreen({ navigation }) {
         visible={detailsModalVisible}
         onRequestClose={() => setDetailsModalVisible(false)}
       >
-        <View style={styles.detailsModalOverlay}>
-          <View style={styles.detailsModalContainer}>
+        <TouchableWeb 
+          style={styles.detailsModalOverlay}
+          activeOpacity={1}
+          onPress={() => setDetailsModalVisible(false)}
+        >
+          <TouchableWeb 
+            style={styles.detailsModalContainer}
+            activeOpacity={1}
+            onPress={(e) => e.stopPropagation()}
+          >
             <View style={styles.detailsModalHeader}>
               <Text style={styles.detailsModalTitle}>Appointment Details</Text>
               <TouchableWeb onPress={() => setDetailsModalVisible(false)}>
@@ -655,67 +2081,575 @@ export default function AppointmentsScreen({ navigation }) {
               </TouchableWeb>
             </View>
 
-            <ScrollView style={styles.detailsModalContent} showsVerticalScrollIndicator={false}>
+            <ScrollView 
+              style={styles.detailsModalContent} 
+              showsVerticalScrollIndicator={false}
+              removeClippedSubviews={false}
+              scrollEventThrottle={16}
+            >
               {selectedAppointment && (
                 <>
                   <View style={styles.detailsSection}>
                     <Text style={styles.sectionTitle}>Service Information</Text>
                     <View style={styles.detailItem}>
-                      <MaterialCommunityIcons name="medical-bag" size={20} color={COLORS.primary} />
                       <View style={styles.detailContent}>
                         <Text style={styles.detailLabel}>Service Type</Text>
-                        <Text style={styles.detailValue}>{selectedAppointment.service || 'N/A'}</Text>
-                      </View>
-                    </View>
-                    <View style={styles.detailItem}>
-                      <MaterialCommunityIcons name="calendar" size={20} color={COLORS.primary} />
-                      <View style={styles.detailContent}>
-                        <Text style={styles.detailLabel}>Date</Text>
-                        <Text style={styles.detailValue}>
-                          {selectedAppointment.date && !isNaN(new Date(selectedAppointment.date))
-                            ? new Date(selectedAppointment.date).toLocaleDateString('en-US', { 
-                                month: 'short', 
-                                day: 'numeric', 
-                                year: 'numeric' 
-                              })
-                            : selectedAppointment.date || 'N/A'
-                          }
-                        </Text>
-                      </View>
-                    </View>
-                    <View style={styles.detailItem}>
-                      <MaterialCommunityIcons name="clock-outline" size={20} color={COLORS.primary} />
-                      <View style={styles.detailContent}>
-                        <Text style={styles.detailLabel}>Time</Text>
-                        <Text style={styles.detailValue}>
-                          {selectedAppointment.startTime && selectedAppointment.endTime
-                            ? `${selectedAppointment.startTime} - ${selectedAppointment.endTime}`
-                            : selectedAppointment.time || selectedAppointment.scheduledTime || 'N/A'}
-                        </Text>
-                      </View>
-                    </View>
-                    
-                    <View style={styles.invoiceSection}>
-                      <Text style={styles.invoiceLabel}>Invoice Management</Text>
-                      
-                      {/* Invoice History */}
-                      <View style={styles.invoiceHistorySection}>
-                        <Text style={styles.invoiceHistoryTitle}>Recent Invoices</Text>
-                        {selectedAppointment.status === 'completed' ? (
-                          <TouchableWeb
-                            style={styles.invoiceHistoryItem}
-                            onPress={() => handleViewInvoice(selectedAppointment)}
-                            activeOpacity={0.7}
+                        {isEditing ? (
+                          <ScrollView
+                            horizontal
+                            showsHorizontalScrollIndicator={false}
+                            style={{ marginTop: 8 }}
                           >
-                            <View style={styles.invoiceHistoryInfo}>
-                              <Text style={styles.invoiceHistoryId}>#{selectedAppointment.invoiceId || selectedAppointment.id?.slice(-6)}</Text>
-                              {selectedAppointment.status === 'completed' && (
-                                <Text style={styles.invoicePaidDate}>Paid: {selectedAppointment.date}</Text>
+                            {services.map((service) => (
+                              <TouchableWeb
+                                key={`${service.id}-${service.title}`}
+                                style={[
+                                  styles.serviceChip,
+                                  editForm.service === service.title && { overflow: 'hidden' },
+                                  { marginRight: 8, marginBottom: 4 }
+                                ]}
+                                onPress={() => setEditForm({ ...editForm, service: service.title })}
+                                activeOpacity={0.7}
+                              >
+                                {editForm.service === service.title ? (
+                                  <LinearGradient
+                                    colors={GRADIENTS.header}
+                                    start={{ x: 0, y: 0 }}
+                                    end={{ x: 0, y: 1 }}
+                                    style={styles.serviceChipGradient}
+                                  >
+                                    <Text
+                                      style={styles.serviceChipTextSelected}
+                                      numberOfLines={1}
+                                    >
+                                      {service.title}
+                                    </Text>
+                                  </LinearGradient>
+                                ) : (
+                                  <View style={styles.inactiveServiceChip}>
+                                    <Text
+                                      style={styles.serviceChipText}
+                                      numberOfLines={1}
+                                    >
+                                      {service.title}
+                                    </Text>
+                                  </View>
+                                )}
+                              </TouchableWeb>
+                            ))}
+                          </ScrollView>
+                        ) : (
+                          <Text style={styles.detailValue}>{selectedAppointment.service || 'N/A'}</Text>
+                        )}
+                      </View>
+                    </View>
+
+                    {isEditing ? (
+                      <View style={{ flexDirection: 'row', gap: 16, marginBottom: 20, marginLeft: 16 }}>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.detailLabel}>Date</Text>
+                          <TouchableWeb 
+                            style={styles.editInputContainer}
+                            onPress={() => setShowDatePicker(true)}
+                          >
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                              <MaterialCommunityIcons name="calendar" size={20} color={COLORS.primary} />
+                              <Text style={styles.editInput}>
+                                {editForm.date || 'Select Date'}
+                              </Text>
+                            </View>
+                          </TouchableWeb>
+                        </View>
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.detailLabel}>Time</Text>
+                          <TouchableWeb 
+                            style={styles.editInputContainer}
+                            onPress={() => setShowTimePicker(true)}
+                          >
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                              <MaterialCommunityIcons name="clock-outline" size={20} color={COLORS.primary} />
+                              <Text style={styles.editInput}>
+                                {editForm.time ? formatTimeTo12Hour(editForm.time) : 'Select Time'}
+                              </Text>
+                            </View>
+                          </TouchableWeb>
+                        </View>
+                      </View>
+                    ) : (
+                      <>
+                        {/* Date & Time Display - Enhanced Schedule (works even if isRecurring is missing) */}
+                        {(() => {
+                          const apt = selectedAppointment;
+                          const hasValue = (v) => v !== undefined && v !== null && String(v).trim() !== '';
+                          const hasDays =
+                            (Array.isArray(apt.daysOfWeek) && apt.daysOfWeek.length > 0) ||
+                            (Array.isArray(apt.selectedDays) && apt.selectedDays.length > 0);
+
+                          const showEnhancedSchedule =
+                            !!apt.isRecurring ||
+                            !!apt.isRecurringInstance ||
+                            hasValue(apt.startDate) ||
+                            hasValue(apt.endDate) ||
+                            hasValue(apt.startTime) ||
+                            hasValue(apt.endTime) ||
+                            hasValue(apt.recurringFrequency) ||
+                            hasValue(apt.recurringDuration) ||
+                            hasDays;
+
+                          if (!showEnhancedSchedule) {
+                            return (
+                              <>
+                                <View style={styles.detailItem}>
+                                  <View style={styles.detailContent}>
+                                    <Text style={styles.detailLabel}>Date</Text>
+                                    <Text style={styles.detailValue}>
+                                      {apt.date && !isNaN(new Date(apt.date))
+                                        ? new Date(apt.date).toLocaleDateString('en-US', {
+                                            month: 'short',
+                                            day: 'numeric',
+                                            year: 'numeric',
+                                          })
+                                        : apt.date || 'N/A'}
+                                    </Text>
+                                  </View>
+                                </View>
+                                <View style={styles.detailItem}>
+                                  <View style={styles.detailContent}>
+                                    <Text style={styles.detailLabel}>Time</Text>
+                                    <Text style={styles.detailValue}>
+                                      {formatTimeTo12Hour(apt.time || apt.scheduledTime) || 'N/A'}
+                                    </Text>
+                                  </View>
+                                </View>
+                              </>
+                            );
+                          }
+
+                          const startDateRaw = apt.startDate || apt.date;
+                          const endDateRaw = apt.endDate || (apt.isRecurring ? null : (apt.startDate || apt.date));
+                          const startTimeRaw = apt.startTime || apt.time || apt.scheduledTime;
+                          const endTimeRaw = apt.endTime;
+
+                          const isTrulyRecurring =
+                            !!apt.isRecurring ||
+                            !!apt.isRecurringInstance ||
+                            hasValue(apt.recurringFrequency) ||
+                            hasValue(apt.recurringDuration) ||
+                            hasDays;
+
+                          const formatDateMaybe = (raw) => {
+                            if (!raw) return null;
+                            
+                            // Handle "Feb 19, 2026" format from BookScreen
+                            if (typeof raw === 'string') {
+                              const match = raw.match(/^([A-Za-z]{3})\s+(\d{1,2}),?\s+(\d{4})$/);
+                              if (match) {
+                                const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+                                const monthIndex = monthNames.findIndex(m => m === match[1]);
+                                if (monthIndex !== -1) {
+                                  const d = new Date(parseInt(match[3]), monthIndex, parseInt(match[2]));
+                                  if (!isNaN(d.getTime())) {
+                                    return d.toLocaleDateString('en-US', {
+                                      month: 'short',
+                                      day: 'numeric',
+                                      year: 'numeric',
+                                    });
+                                  }
+                                }
+                              }
+                            }
+                            
+                            const d = new Date(raw);
+                            if (isNaN(d)) return String(raw);
+                            return d.toLocaleDateString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              year: 'numeric',
+                            });
+                          };
+
+                          return (
+                            <View style={styles.recurringDetailsContainer}>
+                              {/* Start Date & Time */}
+                              <View style={styles.recurringTimeContainer}>
+                                <View style={styles.recurringTimeItem}>
+                                  <MaterialCommunityIcons name="calendar-start" size={16} color={COLORS.success} />
+                                  <View style={styles.recurringTimeContent}>
+                                    <Text style={styles.recurringTimeLabel}>Start Date</Text>
+                                    <Text style={styles.recurringTimeValue}>
+                                      {formatDateMaybe(startDateRaw) || 'N/A'}
+                                    </Text>
+                                  </View>
+                                </View>
+                                <View style={styles.recurringTimeDivider} />
+                                <View style={styles.recurringTimeItem}>
+                                  <MaterialCommunityIcons name="clock-start" size={16} color={COLORS.primary} />
+                                  <View style={styles.recurringTimeContent}>
+                                    <Text style={styles.recurringTimeLabel}>Start Time</Text>
+                                    <Text style={styles.recurringTimeValue}>
+                                      {formatTimeTo12Hour(startTimeRaw) || 'N/A'}
+                                    </Text>
+                                  </View>
+                                </View>
+                              </View>
+
+                              {/* End Date & Time */}
+                              <View style={styles.recurringTimeContainer}>
+                                <View style={styles.recurringTimeItem}>
+                                  <MaterialCommunityIcons name="calendar-end" size={16} color={COLORS.error} />
+                                  <View style={styles.recurringTimeContent}>
+                                    <Text style={styles.recurringTimeLabel}>End Date</Text>
+                                    <Text style={styles.recurringTimeValue}>
+                                      {isTrulyRecurring
+                                        ? (formatDateMaybe(endDateRaw) || 'Ongoing')
+                                        : (formatDateMaybe(endDateRaw) || 'N/A')}
+                                    </Text>
+                                  </View>
+                                </View>
+                                <View style={styles.recurringTimeDivider} />
+                                <View style={styles.recurringTimeItem}>
+                                  <MaterialCommunityIcons name="clock-end" size={16} color={COLORS.primary} />
+                                  <View style={styles.recurringTimeContent}>
+                                    <Text style={styles.recurringTimeLabel}>End Time</Text>
+                                    <Text style={styles.recurringTimeValue}>
+                                      {formatTimeTo12Hour(endTimeRaw) || 'N/A'}
+                                    </Text>
+                                  </View>
+                                </View>
+                              </View>
+
+                              {/* Recurring Info */}
+                              {isTrulyRecurring && (apt.recurringFrequency || apt.recurringDuration) && (
+                                <View style={styles.recurringTimeContainer}>
+                                  <View style={styles.recurringTimeItem}>
+                                    <MaterialCommunityIcons name="calendar-refresh" size={16} color={COLORS.info} />
+                                    <View style={styles.recurringTimeContent}>
+                                      <Text style={styles.recurringTimeLabel}>Frequency</Text>
+                                      <Text style={styles.recurringTimeValue}>
+                                        {apt.recurringFrequency === 'weekly'
+                                          ? `Weekly for ${apt.recurringDuration} week${apt.recurringDuration > 1 ? 's' : ''}`
+                                          : apt.recurringFrequency === 'biweekly'
+                                          ? `Every 2 weeks for ${apt.recurringDuration} period${apt.recurringDuration > 1 ? 's' : ''}`
+                                          : 'Recurring'}
+                                      </Text>
+                                    </View>
+                                  </View>
+                                </View>
                               )}
                             </View>
-                            <View style={styles.invoiceHistoryRight}>
-                              <View style={[styles.invoiceHistoryStatus, { backgroundColor: '#4CAF50' }]}>
-                                <Text style={styles.invoiceHistoryStatusText}>Emailed</Text>
+                          );
+                        })()}
+                      </>
+                    )}
+                    
+                    {/* Requested/Preferred Nurse (Pending tab only) */}
+                    {selectedAppointment && activeTab === 'pending' && (isPendingLikeAppointment || Boolean(requestedNurseForModal)) && (
+                      <View style={styles.detailsSection}>
+                        <Text style={styles.sectionTitle}>Requested Nurse</Text>
+                        {requestedNurseForModal ? (
+                          <NurseInfoCard
+                            nurse={requestedNurseForModal}
+                            nursesRoster={nurses}
+                            style={styles.assignedNurseCard}
+                          />
+                        ) : (
+                          <Text style={styles.assignedNurseEmptyText}>
+                            Any nurse
+                          </Text>
+                        )}
+                      </View>
+                    )}
+
+                    {/* Assigned + Backup Nurses (Upcoming & Past only) */}
+                    {selectedAppointment && (activeTab === 'upcoming' || activeTab === 'past') && (
+                      <>
+                        {/* Assigned Nurse */}
+                        <View style={styles.detailsSection}>
+                          <Text style={styles.sectionTitle}>Assigned Nurse</Text>
+                          {assignedNurseForModal ? (
+                            <NurseInfoCard
+                              nurse={assignedNurseForModal}
+                              nursesRoster={nurses}
+                              style={styles.assignedNurseCard}
+                            />
+                          ) : (
+                            <Text style={styles.assignedNurseEmptyText}>
+                              No nurse assigned yet
+                            </Text>
+                          )}
+                        </View>
+
+                        {/* Backup Nurses (read-only) */}
+                        {(() => {
+                          const d = selectedAppointment || {};
+
+                          const normalizeId = (value) => {
+                            if (value === undefined || value === null) return null;
+                            const str = String(value).trim();
+                            return str ? str.toLowerCase() : null;
+                          };
+
+                          const normalizeCode = (value) => {
+                            if (value === undefined || value === null) return null;
+                            const str = String(value).trim();
+                            return str ? str.toUpperCase() : null;
+                          };
+
+                          const rawLists = [
+                            d.backupNurses,
+                            d.emergencyBackupNurses,
+                          ].filter((v) => Array.isArray(v));
+
+                          const merged = rawLists.flat();
+
+                          const coverageBuckets = [d.coverageRequests].filter((v) => Array.isArray(v));
+                          coverageBuckets.flat().forEach((req) => {
+                            if (!req || typeof req !== 'object') return;
+                            const maybe = []
+                              .concat(req.targetBackupNurseId || [])
+                              .concat(req.targetBackupNurseStaffCode || [])
+                              .concat(req.targetBackupNurse || [])
+                              .concat(req.backupNurseId || [])
+                              .concat(req.backupNurseCode || [])
+                              .concat(req.backupNurse || [])
+                              .concat(Array.isArray(req.backupNursesNotified) ? req.backupNursesNotified : []);
+
+                            maybe.forEach((value) => {
+                              if (!value) return;
+                              if (typeof value === 'object') {
+                                merged.push(value);
+                                return;
+                              }
+                              merged.push({ nurseId: value });
+                            });
+                          });
+
+                          const deduped = [];
+                          const seen = new Set();
+                          merged.forEach((entry) => {
+                            const id = normalizeId(entry?.nurseId || entry?.uid || entry?.id || entry?._id || entry);
+                            const code = normalizeCode(entry?.staffCode || entry?.nurseCode || entry?.code);
+                            const key = id ? `id:${id}` : code ? `code:${code}` : null;
+                            if (key) {
+                              if (seen.has(key)) return;
+                              seen.add(key);
+                            }
+                            deduped.push(entry);
+                          });
+
+                          return (
+                            <View style={styles.detailsSection}>
+                              <Text style={styles.sectionTitle}>Backup Nurses</Text>
+                              {deduped.length === 0 ? (
+                                <Text style={styles.assignedNurseEmptyText}>
+                                  No backup nurses added yet
+                                </Text>
+                              ) : (
+                                deduped.map((backup, index) => {
+                                  const backupId = backup?.nurseId || backup?.id || backup?._id;
+                                  const backupCode = backup?.staffCode || backup?.nurseCode || backup?.code;
+
+                                  let rosterData = null;
+                                  if (Array.isArray(nurses)) {
+                                    rosterData = nurses.find((n) => {
+                                      const nId = String(n?.id || n?._id || n?.uid || n?.nurseId || '').trim();
+                                      const nCode = String(n?.nurseCode || n?.staffCode || n?.code || '').trim().toUpperCase();
+                                      const wantId = backupId ? String(backupId).trim() : '';
+                                      const wantCode = backupCode ? String(backupCode).trim().toUpperCase() : '';
+                                      if (wantId && nId && nId === wantId) return true;
+                                      if (wantCode && nCode && nCode === wantCode) return true;
+                                      return false;
+                                    }) || null;
+                                  }
+
+                                  const mergedEntry = {
+                                    ...(typeof backup === 'object' ? backup : {}),
+                                    ...(rosterData || {}),
+                                  };
+
+                                  const sanitize = (val, isSpecialty = false) => {
+                                    if (!val) return null;
+                                    const str = String(val).trim();
+                                    const invalid = ['n/a', 'na', 'not provided', 'undefined', 'null', 'none'];
+                                    if (isSpecialty) invalid.push('backup nurse');
+                                    if (invalid.includes(str.toLowerCase())) return null;
+                                    return str;
+                                  };
+
+                                  const nurseForCard = {
+                                    ...mergedEntry,
+                                    fullName:
+                                      mergedEntry.fullName ||
+                                      mergedEntry.name ||
+                                      mergedEntry.nurseName ||
+                                      'Backup Nurse',
+                                    name:
+                                      mergedEntry.fullName ||
+                                      mergedEntry.name ||
+                                      mergedEntry.nurseName ||
+                                      'Backup Nurse',
+                                    specialty:
+                                      sanitize(mergedEntry.specialty, true) ||
+                                      sanitize(mergedEntry.role, true),
+                                    phone: sanitize(mergedEntry.phone),
+                                    email: sanitize(mergedEntry.email),
+                                  };
+
+                                  const key = backupId || backupCode || index;
+
+                                  return (
+                                    <View key={String(key)} style={{ marginTop: index === 0 ? 8 : 10 }}>
+                                      <NurseInfoCard
+                                        nurse={nurseForCard}
+                                        nursesRoster={nurses}
+                                        hideSpecialty
+                                        hideCode
+                                      />
+                                    </View>
+                                  );
+                                })
+                              )}
+                            </View>
+                          );
+                        })()}
+                      </>
+                    )}
+
+                    {/* Patient Notes (dropdown card w/ timestamp like other notes accordions) */}
+                    {selectedAppointment && isPendingLikeAppointment && (
+                      <View style={styles.detailsSection}>
+                        <Text style={styles.sectionTitle}>Patient Notes</Text>
+                        <NotesAccordionList
+                          showTime
+                          emptyText="No patient notes provided."
+                          items={(() => {
+                            const candidates = [
+                              selectedAppointment.patientNotes,
+                              selectedAppointment.bookingNotes,
+                              selectedAppointment.clientNotes,
+                              selectedAppointment.specialInstructions,
+                            ];
+                            const raw = candidates.find((value) => {
+                              if (value === null || value === undefined) return false;
+                              const valueText = String(value).trim();
+                              return Boolean(valueText);
+                            });
+                            const legacyNotes = (selectedAppointment.notes && String(selectedAppointment.notes).trim()) || '';
+                            const hasNurseNotes = Boolean(
+                              selectedAppointment?.nurseNotes && String(selectedAppointment.nurseNotes).trim().length
+                            );
+                            const text = raw === null || raw === undefined
+                              ? (!hasNurseNotes ? legacyNotes : '')
+                              : String(raw).trim();
+
+                            if (!text) {
+                              return [];
+                            }
+
+                            const dateCandidate =
+                              selectedAppointment.updatedAt ||
+                              selectedAppointment.createdAt ||
+                              selectedAppointment.date ||
+                              selectedAppointment.startDate ||
+                              null;
+
+                            return [
+                              {
+                                id: `patient-notes-${selectedAppointment.id || selectedAppointment.appointmentId || 'note'}`,
+                                date: dateCandidate,
+                                title: 'Patient Note',
+                                subtitle: 'From booking',
+                                body: text,
+                              },
+                            ];
+                          })()}
+                        />
+                      </View>
+                    )}
+
+                    {/* Always show invoices in Past tab (past/completed visits) */}
+                    {activeTab === 'past' && !['cancelled', 'canceled', 'declined', 'rejected'].includes(String(selectedAppointment?.status || '').toLowerCase()) && (
+                      <View style={styles.invoiceSection}>
+                        <Text style={styles.invoiceLabel}>Recent Invoices</Text>
+                        
+                        {isLoadingInvoices ? (
+                          <View style={styles.noInvoicesContainer}>
+                            <MaterialCommunityIcons name="progress-clock" size={32} color={COLORS.border} />
+                            <Text style={styles.invoiceLoadingText}>Loading invoices...</Text>
+                            <Text style={styles.noInvoicesSubText}>Please hold while we pull your latest billing info</Text>
+                          </View>
+                        ) : appointmentInvoices.length > 0 ? (
+                          <TouchableWeb
+                            style={styles.invoiceCard}
+                            onPress={() => {
+                              const invoice = appointmentInvoices[0];
+                              setDetailsModalVisible(false);
+                              setTimeout(() => {
+                                navigation.navigate('InvoiceDisplay', {
+                                  invoiceData: invoice,
+                                  clientName: user?.name,
+                                  returnToAppointmentModal: true,
+                                  appointmentId: selectedAppointment?.id
+                                });
+                              }, 300);
+                            }}
+                            activeOpacity={0.7}
+                          >
+                            <View style={styles.invoiceCardHeader}>
+                              <View style={styles.invoiceCardLeft}>
+                                <View style={styles.invoiceCardInfo}>
+                                  <Text style={styles.invoiceCardNumber}>
+                                    {appointmentInvoices[0].invoiceId?.replace('CARE-INV', 'NUR-INV') || '#Pending'}
+                                  </Text>
+                                </View>
+                              </View>
+                              <View style={styles.invoiceCardRight}>
+                                {(appointmentInvoices[0].status || 'Pending').toLowerCase() === 'pending' ? (
+                                  <View style={styles.invoiceStatusChip}>
+                                    <LinearGradient
+                                      colors={GRADIENTS.warning}
+                                      start={{ x: 0, y: 0 }}
+                                      end={{ x: 0, y: 1 }}
+                                      style={styles.invoiceStatusChipGradient}
+                                    >
+                                      <Text style={styles.invoiceStatusChipText}>Pending</Text>
+                                    </LinearGradient>
+                                  </View>
+                                ) : (appointmentInvoices[0].status || '').toLowerCase() === 'paid' ? (
+                                  <View style={styles.invoiceStatusChip}>
+                                    <LinearGradient
+                                      colors={['#10b981', '#059669']}
+                                      start={{ x: 0, y: 0 }}
+                                      end={{ x: 0, y: 1 }}
+                                      style={styles.invoiceStatusChipGradient}
+                                    >
+                                      <Text style={styles.invoiceStatusChipText}>Paid</Text>
+                                    </LinearGradient>
+                                  </View>
+                                ) : (appointmentInvoices[0].status || '').toLowerCase() === 'overdue' ? (
+                                  <View style={styles.invoiceStatusChip}>
+                                    <LinearGradient
+                                      colors={['#ef4444', '#dc2626']}
+                                      start={{ x: 0, y: 0 }}
+                                      end={{ x: 0, y: 1 }}
+                                      style={styles.invoiceStatusChipGradient}
+                                    >
+                                      <Text style={styles.invoiceStatusChipText}>Overdue</Text>
+                                    </LinearGradient>
+                                  </View>
+                                ) : (
+                                  <View style={[
+                                    styles.invoiceCardStatus,
+                                    { backgroundColor: getInvoiceStatusStyles(appointmentInvoices[0].status).backgroundColor }
+                                  ]}>
+                                    <Text style={[
+                                      styles.invoiceCardStatusText,
+                                      { color: getInvoiceStatusStyles(appointmentInvoices[0].status).textColor }
+                                    ]}>
+                                      {appointmentInvoices[0].status || 'Pending'}
+                                    </Text>
+                                  </View>
+                                )}
                               </View>
                             </View>
                           </TouchableWeb>
@@ -725,47 +2659,121 @@ export default function AppointmentsScreen({ navigation }) {
                             onPress={() => handleViewInvoice(selectedAppointment)}
                             activeOpacity={0.7}
                           >
-                            <MaterialCommunityIcons name="file-document-outline" size={40} color={COLORS.border} />
                             <Text style={styles.noInvoicesText}>No invoices generated yet</Text>
                             <Text style={styles.noInvoicesSubText}>Tap to generate and view invoice</Text>
                           </TouchableWeb>
                         )}
                       </View>
-                    </View>
+                    )}
                   </View>
 
-                  <View style={styles.detailsSection}>
-                    <Text style={styles.sectionTitle}>Nurse Information</Text>
-                    <View style={styles.detailItem}>
-                      <MaterialCommunityIcons name="account-circle" size={20} color={COLORS.primary} />
-                      <View style={styles.detailContent}>
-                        <Text style={styles.detailLabel}>Assigned Nurse</Text>
-                        <Text style={styles.detailValue}>
-                          {selectedAppointment.nurseName || 'To be assigned'}
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
 
-                  <View style={styles.detailsSection}>
-                    <Text style={styles.sectionTitle}>Location</Text>
-                    <View style={styles.detailItem}>
-                      <MaterialCommunityIcons name="map-marker" size={20} color={COLORS.primary} />
-                      <View style={styles.detailContent}>
-                        <Text style={styles.detailLabel}>Address</Text>
-                        <Text style={styles.detailValue}>
-                          {selectedAppointment.address || 'Home Visit'}
-                        </Text>
-                      </View>
-                    </View>
-                  </View>
 
-                  {selectedAppointment.notes && selectedAppointment.notes.trim() && (
+                  {/* Visit History for Recurring Shifts */}
+                  {selectedAppointment.visitHistory && selectedAppointment.visitHistory.length > 0 && (
                     <View style={styles.detailsSection}>
-                      <Text style={styles.sectionTitle}>Notes</Text>
-                      <Text style={styles.detailsNotes}>{selectedAppointment.notes}</Text>
+                      <Text style={styles.sectionTitle}>Visit History</Text>
+                      {selectedAppointment.visitHistory.map((visit, index) => (
+                        <View key={index} style={styles.visitHistoryItem}>
+                          <View style={styles.visitHistoryHeader}>
+                            <View style={styles.visitHistoryDateContainer}>
+                              <MaterialCommunityIcons name="calendar-check" size={16} color={COLORS.primary} />
+                              <Text style={styles.visitHistoryDate}>
+                                {new Date(visit.date).toLocaleDateString('en-US', {
+                                  month: 'short',
+                                  day: 'numeric',
+                                  year: 'numeric'
+                                })}
+                              </Text>
+                            </View>
+                            <View style={styles.visitHistoryStatusBadge}>
+                              <Text style={styles.visitHistoryStatusText}>Completed</Text>
+                            </View>
+                          </View>
+                        </View>
+                      ))}
                     </View>
                   )}
+
+                  {activeTab === 'past' && !['cancelled', 'canceled', 'declined', 'rejected'].includes(String(selectedAppointment?.status || '').toLowerCase()) && (
+                    <View style={styles.detailsSection}>
+                      {/* Nurse Card with Clock Details */}
+                      {(() => {
+                        const assignedNurse = resolveAssignedNurse(selectedAppointment);
+                        const clockInTime = selectedAppointment.actualStartTime || selectedAppointment.clockInTime || selectedAppointment.startedAt;
+                        const clockOutTime = selectedAppointment.actualEndTime || selectedAppointment.clockOutTime || selectedAppointment.completedAt;
+                        
+                        // Calculate total hours if both times are available
+                        const calculateHours = () => {
+                          if (!clockInTime || !clockOutTime) return 'N/A';
+                          const clockIn = new Date(clockInTime);
+                          const clockOut = new Date(clockOutTime);
+                          const diffMs = clockOut - clockIn;
+                          const diffHours = diffMs / (1000 * 60 * 60);
+                          return `${diffHours.toFixed(2)} hours`;
+                        };
+
+                        return null;
+                      })()}
+
+                      {nurseNotesUnlocked[selectedAppointment?.id] ? (
+                        <View
+                          style={styles.nurseNotesContainer}
+                          onStartShouldSetResponder={() => true}
+                        >
+                          <View style={styles.secureNotesHeader}>
+                            <View style={styles.secureNotesHeaderLeft}>
+                              <MaterialCommunityIcons name="shield-lock" size={16} color={COLORS.success} />
+                              <Text style={styles.secureNotesLabel}>Secured Medical Notes</Text>
+                            </View>
+                            <TouchableWeb
+                              onPress={() => {
+                                setNurseNotesUnlocked(prev => ({
+                                  ...prev,
+                                  [selectedAppointment.id]: false
+                                }));
+                              }}
+                              style={styles.secureNotesCloseButton}
+                              activeOpacity={0.6}
+                            >
+                              <MaterialCommunityIcons name="close" size={18} color={COLORS.textLight} />
+                            </TouchableWeb>
+                          </View>
+                          <Text style={styles.nurseNotesText}>
+                            {selectedAppointment.nurseNotes || selectedAppointment.completionNotes || 'No additional notes provided by the nurse.'}
+                          </Text>
+                          <View style={styles.screenshotWarning}>
+                            <Text style={styles.screenshotWarningText}>Screenshots are not permitted</Text>
+                          </View>
+                        </View>
+                      ) : (
+                        <View style={styles.lockedNotesCard}>
+                          <View style={styles.lockedNotesCardContent}>
+                            <MaterialCommunityIcons name="file-document-outline" size={24} color={COLORS.primary} />
+                            <View style={styles.lockedNotesCardTextContainer}>
+                              <Text style={styles.lockedNotesCardTitle}>Medical Notes</Text>
+                              <Text style={styles.lockedNotesCardSubtitle}>JMD $500 to unlock</Text>
+                            </View>
+                          </View>
+                          <TouchableWeb
+                            style={buttonStyles.warningPillButton}
+                            onPress={handleUnlockNurseNotes}
+                            activeOpacity={0.8}
+                          >
+                            <LinearGradient
+                              colors={GRADIENTS.warning}
+                              start={{ x: 0, y: 0 }}
+                              end={{ x: 0, y: 1 }}
+                              style={buttonStyles.warningPillGradient}
+                            >
+                              <Text style={buttonStyles.warningPillText}>Unlock</Text>
+                            </LinearGradient>
+                          </TouchableWeb>
+                        </View>
+                      )}
+                    </View>
+                  )}
+
                 </>
               )}
             </ScrollView>
@@ -773,102 +2781,499 @@ export default function AppointmentsScreen({ navigation }) {
               {/* Action Buttons for Pending Appointments */}
               {selectedAppointment && selectedAppointment.status === 'pending' && (
                 <View style={styles.modalFooter}>
-                  <TouchableWeb
-                    style={styles.modalCancelButton}
-                    onPress={() => {
-                      Alert.alert(
-                        'Cancel Appointment',
-                        'Are you sure you want to cancel this appointment?',
-                        [
-                          { text: 'No', style: 'cancel' },
-                          {
-                            text: 'Yes, Cancel',
-                            style: 'destructive',
-                            onPress: async () => {
-                              try {
-                                await cancelAppointment(selectedAppointment.id);
-                                
-                                // Send notification to admin about cancellation
-                                try {
-                                  await sendNotificationToUser(
-                                    'admin',
-                                    'Appointment Cancelled by Patient',
-                                    `${user?.name || 'A patient'} has cancelled their appointment for ${selectedAppointment.service} on ${selectedAppointment.date}`,
-                                    {
-                                      type: 'appointment_cancelled',
-                                      appointmentId: selectedAppointment.id,
-                                      patientId: user?.id,
-                                      patientName: user?.name,
-                                      service: selectedAppointment.service,
-                                      date: selectedAppointment.date,
-                                      time: selectedAppointment.time || selectedAppointment.scheduledTime
+                  {isEditing ? (
+                    <>
+                      <TouchableWeb
+                        style={styles.modalCancelButton}
+                        onPress={() => setIsEditing(false)}
+                      >
+                        <Text style={styles.modalCancelButtonText}>Cancel Edit</Text>
+                      </TouchableWeb>
+                      <TouchableWeb
+                        style={styles.modalRescheduleButton}
+                        onPress={handleSaveEdit}
+                      >
+                        <LinearGradient
+                          colors={GRADIENTS.header}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 0, y: 1 }}
+                          style={styles.modalRescheduleButtonGradient}
+                        >
+                          <MaterialCommunityIcons name="content-save" size={18} color={COLORS.white} />
+                          <Text style={styles.modalRescheduleButtonText}>Save Changes</Text>
+                        </LinearGradient>
+                      </TouchableWeb>
+                    </>
+                  ) : (
+                    <>
+                      <TouchableWeb
+                        style={styles.modalCancelButton}
+                        onPress={() => {
+                          Alert.alert(
+                            'Cancel Appointment',
+                            'Are you sure you want to cancel this appointment?',
+                            [
+                              { text: 'No', style: 'cancel' },
+                              {
+                                text: 'Yes, Cancel',
+                                style: 'destructive',
+                                onPress: async () => {
+                                  try {
+                                    await cancelAppointment(selectedAppointment.id);
+                                    
+                                    // Send notification to admin about cancellation
+                                    try {
+                                      await sendNotificationToUser(
+                                        'ADMIN001',
+                                        'admin',
+                                        'Appointment Cancelled by Patient',
+                                        `${user?.name || 'A patient'} has cancelled their appointment for ${selectedAppointment.service} on ${selectedAppointment.date}`,
+                                        {
+                                          type: 'appointment_cancelled',
+                                          appointmentId: selectedAppointment.id,
+                                          patientId: user?.id,
+                                          patientName: user?.name,
+                                          service: selectedAppointment.service,
+                                          date: selectedAppointment.date,
+                                          time: selectedAppointment.time || selectedAppointment.scheduledTime,
+                                          targetRole: 'admin'
+                                        }
+                                      );
+                                    } catch (notifError) {
+                                      console.error('Failed to send cancellation notification:', notifError);
                                     }
-                                  );
-                                  console.log('✅ Admin notified of appointment cancellation');
-                                } catch (notifError) {
-                                  console.error('Failed to send cancellation notification:', notifError);
+                                    
+                                    setDetailsModalVisible(false);
+                                    Alert.alert('Success', 'Appointment cancelled. Admin has been notified.');
+                                  } catch (error) {
+                                    Alert.alert('Error', 'Failed to cancel appointment');
+                                  }
                                 }
-                                
-                                setDetailsModalVisible(false);
-                                Alert.alert('Success', 'Appointment cancelled. Admin has been notified.');
-                              } catch (error) {
-                                Alert.alert('Error', 'Failed to cancel appointment');
                               }
-                            }
-                          }
-                        ]
-                      );
-                    }}
-                  >
-                    <Text style={styles.modalCancelButtonText}>Cancel</Text>
-                  </TouchableWeb>
+                            ]
+                          );
+                        }}
+                      >
+                        <Text style={styles.modalCancelButtonText}>Cancel</Text>
+                      </TouchableWeb>
 
-                  <TouchableWeb
-                    style={styles.modalRescheduleButton}
-                    onPress={async () => {
-                      setDetailsModalVisible(false);
-                      
-                      // Send notification to admin about reschedule request
-                      try {
-                        await sendNotificationToUser(
-                          'admin',
-                          'Appointment Reschedule Requested',
-                          `${user?.name || 'A patient'} is rescheduling their appointment for ${selectedAppointment.service} (originally ${selectedAppointment.date})`,
-                          {
-                            type: 'appointment_reschedule',
-                            appointmentId: selectedAppointment.id,
-                            patientId: user?.id,
-                            patientName: user?.name,
-                            service: selectedAppointment.service,
-                            originalDate: selectedAppointment.date,
-                            originalTime: selectedAppointment.time || selectedAppointment.scheduledTime
+                      <TouchableWeb
+                        style={styles.modalRescheduleButton}
+                        onPress={async () => {
+                          setDetailsModalVisible(false);
+                          
+                          // Send notification to admin about reschedule request
+                          try {
+                            await sendNotificationToUser(
+                              'ADMIN001',
+                              'admin',
+                              'Appointment Reschedule Requested',
+                              `${user?.name || 'A patient'} is rescheduling their appointment for ${selectedAppointment.service} (originally ${selectedAppointment.date})`,
+                              {
+                                type: 'appointment_reschedule',
+                                appointmentId: selectedAppointment.id,
+                                patientId: user?.id,
+                                patientName: user?.name,
+                                service: selectedAppointment.service,
+                                originalDate: selectedAppointment.date,
+                                originalTime: selectedAppointment.time || selectedAppointment.scheduledTime,
+                                targetRole: 'admin'
+                              }
+                            );
+                          } catch (notifError) {
+                            console.error('Failed to send reschedule notification:', notifError);
                           }
-                        );
-                        console.log('✅ Admin notified of reschedule request');
-                      } catch (notifError) {
-                        console.error('Failed to send reschedule notification:', notifError);
-                      }
-                      
-                      navigation.navigate('Book', { 
-                        rescheduleAppointment: selectedAppointment 
-                      });
-                    }}
-                  >
-                    <LinearGradient
-                      colors={GRADIENTS.header}
-                      start={{ x: 0, y: 0 }}
-                      end={{ x: 1, y: 1 }}
-                      style={styles.modalRescheduleButtonGradient}
-                    >
-                      <MaterialCommunityIcons name="calendar-edit" size={18} color={COLORS.white} />
-                      <Text style={styles.modalRescheduleButtonText}>Reschedule</Text>
-                    </LinearGradient>
-                  </TouchableWeb>
+                          
+                          navigation.navigate('Book', { 
+                            rescheduleAppointment: selectedAppointment 
+                          });
+                        }}
+                      >
+                        <LinearGradient
+                          colors={GRADIENTS.header}
+                          start={{ x: 0, y: 0 }}
+                          end={{ x: 0, y: 1 }}
+                          style={styles.modalRescheduleButtonGradient}
+                        >
+                          <MaterialCommunityIcons name="calendar-edit" size={18} color={COLORS.white} />
+                          <Text style={styles.modalRescheduleButtonText}>Reschedule</Text>
+                        </LinearGradient>
+                      </TouchableWeb>
+                    </>
+                  )}
                 </View>
               )}
+            </TouchableWeb>
+          </TouchableWeb>
+      </Modal>
+
+      {/* Date Picker */}
+      {showDatePicker && Platform.OS === 'ios' && (
+        <Modal 
+          transparent={true} 
+          animationType="fade"
+          visible={true}
+          onRequestClose={() => setShowDatePicker(false)}
+        >
+          <View style={styles.pickerOverlay}>
+            <View style={styles.pickerContainer}>
+              <View style={styles.pickerHeader}>
+                <Text style={styles.pickerTitle}>Select Date</Text>
+                <TouchableWeb
+                  onPress={() => setShowDatePicker(false)}
+                  style={styles.pickerCloseButton}
+                >
+                  <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
+                </TouchableWeb>
+              </View>
+              <DateTimePicker
+                value={pickerDate}
+                mode="date"
+                display="spinner"
+                onChange={onDateChange}
+                minimumDate={new Date()}
+                textColor={COLORS.text}
+              />
+              <TouchableWeb
+                style={styles.pickerConfirmButton}
+                onPress={confirmDateSelection}
+              >
+                <LinearGradient
+                  colors={GRADIENTS.header}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={styles.pickerConfirmGradient}
+                >
+                  <Text style={styles.pickerConfirmText}>Done</Text>
+                </LinearGradient>
+              </TouchableWeb>
             </View>
           </View>
         </Modal>
+      )}
+
+      {/* Android Date Picker */}
+      {showDatePicker && Platform.OS === 'android' && (
+        <DateTimePicker
+          value={pickerDate}
+          mode="date"
+          display="default"
+          onChange={onDateChange}
+          minimumDate={new Date()}
+        />
+      )}
+
+      {/* Time Picker */}
+      {showTimePicker && Platform.OS === 'ios' && (
+        <Modal 
+          transparent={true} 
+          animationType="fade"
+          visible={true}
+          onRequestClose={() => setShowTimePicker(false)}
+        >
+          <View style={styles.pickerOverlay}>
+            <View style={styles.pickerContainer}>
+              <View style={styles.pickerHeader}>
+                <Text style={styles.pickerTitle}>Select Time</Text>
+                <TouchableWeb
+                  onPress={() => setShowTimePicker(false)}
+                  style={styles.pickerCloseButton}
+                >
+                  <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
+                </TouchableWeb>
+              </View>
+              <DateTimePicker
+                value={pickerTime}
+                mode="time"
+                display="spinner"
+                onChange={onTimeChange}
+                textColor={COLORS.text}
+              />
+              <TouchableWeb
+                style={styles.pickerConfirmButton}
+                onPress={confirmTimeSelection}
+              >
+                <LinearGradient
+                  colors={GRADIENTS.header}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={styles.pickerConfirmGradient}
+                >
+                  <Text style={styles.pickerConfirmText}>Done</Text>
+                </LinearGradient>
+              </TouchableWeb>
+            </View>
+          </View>
+        </Modal>
+      )}
+
+      {/* Android Time Picker */}
+      {showTimePicker && Platform.OS === 'android' && (
+        <DateTimePicker
+          value={pickerTime}
+          mode="time"
+          display="default"
+          onChange={onTimeChange}
+        />
+      )}
+
+      {/* Confidentiality Agreement Modal */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={showConfidentialityModal}
+        presentationStyle="overFullScreen"
+        onRequestClose={handleCloseConfidentialityModal}
+      >
+        <View style={styles.detailsModalOverlay}>
+          <TouchableWeb 
+            style={styles.modalOverlayTouchable}
+            activeOpacity={1}
+            onPress={handleCloseConfidentialityModal}
+          />
+          <View style={styles.detailsModalContainer}>
+            <View style={styles.detailsModalHeader}>
+              <Text style={styles.detailsModalTitle}>Confidentiality Agreement</Text>
+              <TouchableWeb onPress={handleCloseConfidentialityModal}>
+                <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
+              </TouchableWeb>
+            </View>
+
+            <ScrollView 
+              style={styles.detailsModalContent} 
+              showsVerticalScrollIndicator={false}
+              nestedScrollEnabled={true}
+              removeClippedSubviews={false}
+              scrollEventThrottle={16}
+            >
+              <View style={styles.confidentialityContent}>
+                <View style={styles.confidentialityIconContainer}>
+                  <MaterialCommunityIcons name="shield-lock-outline" size={60} color={COLORS.primary} />
+                </View>
+
+                <Text style={styles.confidentialityTitle}>Medical Information Confidentiality</Text>
+                
+                <Text style={styles.confidentialityText}>
+                  By accessing the nurse's professional notes, you acknowledge and agree to the following terms:
+                </Text>
+
+                <View style={styles.confidentialityTerms}>
+                  <View style={styles.termItem}>
+                    <MaterialCommunityIcons name="circle-small" size={20} color={COLORS.text} />
+                    <Text style={styles.termText}>
+                      The information contained in these notes is confidential medical information intended solely for your personal health record.
+                    </Text>
+                  </View>
+
+                  <View style={styles.termItem}>
+                    <MaterialCommunityIcons name="circle-small" size={20} color={COLORS.text} />
+                    <Text style={styles.termText}>
+                      You will not share, copy, reproduce, or distribute this information to any third party without proper authorization.
+                    </Text>
+                  </View>
+
+                  <View style={styles.termItem}>
+                    <MaterialCommunityIcons name="circle-small" size={20} color={COLORS.text} />
+                    <Text style={styles.termText}>
+                      Screenshots and screen recordings of this information are strictly prohibited and may violate privacy laws.
+                    </Text>
+                  </View>
+
+                  <View style={styles.termItem}>
+                    <MaterialCommunityIcons name="circle-small" size={20} color={COLORS.text} />
+                    <Text style={styles.termText}>
+                      This information is subject to healthcare privacy regulations and professional nursing standards.
+                    </Text>
+                  </View>
+
+                  <View style={styles.termItem}>
+                    <MaterialCommunityIcons name="circle-small" size={20} color={COLORS.text} />
+                    <Text style={styles.termText}>
+                      A non-refundable access fee of JMD $500 applies to unlock these professional notes.
+                    </Text>
+                  </View>
+                </View>
+
+                <TouchableWeb
+                  style={styles.confidentialityCheckbox}
+                  onPress={() => setConfidentialityAccepted(!confidentialityAccepted)}
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.checkbox, confidentialityAccepted && styles.checkboxChecked]}>
+                    {confidentialityAccepted && (
+                      <MaterialCommunityIcons name="check" size={18} color={COLORS.white} />
+                    )}
+                  </View>
+                  <Text style={styles.checkboxLabel}>
+                    I accept the terms and conditions of this confidentiality agreement
+                  </Text>
+                </TouchableWeb>
+              </View>
+            </ScrollView>
+
+            <View style={styles.modalFooter}>
+              <TouchableWeb
+                style={styles.modalCancelButton}
+                onPress={() => handleCloseConfidentialityModal()}
+              >
+                <Text style={styles.modalCancelButtonText}>Cancel</Text>
+              </TouchableWeb>
+              <TouchableWeb
+                style={[styles.modalRescheduleButton, !confidentialityAccepted && styles.buttonDisabled]}
+                disabled={!confidentialityAccepted}
+                onPress={async () => {
+                  if (!confidentialityAccepted) {
+                    Alert.alert('Agreement Required', 'Please accept the confidentiality agreement to proceed.');
+                    return;
+                  }
+
+                  Alert.alert(
+                    'Confirm Payment',
+                    'Pay JMD $500 to unlock nurse notes for this visit?',
+                    [
+                      { text: 'Cancel', style: 'cancel' },
+                      {
+                        text: 'Pay Now',
+                        onPress: async () => {
+                          // TEMPORARILY DISABLED - Fygaro payment
+                          Alert.alert('Payment Temporarily Disabled', 'Online payment processing is currently being updated. Please contact us for alternative payment arrangements.');
+                          
+                          /* DISABLED CODE - Original payment flow
+                          try {
+                            const paymentResult = await FygaroPaymentService.processNurseNotesPayment({
+                              appointmentId: currentAppointmentForNotes.id,
+                              patientId: user?.id,
+                              patientName: user?.name,
+                              patientEmail: user?.email,
+                              patientPhone: user?.phone,
+                              amount: 500,
+                            });
+
+                            if (paymentResult.success) {
+                              // Open payment URL in browser or webview
+                              handleCloseConfidentialityModal();
+                              
+                              // For web, open in new tab
+                              if (Platform.OS === 'web') {
+                                window.open(paymentResult.paymentUrl, '_blank');
+                              } else {
+                                // For mobile, navigate to payment webview
+                                navigation.navigate('PaymentWebview', {
+                                  paymentUrl: paymentResult.paymentUrl,
+                                  sessionId: paymentResult.sessionId,
+                                  transactionId: paymentResult.transactionId,
+                                  appointmentId: currentAppointmentForNotes.id,
+                                  onSuccess: async () => {
+                                    setNurseNotesUnlocked(prev => ({
+                                      ...prev,
+                                      [currentAppointmentForNotes.id]: true
+                                    }));
+                                    
+                                    // Notify admin about successful payment
+                                    try {
+                                      await sendNotificationToUser(
+                                        'ADMIN001',
+                                        'admin',
+                                        'Nurse Notes Payment Received',
+                                        `${user?.name} paid JMD $500 to unlock nurse notes for appointment ${currentAppointmentForNotes.id}`,
+                                        {
+                                          type: 'payment_success',
+                                          appointmentId: currentAppointmentForNotes.id,
+                                          patientId: user?.id,
+                                          patientName: user?.name,
+                                          amount: 500,
+                                          currency: 'JMD',
+                                          transactionId: paymentResult.transactionId,
+                                          targetRole: 'admin'
+                                        }
+                                      );
+                                    } catch (notifError) {
+                                      console.error('Failed to notify admin:', notifError);
+                                    }
+                                    
+                                    Alert.alert(
+                                      'Success',
+                                      'Payment successful! You now have access to the nurse notes.',
+                                      [{ text: 'OK' }]
+                                    );
+                                  }
+                                });
+                              }
+                            } else {
+                              Alert.alert(
+                                'Payment Error',
+                                paymentResult.error || 'Failed to initialize payment. Please try again.'
+                              );
+                            }
+                          } catch (error) {
+                            console.error('Payment Error:', error);
+                            Alert.alert(
+                              'Payment Error',
+                              'An error occurred while processing your payment. Please try again.'
+                            );
+                          }
+                          */ // End of DISABLED payment code
+                        },
+                      },
+                    ],
+                  );
+                }}
+              >
+                <LinearGradient
+                  colors={confidentialityAccepted ? ['#10b981', '#059669'] : ['#ccc', '#999']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={styles.modalRescheduleButtonGradient}
+                >
+                  <MaterialCommunityIcons name="cash" size={18} color={COLORS.white} />
+                  <Text style={styles.modalRescheduleButtonText}>Pay JMD $500</Text>
+                </LinearGradient>
+              </TouchableWeb>
+            </View>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Recurring Shift Details Modal */}
+      <RecurringShiftDetailsModal
+        visible={recurringShiftDetailsModalVisible}
+        onClose={() => setRecurringShiftDetailsModalVisible(false)}
+        shift={selectedAppointment || {}}
+        nurses={nurses || []}
+        contextType="patient"
+        navigation={navigation}
+        showPatientPostVisitSections={
+          activeTab === 'past' &&
+          !['cancelled', 'canceled', 'declined', 'rejected'].includes(String(selectedAppointment?.status || '').toLowerCase())
+        }
+        patientInvoices={appointmentInvoices}
+        patientIsLoadingInvoices={isLoadingInvoices}
+        onOpenPatientInvoice={(invoice) => {
+          if (!invoice) return;
+          setRecurringShiftDetailsModalVisible(false);
+          setTimeout(() => {
+            navigation.navigate('InvoiceDisplay', {
+              invoiceData: invoice,
+              clientName: user?.name,
+              returnToAppointmentModal: true,
+              appointmentId: selectedAppointment?.id,
+            });
+          }, 300);
+        }}
+        medicalNotesUnlocked={Boolean(nurseNotesUnlocked[selectedAppointment?.id])}
+        onUnlockMedicalNotes={handleUnlockNurseNotes}
+        onLockMedicalNotes={() => {
+          if (!selectedAppointment?.id) return;
+          setNurseNotesUnlocked((prev) => ({
+            ...prev,
+            [selectedAppointment.id]: false,
+          }));
+        }}
+        onSuccess={() => {
+          setRecurringShiftDetailsModalVisible(false);
+          refreshAppointments();
+        }}
+      />
       </SafeAreaView>
     );
   }
@@ -877,6 +3282,15 @@ export default function AppointmentsScreen({ navigation }) {
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
   },
   header: {
     paddingHorizontal: 20,
@@ -977,6 +3391,11 @@ export default function AppointmentsScreen({ navigation }) {
     shadowOpacity: 0.05,
     shadowRadius: 4,
     elevation: 2,
+  },
+  clockedInCard: {
+    backgroundColor: COLORS.success + '10',
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.success,
   },
   appointmentHeader: {
     flexDirection: 'row',
@@ -1168,19 +3587,27 @@ export default function AppointmentsScreen({ navigation }) {
     height: 24,
   },
   detailsButton: {
-    borderRadius: 8,
+    borderRadius: 20,
     overflow: 'hidden',
+    shadowColor: COLORS.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
   },
   detailsButtonGradient: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    gap: 4,
   },
   detailsButtonText: {
-    fontSize: 11,
-    fontFamily: 'Poppins_600SemiBold',
     color: COLORS.white,
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
   },
   invoiceButton: {
     flexDirection: 'row',
@@ -1242,10 +3669,15 @@ export default function AppointmentsScreen({ navigation }) {
     flex: 1,
     marginLeft: 8,
   },
-  compactService: {
+  compactClient: {
     fontSize: 14,
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.text,
+  },
+  compactService: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textLight,
   },
   recurringBadge: {
     fontSize: 11,
@@ -1254,10 +3686,33 @@ export default function AppointmentsScreen({ navigation }) {
     marginTop: 2,
   },
   compactDate: {
-    fontSize: 12,
-    fontFamily: 'Poppins_400Regular',
+    fontSize: 11,
+    fontFamily: 'Poppins_500Medium',
     color: COLORS.textLight,
     marginTop: 2,
+  },
+  detailsButton: {
+    borderRadius: 20,
+    overflow: 'hidden',
+    shadowColor: COLORS.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  detailsButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    gap: 4,
+  },
+  detailsButtonText: {
+    color: COLORS.white,
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
   },
   confirmedButton: {
     borderRadius: 8,
@@ -1282,12 +3737,19 @@ export default function AppointmentsScreen({ navigation }) {
     alignItems: 'center',
     padding: 20,
   },
+  modalOverlayTouchable: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+  },
   detailsModalContainer: {
     backgroundColor: COLORS.white,
     borderRadius: 20,
     width: '100%',
     maxWidth: 380,
-    maxHeight: '85%',
+    maxHeight: Platform.OS === 'android' ? '93%' : '85%',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.25,
@@ -1314,6 +3776,104 @@ export default function AppointmentsScreen({ navigation }) {
   },
   detailsSection: {
     marginBottom: 32,
+  },
+  nurseCompletionCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    padding: 16,
+    marginBottom: 20,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  nurseCompletionHeader: {
+    marginBottom: 12,
+  },
+  nurseInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  nurseCompletionPhoto: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+  },
+  nurseCompletionPhotoPlaceholder: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: COLORS.backgroundLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  nurseCompletionInfo: {
+    flex: 1,
+    marginLeft: 12,
+  },
+  nurseCompletionName: {
+    fontSize: 16,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+    marginBottom: 2,
+  },
+  nurseCompletionCode: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+    fontFamily: 'Poppins_400Regular',
+  },
+  clockCompletionContainer: {
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    paddingTop: 12,
+  },
+  clockCompletionRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  clockCompletionItem: {
+    flex: 1,
+    alignItems: 'center',
+    paddingVertical: 8,
+    backgroundColor: COLORS.backgroundLight,
+    borderRadius: 8,
+    marginHorizontal: 4,
+  },
+  clockCompletionLabel: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+    fontFamily: 'Poppins_400Regular',
+    marginTop: 4,
+    marginBottom: 2,
+  },
+  clockCompletionValue: {
+    fontSize: 14,
+    color: COLORS.text,
+    fontFamily: 'Poppins_600SemiBold',
+  },
+  totalCompletionHoursRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.accent + '10',
+    padding: 8,
+    borderRadius: 8,
+  },
+  totalCompletionHoursLabel: {
+    fontSize: 14,
+    color: COLORS.text,
+    fontFamily: 'Poppins_500Medium',
+    marginLeft: 6,
+    marginRight: 6,
+  },
+  totalCompletionHoursValue: {
+    fontSize: 14,
+    color: COLORS.accent,
+    fontFamily: 'Poppins_700Bold',
   },
   sectionTitle: {
     fontSize: 16,
@@ -1350,6 +3910,51 @@ export default function AppointmentsScreen({ navigation }) {
     lineHeight: 22,
     marginTop: 8,
   },
+  assignedNurseCard: {
+    marginTop: 4,
+  },
+  assignedNurseEmptyText: {
+    fontSize: 13,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textLight,
+  },
+  recurringDetailsContainer: {
+    marginBottom: 12,
+  },
+  recurringTimeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.background,
+    borderRadius: 10,
+    padding: SPACING.sm,
+    marginBottom: SPACING.xs,
+  },
+  recurringTimeItem: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  recurringTimeContent: {
+    flex: 1,
+  },
+  recurringTimeLabel: {
+    fontSize: 10,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.textLight,
+    marginBottom: 2,
+  },
+  recurringTimeValue: {
+    fontSize: 13,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+  },
+  recurringTimeDivider: {
+    width: 1,
+    height: 30,
+    backgroundColor: COLORS.border,
+    marginHorizontal: SPACING.sm,
+  },
   // Invoice Section Styles
   invoiceSection: {
     marginTop: 16,
@@ -1362,6 +3967,69 @@ export default function AppointmentsScreen({ navigation }) {
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.textLight,
     marginBottom: 12,
+  },
+  invoiceCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 8,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  invoiceCardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+  },
+  invoiceCardLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+  },
+  invoiceCardInfo: {
+    gap: 2,
+  },
+  invoiceCardNumber: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+  },
+  invoiceCardDate: {
+    fontSize: 13,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textLight,
+  },
+  invoiceCardRight: {
+    alignItems: 'flex-end',
+  },
+  invoiceCardStatus: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 8,
+  },
+  invoiceCardStatusText: {
+    fontSize: 11,
+    fontFamily: 'Poppins_600SemiBold',
+  },
+  invoiceStatusChip: {
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  invoiceStatusChipGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+  },
+  invoiceStatusChipText: {
+    marginLeft: 0,
+    color: COLORS.white,
+    fontWeight: '600',
+    fontSize: 12,
   },
   invoiceHistorySection: {
     marginTop: 15,
@@ -1383,6 +4051,11 @@ export default function AppointmentsScreen({ navigation }) {
     marginBottom: 8,
     borderWidth: 1,
     borderColor: COLORS.border,
+  },
+  activeInvoiceHistoryItem: {
+    backgroundColor: COLORS.primary + '10',
+    borderColor: COLORS.primary,
+    borderWidth: 2,
   },
   invoiceHistoryInfo: {
     flex: 1,
@@ -1417,10 +4090,40 @@ export default function AppointmentsScreen({ navigation }) {
     fontFamily: 'Poppins_500Medium',
     color: COLORS.white,
   },
+  invoiceHistoryService: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textLight,
+    marginTop: 2,
+  },
+  // Invoice Preview Styles
+  invoicePreviewContainer: {
+    marginTop: 20,
+    paddingTop: 20,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+  },
+  invoicePreviewHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 15,
+  },
+  invoicePreviewTitle: {
+    fontSize: 16,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+  },
   invoicePaidDate: {
     fontSize: 12,
     fontFamily: 'Poppins_400Regular',
     color: COLORS.textLight,
+    marginTop: 2,
+  },
+  invoicePendingDate: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: '#FF9800',
     marginTop: 2,
   },
   noInvoicesContainer: {
@@ -1636,5 +4339,605 @@ export default function AppointmentsScreen({ navigation }) {
     color: COLORS.white,
     fontSize: 15,
     fontFamily: 'Poppins_600SemiBold',
+  },
+  // Visit History Styles
+  visitHistoryItem: {
+    backgroundColor: COLORS.background,
+    borderRadius: 12,
+    padding: 12,
+    marginBottom: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  visitHistoryHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 8,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  visitHistoryDateContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  visitHistoryDate: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+  },
+  visitHistoryStatusBadge: {
+    backgroundColor: COLORS.success + '15',
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    borderRadius: 8,
+  },
+  visitHistoryStatusText: {
+    fontSize: 11,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.success,
+  },
+  visitHistoryDetails: {
+    gap: 6,
+  },
+  visitHistoryRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  visitHistoryTime: {
+    fontSize: 13,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textLight,
+  },
+  visitHistoryNotesContainer: {
+    marginTop: 4,
+    backgroundColor: COLORS.white,
+    padding: 8,
+    borderRadius: 8,
+  },
+  visitHistoryNotesLabel: {
+    fontSize: 11,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.textLight,
+    marginBottom: 2,
+  },
+  visitHistoryNotes: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.text,
+    fontStyle: 'italic',
+  },
+  visitInvoiceButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.background,
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.accent,
+    marginTop: 8,
+    gap: 6,
+  },
+  visitInvoiceButtonText: {
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.accent,
+  },
+  // Service Chip Styles
+  serviceChip: {
+    marginRight: SPACING.sm,
+  },
+  serviceChipGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    gap: 6,
+    minHeight: 36,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
+  },
+  inactiveServiceChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
+    gap: 6,
+    minHeight: 36,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: '#E0E0E0',
+  },
+  serviceChipText: {
+    fontSize: 12,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.primary,
+  },
+  serviceChipTextSelected: {
+    fontSize: 12,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.white,
+  },
+  // Picker Styles
+  pickerOverlay: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    zIndex: 2000, // Higher than modal
+  },
+  pickerContainer: {
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    padding: SPACING.lg,
+    margin: SPACING.lg,
+    shadowColor: COLORS.black,
+    shadowOffset: {
+      width: 0,
+      height: 2,
+    },
+    shadowOpacity: 0.25,
+    shadowRadius: 3.84,
+    elevation: 5,
+    maxHeight: '80%',
+    width: '90%',
+  },
+  pickerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: SPACING.md,
+    paddingBottom: SPACING.md,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  pickerTitle: {
+    fontSize: 16,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+  },
+  pickerCloseButton: {
+    padding: SPACING.sm,
+  },
+  pickerConfirmButton: {
+    borderRadius: 10,
+    marginTop: SPACING.md,
+    overflow: 'hidden',
+  },
+  pickerConfirmGradient: {
+    paddingVertical: SPACING.md,
+    alignItems: 'center',
+  },
+  pickerConfirmText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.white,
+  },
+  // PDF Invoice Preview Styles
+  invoicePreviewCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: SPACING.sm,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.15,
+    shadowRadius: 8,
+    elevation: 5,
+    width: '100%',
+    minHeight: 500,
+  },
+  pdfHeader: {
+    backgroundColor: COLORS.white,
+    paddingTop: SPACING.md,
+  },
+  pdfHeaderTop: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingHorizontal: SPACING.md,
+    paddingBottom: SPACING.sm,
+  },
+  pdfCompanyInfo: {
+    flex: 1,
+    marginRight: SPACING.sm,
+  },
+  nursesLogoHeader: {
+    width: 50,
+    height: 50,
+    marginLeft: 24,
+  },
+  pdfInvoiceInfo: {
+    alignItems: 'flex-end',
+  },
+  pdfInvoiceTitle: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: COLORS.text,
+    marginBottom: 2,
+  },
+  pdfInvoiceNumber: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: COLORS.text,
+    marginBottom: 2,
+  },
+  pdfInvoiceDate: {
+    fontSize: 9,
+    color: COLORS.textLight,
+    marginBottom: 1,
+  },
+  pdfBlueLine: {
+    height: 2,
+    backgroundColor: COLORS.primary,
+    marginHorizontal: SPACING.md,
+    marginVertical: SPACING.xs,
+  },
+  pdfClientSection: {
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+  },
+  pdfClientRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+  },
+  pdfBillTo: {
+    flex: 1,
+    marginRight: SPACING.md,
+  },
+  pdfServiceProvider: {
+    flex: 1,
+  },
+  pdfSectionTitle: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: COLORS.text,
+    marginBottom: 4,
+  },
+  pdfClientName: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: COLORS.text,
+    marginBottom: 2,
+  },
+  pdfClientInfo: {
+    fontSize: 9,
+    color: COLORS.textLight,
+    marginBottom: 1,
+  },
+  pdfProviderName: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: COLORS.text,
+    marginBottom: 2,
+  },
+  pdfProviderInfo: {
+    fontSize: 9,
+    color: COLORS.textLight,
+    marginBottom: 1,
+  },
+  pdfServiceSection: {
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.sm,
+  },
+  pdfTable: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 4,
+    marginBottom: SPACING.md,
+  },
+  pdfTableHeader: {
+    flexDirection: 'row',
+    backgroundColor: '#F5F5F5',
+    paddingVertical: 4,
+    paddingHorizontal: 4,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  pdfTableHeaderText: {
+    flex: 1,
+    fontSize: 9,
+    fontWeight: '600',
+    color: COLORS.text,
+    textAlign: 'center',
+  },
+  pdfTableRow: {
+    flexDirection: 'row',
+    paddingVertical: 4,
+    paddingHorizontal: 4,
+  },
+  pdfTableCell: {
+    flex: 1,
+    fontSize: 9,
+    color: COLORS.text,
+    textAlign: 'center',
+  },
+  pdfTableCellAmount: {
+    flex: 1,
+    fontSize: 9,
+    fontWeight: '600',
+    color: COLORS.text,
+    textAlign: 'center',
+  },
+  pdfBottomSection: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginTop: 10,
+    gap: 10,
+  },
+  pdfPaymentSection: {
+    flex: 1,
+  },
+  pdfPaymentTitle: {
+    fontSize: 10,
+    fontWeight: '600',
+    color: COLORS.text,
+    marginBottom: 4,
+  },
+  bankAccountGroup: {
+    marginBottom: 4,
+  },
+  pdfPaymentInfo: {
+    fontSize: 8,
+    color: COLORS.textLight,
+    lineHeight: 12,
+  },
+  pdfTotalsSection: {
+    alignItems: 'flex-end',
+    minWidth: 160,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 8,
+    padding: 12,
+    backgroundColor: '#F9F9F9',
+  },
+  pdfTotalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: 160,
+    paddingVertical: 2,
+  },
+  pdfTotalLabel: {
+    fontSize: 10,
+    color: COLORS.text,
+  },
+  pdfTotalValue: {
+    fontSize: 10,
+    fontWeight: '500',
+    color: COLORS.text,
+  },
+  pdfFinalTotalRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    width: 160,
+    paddingVertical: 4,
+    marginTop: 4,
+  },
+  pdfFinalTotalLabel: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: COLORS.text,
+  },
+  pdfFinalTotalAmount: {
+    fontSize: 11,
+    fontWeight: 'bold',
+    color: COLORS.text,
+  },
+  paidStampContainer: {
+    marginTop: 10,
+    alignItems: 'center',
+  },
+  paidStamp: {
+    borderWidth: 2,
+    borderColor: COLORS.success,
+    borderRadius: 4,
+    paddingHorizontal: 8,
+    paddingVertical: 2,
+    transform: [{ rotate: '-15deg' }],
+  },
+  paidStampText: {
+    color: COLORS.success,
+    fontSize: 14,
+    fontWeight: 'bold',
+    letterSpacing: 1,
+  },
+  previewShareButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.primary + '15',
+    paddingHorizontal: 10,
+    paddingVertical: 6,
+    borderRadius: 20,
+    gap: 4,
+  },
+  previewShareText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.primary,
+  },
+  editInputContainer: {
+    flex: 1,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 8,
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    backgroundColor: COLORS.white,
+  },
+  editInput: {
+    fontSize: 14,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.text,
+    padding: 0,
+  },
+  // Nurse Notes Styles
+  nurseNotesHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 16,
+  },
+  lockedNotesCard: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: 16,
+    gap: 12,
+  },
+  lockedNotesCardContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    flex: 1,
+  },
+  lockedNotesCardTextContainer: {
+    flex: 1,
+  },
+  lockedNotesCardTitle: {
+    fontSize: 15,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+    marginBottom: 2,
+  },
+  lockedNotesCardSubtitle: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textLight,
+  },
+  nurseNotesContainer: {
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    padding: 16,
+    borderWidth: 2,
+    borderColor: COLORS.success + '30',
+  },
+  secureNotesHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+    paddingBottom: 12,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  secureNotesHeaderLeft: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+  },
+  secureNotesCloseButton: {
+    padding: 4,
+  },
+  secureNotesLabel: {
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.success,
+  },
+  nurseNotesText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.text,
+    lineHeight: 22,
+    marginBottom: 12,
+  },
+  screenshotWarning: {
+    alignItems: 'center',
+    paddingTop: 8,
+  },
+  screenshotWarningText: {
+    fontSize: 11,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.error,
+  },
+  // Confidentiality Modal Styles
+  confidentialityContent: {
+    padding: 4,
+  },
+  confidentialityIconContainer: {
+    alignItems: 'center',
+    marginBottom: 16,
+  },
+  confidentialityTitle: {
+    fontSize: 20,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.text,
+    textAlign: 'center',
+    marginBottom: 16,
+  },
+  confidentialityText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.text,
+    lineHeight: 22,
+    marginBottom: 20,
+  },
+  confidentialityTerms: {
+    marginBottom: 24,
+  },
+  termItem: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    marginBottom: 12,
+  },
+  termText: {
+    flex: 1,
+    fontSize: 13,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.text,
+    lineHeight: 20,
+  },
+  confidentialityCheckbox: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    backgroundColor: COLORS.background,
+    padding: 16,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  checkbox: {
+    width: 24,
+    height: 24,
+    borderRadius: 6,
+    borderWidth: 2,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  checkboxChecked: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  checkboxLabel: {
+    flex: 1,
+    fontSize: 13,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.text,
+    lineHeight: 18,
+  },
+  buttonDisabled: {
+    opacity: 0.5,
   },
 });

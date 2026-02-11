@@ -6,6 +6,8 @@ import {
   StyleSheet,
   Modal,
   Alert,
+  Image,
+  Platform,
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -14,11 +16,12 @@ import TouchableWeb from '../components/TouchableWeb';
 import { COLORS, GRADIENTS, SPACING } from '../constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNotifications } from '../context/NotificationContext';
+import InvoiceService from '../services/InvoiceService';
 
 const ORDERS_STORAGE_KEY = '@care_store_orders';
 const INVOICES_STORAGE_KEY = '@care_invoices';
 
-export default function AdminStoreOrdersScreen({ navigation, route }) {
+export default function AdminStoreOrdersScreen({ navigation, route, isEmbedded = false }) {
   const insets = useSafeAreaInsets();
   const { sendNotificationToUser } = useNotifications();
   const highlightOrderId = route?.params?.highlightOrder;
@@ -136,7 +139,7 @@ export default function AdminStoreOrdersScreen({ navigation, route }) {
               itemCount: order.items?.length || 0
             }
           );
-          console.log('📨 Order delivered notification sent to patient');
+          // Order delivered notification sent to patient
         } catch (notifError) {
           console.error('Failed to send delivery notification:', notifError);
         }
@@ -164,7 +167,7 @@ export default function AdminStoreOrdersScreen({ navigation, route }) {
               itemCount: order.items?.length || 0
             }
           );
-          console.log('📨 Order cancellation notification sent to patient');
+          // Order cancellation notification sent to patient
         } catch (notifError) {
           console.error('Failed to send cancellation notification:', notifError);
         }
@@ -257,21 +260,29 @@ export default function AdminStoreOrdersScreen({ navigation, route }) {
 
   return (
     <View style={styles.container}>
-      {/* Header */}
-      <LinearGradient 
-        colors={GRADIENTS.header} 
-        start={{ x: 0, y: 0 }}
-        end={{ x: 0, y: 1 }}
-        style={[styles.header, { paddingTop: insets.top + 20 }]}
-      >
-        <View style={styles.headerContent}>
-          <TouchableWeb onPress={() => navigation.goBack()} style={styles.backButton}>
-            <MaterialCommunityIcons name="arrow-left" size={24} color={COLORS.white} />
-          </TouchableWeb>
-          <Text style={styles.headerTitle}>Store Orders</Text>
-          <View style={styles.headerRight} />
-        </View>
-      </LinearGradient>
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
+      
+      {!isEmbedded && (
+        <LinearGradient 
+          colors={GRADIENTS.header} 
+          start={{ x: 0, y: 0 }}
+          end={{ x: 0, y: 1 }}
+          style={[styles.header, { paddingTop: insets.top + 20 }]}
+        >
+          <View style={styles.headerContent}>
+            <TouchableWeb onPress={() => navigation.goBack()} style={styles.backButton}>
+              <MaterialCommunityIcons name="arrow-left" size={24} color={COLORS.white} />
+            </TouchableWeb>
+            <Text style={styles.headerTitle}>Store Orders</Text>
+            <View style={styles.headerRight} />
+          </View>
+        </LinearGradient>
+      )}
 
       {/* Tabs */}
       <View style={styles.tabContainer}>
@@ -284,7 +295,7 @@ export default function AdminStoreOrdersScreen({ navigation, route }) {
             <LinearGradient
               colors={GRADIENTS.header}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.activeTabGradient}
             >
               <Text style={styles.activeTabText}>Pending</Text>
@@ -304,7 +315,7 @@ export default function AdminStoreOrdersScreen({ navigation, route }) {
             <LinearGradient
               colors={GRADIENTS.header}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.activeTabGradient}
             >
               <Text style={styles.activeTabText}>Completed</Text>
@@ -324,7 +335,7 @@ export default function AdminStoreOrdersScreen({ navigation, route }) {
             <LinearGradient
               colors={GRADIENTS.header}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.activeTabGradient}
             >
               <Text style={styles.activeTabText}>Cancelled</Text>
@@ -427,17 +438,15 @@ export default function AdminStoreOrdersScreen({ navigation, route }) {
                           activeOpacity={0.7}
                         >
                           <View style={styles.invoiceInfo}>
-                            <MaterialCommunityIcons name="file-document" size={24} color={COLORS.primary} />
                             <View style={styles.invoiceDetails}>
                               <Text style={styles.invoiceNumber}>#{invoiceNumber}</Text>
-                              <Text style={styles.invoiceAmount}>J${selectedOrder.total.toFixed(2)}</Text>
+                              <Text style={styles.invoiceAmount}>{InvoiceService.formatCurrency(selectedOrder.total)}</Text>
                             </View>
                           </View>
                           <MaterialCommunityIcons name="chevron-right" size={24} color={COLORS.textLight} />
                         </TouchableWeb>
                       ) : (
                         <View style={styles.noInvoice}>
-                          <MaterialCommunityIcons name="file-document-outline" size={32} color={COLORS.border} />
                           <Text style={styles.noInvoiceText}>No invoice available</Text>
                         </View>
                       )}
@@ -501,6 +510,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
   },
   header: {
     paddingHorizontal: 20,
@@ -699,7 +717,7 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     width: '100%',
     maxWidth: 380,
-    maxHeight: '85%',
+    maxHeight: Platform.OS === 'android' ? '93%' : '85%',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.25,
@@ -749,7 +767,7 @@ const styles = StyleSheet.create({
   },
   detailValue: {
     fontSize: 14,
-    fontFamily: 'Poppins_600SemiBold',
+    fontFamily: 'Poppins_500Medium',
     color: COLORS.text,
   },
   statusBadgeInline: {

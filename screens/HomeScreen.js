@@ -1,11 +1,11 @@
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react';
 import {
   View,
   Text,
   ScrollView,
   StyleSheet,
   Image,
-  useWindowDimensions,
+  
   Linking,
   Modal,
   Animated,
@@ -18,24 +18,29 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons, Ionicons } from '@expo/vector-icons';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { InfoCard, SectionHeader } from '../components/Cards';
+import AppOnboarding from '../components/AppOnboarding';
 import { COLORS, GRADIENTS, SPACING, CONTACT_INFO } from '../constants';
 import { useServices } from '../context/ServicesContext';
 import { useAuth } from '../context/AuthContext';
 import { useNotifications } from '../context/NotificationContext';
 import { useAppointments } from '../context/AppointmentContext';
+import useWindowDimensions from '../hooks/useWindowDimensions';
 import { useShifts } from '../context/ShiftContext';
 import TouchableWeb from '../components/TouchableWeb';
 import InvoiceService from '../services/InvoiceService';
 import PushNotificationService from '../services/PushNotificationService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import { useNurses } from '../context/NurseContext';
+import { useFocusEffect } from '@react-navigation/native';
 
 export default function HomeScreen({ navigation }) {
   const { width } = useWindowDimensions();
   const { user } = useAuth();
   const { services } = useServices();
-  const { getUpcomingAppointments } = useAppointments();
+  const { getUpcomingAppointments, refreshAppointments } = useAppointments();
   const { shiftRequests } = useShifts(); // Add shift context
   const { unreadCount, clearAllNotifications } = useNotifications();
+  const { nurses } = useNurses(); // Get nurses list to resolve nurse names
   const insets = useSafeAreaInsets();
   const [selectedService, setSelectedService] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
@@ -53,6 +58,7 @@ export default function HomeScreen({ navigation }) {
   const [emergencyLastName, setEmergencyLastName] = useState('');
   const [emergencyRelationship, setEmergencyRelationship] = useState('');
   const [emergencyPhone, setEmergencyPhone] = useState('');
+  const [showOnboarding, setShowOnboarding] = useState(false);
   const [reminders, setReminders] = useState([]);
   const [overdueInvoices, setOverdueInvoices] = useState([]);
   const [pendingOrders, setPendingOrders] = useState([]);
@@ -62,29 +68,116 @@ export default function HomeScreen({ navigation }) {
   const servicesScrollAnim = useRef(new Animated.Value(0)).current;
   const scrollViewRef = useRef(null);
 
+  // Refresh appointments when screen comes into focus
+  useFocusEffect(
+    React.useCallback(() => {
+      // Always refresh on focus to ensure latest data
+      refreshAppointments();
+    }, [refreshAppointments])
+  );
+
   // Get upcoming appointments for patient (including approved shifts)
   const upcomingAppointments = getUpcomingAppointments();
   
-  // Get approved shifts assigned to this patient (same logic as AppointmentsScreen)
+  // Get approved and pending shifts assigned to this patient (same logic as AppointmentsScreen)
   const patientId = user?.id;
   const approvedShifts = shiftRequests.filter(shift => {
-    const isApproved = shift.status === 'approved';
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    
+    const isApproved = shift.status === 'approved' || shift.status === 'confirmed' || shift.status === 'pending' || shift.status === 'in-progress' || shift.status === 'clocked-in' || shift.status === 'active';
     const matchesClient = 
       shift.clientId === patientId ||
       shift.clientId === parseInt(patientId) ||
       String(shift.clientId) === patientId ||
       shift.clientName === user?.name ||
+      shift.clientName?.toLowerCase() === user?.name?.toLowerCase() ||
       (shift.clientId === 1 && patientId === 'PATIENT001') || // Fixed logic
       (shift.clientId === '1' && patientId === 'PATIENT001') ||
       (shift.clientId === 1 && user?.username === 'testpatient') ||
-      (!shift.clientId && user?.role === 'patient') ||
       (user?.role === 'patient' && shift.clientName && shift.clientName.toLowerCase().includes('test'));
-    return isApproved && matchesClient;
+    
+    // Check if shift date is today or in the future
+    let dateValid = false;
+    try {
+      const dateField =
+        shift.date ||
+        shift.startDate ||
+        shift.scheduledDate ||
+        shift.shiftDate ||
+        shift.preferredDate ||
+        shift.appointmentDate;
+      
+      if (dateField) {
+        let shiftDate;
+        
+        // Handle Firestore Timestamp objects
+        if (dateField.seconds !== undefined || dateField.toDate) {
+          // Firestore Timestamp: convert using seconds or toDate()
+          shiftDate = dateField.toDate ? dateField.toDate() : new Date(dateField.seconds * 1000);
+        } else {
+          // Regular string/Date
+          shiftDate = new Date(dateField);
+        }
+        
+        if (!isNaN(shiftDate.getTime())) {
+          shiftDate.setHours(0, 0, 0, 0);
+          dateValid = shiftDate >= now;
+        }
+      }
+    } catch (e) {
+      dateValid = false;
+    }
+    
+    return isApproved && matchesClient && dateValid;
   });
   
-  // Combine regular appointments with approved shifts
+  // Filter out recurring shifts from next appointment card (only show regular appointments)
+  const regularAppointmentsOnly = upcomingAppointments.filter(apt => !apt.isRecurring && !apt.recurring);
+  // Combine regular appointments only (no shifts for next appointment card)
   const allUpcomingAppointments = [...upcomingAppointments, ...approvedShifts];
-  const nextAppointment = allUpcomingAppointments[0]; // Get the next upcoming appointment
+  const nextAppointment = regularAppointmentsOnly[0]; // Get the next regular appointment only
+
+  useEffect(() => {
+    if (user?.role === 'patient') {
+      setShowOnboarding(false);
+    } else {
+      setShowOnboarding(false);
+    }
+  }, [user?.role]);
+
+  // Helper function to resolve nurse name from nurseId if nurseName is missing
+  const getNurseName = (appointment) => {
+    if (appointment.nurseName) {
+      return appointment.nurseName;
+    }
+    
+    if (appointment.nurseId) {
+      // Try to find nurse in nurses list
+      const foundNurse = nurses.find(n => n.id === appointment.nurseId);
+      if (foundNurse) {
+        return foundNurse.name;
+      }
+    }
+    
+    return null;
+  };
+
+  // Helper function to format time from 24-hour to 12-hour format
+  const formatTime = (time) => {
+    if (!time) return time;
+    
+    // Handle time strings like "09:00", "22:00"
+    if (time.includes(':')) {
+      const [hours, minutes] = time.split(':');
+      const hour = parseInt(hours);
+      const ampm = hour >= 12 ? 'PM' : 'AM';
+      const displayHour = hour % 12 || 12;
+      return `${displayHour}:${minutes} ${ampm}`;
+    }
+    
+    return time; // Return as-is if not in expected format
+  };
 
   const whyChooseFeatures = [
     {
@@ -143,7 +236,7 @@ export default function HomeScreen({ navigation }) {
     }
   };
 
-  const handleAddReminder = () => {
+  const handleAddReminder = async () => {
     if (!reminderText.trim()) {
       Alert.alert('Missing Information', 'Please enter a reminder title');
       return;
@@ -157,23 +250,86 @@ export default function HomeScreen({ navigation }) {
       return;
     }
 
-    const newReminder = {
-      id: Date.now(),
-      text: reminderText,
-      date: reminderDate,
-      time: reminderTime,
-      completed: false,
-    };
-    setReminders([...reminders, newReminder]);
-    setReminderText('');
-    setReminderDate('');
-    setReminderTime('');
-    setShowReminderDatePicker(false);
-    setShowReminderTimePicker(false);
-    setReminderModalVisible(false);
+    try {
+      // Parse the date and time to create a scheduled date
+      const scheduledDateTime = new Date(`${reminderDate} ${reminderTime}`);
+      
+      // Check if the scheduled time is in the future
+      if (scheduledDateTime <= new Date()) {
+        Alert.alert('Invalid Time', 'Please select a future date and time for your reminder');
+        return;
+      }
+
+      // Schedule the notification
+      const notificationId = await PushNotificationService.scheduleNotification(
+        'Reminder',
+        reminderText,
+        scheduledDateTime,
+        { 
+          type: 'reminder',
+          reminderId: Date.now().toString(),
+          screen: 'Home'
+        }
+      );
+
+      const newReminder = {
+        id: Date.now(),
+        text: reminderText,
+        date: reminderDate,
+        time: reminderTime,
+        completed: false,
+        notificationId: notificationId, // Store notification ID for future cancellation
+        scheduledDateTime: scheduledDateTime.toISOString(),
+      };
+      
+      setReminders([...reminders, newReminder]);
+      setReminderText('');
+      setReminderDate('');
+      setReminderTime('');
+      setShowReminderDatePicker(false);
+      setShowReminderTimePicker(false);
+      setReminderModalVisible(false);
+      
+      Alert.alert('Success', 'Reminder set! You will be notified at the scheduled time.');
+    } catch (error) {
+      console.error('Failed to schedule reminder notification:', error);
+      Alert.alert('Error', 'Failed to schedule reminder notification. The reminder was saved but you may not receive a notification.');
+      
+      // Still save the reminder even if notification fails
+      const newReminder = {
+        id: Date.now(),
+        text: reminderText,
+        date: reminderDate,
+        time: reminderTime,
+        completed: false,
+        scheduledDateTime: new Date(`${reminderDate} ${reminderTime}`).toISOString(),
+      };
+      
+      setReminders([...reminders, newReminder]);
+      setReminderText('');
+      setReminderDate('');
+      setReminderTime('');
+      setShowReminderDatePicker(false);
+      setShowReminderTimePicker(false);
+      setReminderModalVisible(false);
+    }
   };
 
-  const handleDeleteReminder = (reminderId) => {
+  const handleDeleteReminder = async (reminderId) => {
+    // Find the reminder to get its notification ID
+    const reminderToDelete = reminders.find(r => r.id === reminderId);
+    
+    // Cancel the scheduled notification if it exists
+    if (reminderToDelete?.notificationId) {
+      try {
+        await PushNotificationService.cancelNotification(reminderToDelete.notificationId);
+        // Cancelled notification for reminder
+      } catch (error) {
+        console.error('Failed to cancel reminder notification:', error);
+      }
+    }
+    
+    // Remove the reminder from the list
     setReminders(reminders.filter(r => r.id !== reminderId));
   };
 
@@ -209,7 +365,7 @@ export default function HomeScreen({ navigation }) {
   const clearWrongNotifications = async () => {
     if (user?.role === 'patient') {
       await clearAllNotifications();
-      console.log('Cleared wrong notifications for patient');
+      // Cleared wrong notifications for patient
     }
   };
 
@@ -293,30 +449,51 @@ export default function HomeScreen({ navigation }) {
   }, [arrowAnim]);
 
   // Auto-scroll services animation with Animated API
-  useEffect(() => {
-    if (!services || services.length === 0) return;
+  const [isAutoScrolling, setIsAutoScrolling] = useState(true);
+  const autoScrollTimeoutRef = useRef(null);
+
+  const startAutoScroll = useCallback(() => {
+    if (!services || services.length === 0 || !isAutoScrolling) return;
 
     const serviceWidth = 100;
     const totalWidth = services.length * serviceWidth;
 
-    const animateScroll = () => {
-      servicesScrollAnim.setValue(0);
-      Animated.loop(
-        Animated.timing(servicesScrollAnim, {
-          toValue: -totalWidth,
-          duration: services.length * 5000,
-          useNativeDriver: true,
-          isInteraction: false,
-        })
-      ).start();
-    };
+    servicesScrollAnim.setValue(0);
+    Animated.loop(
+      Animated.timing(servicesScrollAnim, {
+        toValue: -totalWidth,
+        duration: services.length * 5000,
+        useNativeDriver: true,
+        isInteraction: false,
+      })
+    ).start();
+  }, [services, servicesScrollAnim, isAutoScrolling]);
 
-    animateScroll();
+  const pauseAutoScroll = useCallback(() => {
+    setIsAutoScrolling(false);
+    servicesScrollAnim.stopAnimation();
+    
+    // Resume auto-scroll after 3 seconds of no interaction
+    if (autoScrollTimeoutRef.current) {
+      clearTimeout(autoScrollTimeoutRef.current);
+    }
+    autoScrollTimeoutRef.current = setTimeout(() => {
+      setIsAutoScrolling(true);
+    }, 3000);
+  }, [servicesScrollAnim]);
 
+  useEffect(() => {
+    if (isAutoScrolling) {
+      startAutoScroll();
+    }
+    
     return () => {
       servicesScrollAnim.stopAnimation();
+      if (autoScrollTimeoutRef.current) {
+        clearTimeout(autoScrollTimeoutRef.current);
+      }
     };
-  }, [services, servicesScrollAnim]);
+  }, [isAutoScrolling, startAutoScroll, servicesScrollAnim]);
 
   // Load overdue invoices on mount and set up periodic checking
   useEffect(() => {
@@ -354,6 +531,30 @@ export default function HomeScreen({ navigation }) {
     }
   }, [user?.emergencyContact, user?.emergencyPhone]);
 
+  // Clean up expired reminders and their notifications
+  useEffect(() => {
+    const checkExpiredReminders = () => {
+      const now = new Date();
+      const expiredReminders = reminders.filter(reminder => {
+        if (reminder.scheduledDateTime) {
+          const scheduledTime = new Date(reminder.scheduledDateTime);
+          return scheduledTime < now && !reminder.completed;
+        }
+        return false;
+      });
+
+      if (expiredReminders.length > 0) {
+        // Found expired reminders
+        // Optionally auto-complete expired reminders or notify user
+        // For now, we'll just log them
+      }
+    };
+
+    const interval = setInterval(checkExpiredReminders, 60000); // Check every minute
+    
+    return () => clearInterval(interval);
+  }, [reminders]);
+
   const handleCall = () => {
     Linking.openURL(`tel:${CONTACT_INFO.phone}`);
   };
@@ -367,7 +568,19 @@ export default function HomeScreen({ navigation }) {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
+      <AppOnboarding
+        visible={showOnboarding}
+        userRole={user?.role || 'patient'}
+        onComplete={() => setShowOnboarding(false)}
+      />
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
+      
       {/* Header */}
       <LinearGradient
         colors={GRADIENTS.header}
@@ -390,7 +603,12 @@ export default function HomeScreen({ navigation }) {
               </View>
             )}
           </TouchableWeb>
-          <Text style={styles.welcomeText}>Welcome, {user?.username}!</Text>
+          
+          <View style={styles.headerTitleContainer}>
+            <Text style={styles.welcomeLabel}>Welcome</Text>
+            <Text style={styles.userName}>{user?.firstName || user?.fullName?.split(' ')[0] || 'User'}!</Text>
+          </View>
+          
           <TouchableWeb 
             style={styles.iconButton}
             onPress={() => navigation.navigate('Profile')}
@@ -415,82 +633,104 @@ export default function HomeScreen({ navigation }) {
         {/* Services */}
         <View style={[styles.fullWidthSection, { marginTop: -10 }]}>
           <View style={[styles.whiteContainer, { overflow: 'hidden', paddingTop: 20 }]}>
-            <Animated.View style={{ 
-              flexDirection: 'row',
-              paddingVertical: 15,
-              transform: [{ translateX: servicesScrollAnim }] 
-            }}>
-              {services && [...services, ...services].map((service, index) => (
-                <TouchableWeb
-                  key={`${service.id}-${index}`}
-                  style={styles.serviceCircle}
-                  onPress={() => handleServicePress(service)}
-                  activeOpacity={0.7}
-                >
-                  <LinearGradient
-                    colors={GRADIENTS.header}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 1 }}
-                    style={styles.serviceCircleGradient}
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={{ paddingVertical: 15 }}
+              scrollEventThrottle={16}
+              onScrollBeginDrag={pauseAutoScroll}
+              onTouchStart={pauseAutoScroll}
+            >
+              <Animated.View style={{ 
+                flexDirection: 'row',
+                transform: [{ translateX: servicesScrollAnim }] 
+              }}>
+                {services && [...services, ...services].map((service, index) => (
+                  <TouchableWeb
+                    key={`${service.id}-${index}`}
+                    style={styles.serviceCircle}
+                    onPress={() => handleServicePress(service)}
+                    activeOpacity={0.7}
                   >
-                    <View style={styles.innerGlow}>
-                      <MaterialCommunityIcons name={service.icon} size={32} color={COLORS.white} />
-                    </View>
-                  </LinearGradient>
-                  <Text style={styles.serviceCircleLabel} numberOfLines={2}>
-                    {service.title || 'Service'}
-                  </Text>
-                </TouchableWeb>
-              ))}
-            </Animated.View>
+                    <LinearGradient
+                      colors={GRADIENTS.header}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 0, y: 1 }}
+                      style={styles.serviceCircleGradient}
+                    >
+                      <View style={styles.innerGlow}>
+                        <MaterialCommunityIcons name={service.icon} size={32} color={COLORS.white} />
+                      </View>
+                    </LinearGradient>
+                    <Text style={styles.serviceCircleLabel} numberOfLines={2}>
+                      {service.title || 'Service'}
+                    </Text>
+                  </TouchableWeb>
+                ))}
+              </Animated.View>
+            </ScrollView>
           </View>
         </View>
 
         {/* Next Appointment */}
         <View style={styles.fullWidthSection}>
           <View style={styles.sectionContent}>
-            <SectionHeader title="Upcoming Appointment" subtitle="Your next scheduled visit" />
             {nextAppointment ? (
-              <LinearGradient
-                colors={GRADIENTS.accent}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.appointmentCardGradient}
+              <TouchableWeb
+                activeOpacity={0.9}
+                onPress={() => navigation.navigate('Appointments', { 
+                  highlightId: nextAppointment.id 
+                })}
               >
-                <View style={styles.appointmentHeader}>
-                  <MaterialCommunityIcons name="calendar-check" size={24} color={COLORS.white} />
-                  <Text style={[styles.appointmentTitle, { color: COLORS.white }]}>Next Appointment</Text>
-                </View>
-                <Text style={[styles.appointmentText, { color: COLORS.white }]}>
-                  {nextAppointment.date && !isNaN(new Date(nextAppointment.date)) 
-                    ? new Date(nextAppointment.date).toLocaleDateString('en-US', { 
-                        month: 'short', 
-                        day: 'numeric', 
-                        year: 'numeric' 
-                      })
-                    : (nextAppointment.date || nextAppointment.preferredDate || 'Date TBD')
-                  } at {
-                    nextAppointment.startTime && nextAppointment.endTime 
-                      ? `${nextAppointment.startTime} - ${nextAppointment.endTime}`
-                      : (nextAppointment.time || nextAppointment.scheduledTime || 'Time TBD')
-                  }
-                </Text>
-                <Text style={[styles.appointmentService, { color: 'rgba(255, 255, 255, 0.9)' }]}>
-                  {nextAppointment.service || 'Care Service'}
-                  {nextAppointment.nurseName && ` with ${nextAppointment.nurseName}`}
-                  {nextAppointment.nurse && ` with ${nextAppointment.nurse}`}
-                  {(nextAppointment.nurseId && !nextAppointment.nurseName && !nextAppointment.nurse) && ` with Nurse ID: ${nextAppointment.nurseId}`}
-                  {(!nextAppointment.nurseName && !nextAppointment.nurse && !nextAppointment.nurseId) && ' with Assigned Nurse'}
-                </Text>
-                {nextAppointment.status && (
-                  <Text style={[styles.appointmentService, { color: 'rgba(255, 255, 255, 0.8)', fontSize: 14, marginTop: 4 }]}>
-                    Status: {nextAppointment.status === 'confirmed' || nextAppointment.status === 'approved' || nextAppointment.status === 'nurse_assigned'
-                      ? 'Confirmed' 
-                      : nextAppointment.status.charAt(0).toUpperCase() + nextAppointment.status.slice(1)
+                {(() => {
+                  const isClockedIn = nextAppointment.status === 'active' || nextAppointment.status === 'clocked-in' || nextAppointment.status === 'in-progress';
+                  return (
+                <LinearGradient
+                  colors={isClockedIn ? ['#10b981', '#059669'] : GRADIENTS.warning}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={styles.appointmentCardGradient}
+                >
+                  <View style={styles.appointmentHeader}>
+                    <MaterialCommunityIcons name="calendar-check" size={24} color={COLORS.white} />
+                    <Text style={[styles.appointmentTitle, { color: COLORS.white }]}>Next Appointment</Text>
+                  </View>
+                  <Text style={[styles.appointmentText, { color: COLORS.white }]}>
+                    {nextAppointment.date && !isNaN(new Date(nextAppointment.date)) 
+                      ? new Date(nextAppointment.date).toLocaleDateString('en-US', { 
+                          month: 'short', 
+                          day: 'numeric', 
+                          year: 'numeric' 
+                        })
+                      : (nextAppointment.date || nextAppointment.preferredDate || 'Date TBD')
+                    } at {
+                      // Fix time format - convert 24-hour to 12-hour format
+                      nextAppointment.startTime && nextAppointment.endTime 
+                        ? `${formatTime(nextAppointment.startTime)} - ${formatTime(nextAppointment.endTime)}`
+                        : formatTime(nextAppointment.time || nextAppointment.scheduledTime) || 'Time TBD'
                     }
                   </Text>
-                )}
-              </LinearGradient>
+                  <Text style={[styles.appointmentService, { color: 'rgba(255, 255, 255, 0.9)' }]}>
+                    {nextAppointment.service || 'Care Service'}
+                    {(() => {
+                      const nurseName = getNurseName(nextAppointment);
+                      if (nurseName) return ` with ${nurseName}`;
+                      if (nextAppointment.nurse) return ` with ${nextAppointment.nurse}`;
+                      return ' with Assigned Nurse';
+                    })()}
+                  </Text>
+                  {nextAppointment.status && (
+                    <Text style={[styles.appointmentService, { color: 'rgba(255, 255, 255, 0.8)', fontSize: 14, marginTop: 4 }]}>
+                      Status: {nextAppointment.status === 'confirmed' || nextAppointment.status === 'approved' || nextAppointment.status === 'assigned'
+                        ? 'Confirmed' 
+                        : nextAppointment.status.charAt(0).toUpperCase() + nextAppointment.status.slice(1)
+                      }
+                    </Text>
+                  )}
+                </LinearGradient>
+                  );
+                })()}
+              </TouchableWeb>
             ) : (
               <View style={styles.appointmentCard}>
                 <View style={styles.appointmentHeader}>
@@ -501,41 +741,6 @@ export default function HomeScreen({ navigation }) {
                 <Text style={styles.appointmentService}>Book a service to get started</Text>
               </View>
             )}
-          </View>
-        </View>
-
-        {/* The CARE Store */}
-        <View style={styles.fullWidthSection}>
-          <View style={styles.sectionContent}>
-            <TouchableWeb
-              activeOpacity={0.8}
-              onPress={() => navigation.navigate('CareStore')}
-            >
-              <LinearGradient
-                colors={['#fff', '#fff', '#00CED1', '#00BFFF', '#1E90FF', '#4169E1']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 0 }}
-                style={styles.storeCardGradient}
-              >
-                <Animated.Image
-                  source={require('../assets/Images/CARElogo.png')}
-                  style={styles.storeLogo}
-                  resizeMode="contain"
-                />
-                <View style={styles.storeCardContent}>
-                  <View style={styles.storeCardText}>
-                    <Text style={styles.storeCardTitle}>Store</Text>
-                  </View>
-                  <Animated.View style={{ transform: [{ translateX: arrowAnim }] }}>
-                    <MaterialCommunityIcons 
-                      name="chevron-right" 
-                      size={28} 
-                      color={COLORS.white} 
-                    />
-                  </Animated.View>
-                </View>
-              </LinearGradient>
-            </TouchableWeb>
           </View>
         </View>
 
@@ -552,11 +757,11 @@ export default function HomeScreen({ navigation }) {
                 <LinearGradient
                   colors={GRADIENTS.header}
                   start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
+                  end={{ x: 0, y: 1 }}
                   style={styles.quickAccessTileGradient}
                 >
                   <MaterialCommunityIcons name="bell-ring" size={36} color={COLORS.white} />
-                  <Text style={styles.quickAccessTileTitle}>Reminders</Text>
+                  <Text style={styles.quickAccessTileTitle} numberOfLines={1} adjustsFontSizeToFit>Reminders</Text>
                   {(reminders.length > 0 || overdueInvoices.length > 0) && (
                     <View style={styles.tileBadge}>
                       <Text style={styles.tileBadgeText}>
@@ -574,47 +779,50 @@ export default function HomeScreen({ navigation }) {
                 onPress={() => setEmergencyModalVisible(true)}
               >
                 <LinearGradient
-                  colors={[COLORS.error, '#ff6b6b']}
+                  colors={[COLORS.error, COLORS.error]}
                   start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
+                  end={{ x: 0, y: 1 }}
                   style={styles.quickAccessTileGradient}
                 >
                   <MaterialCommunityIcons name="phone-alert" size={36} color={COLORS.white} />
-                  <Text style={styles.quickAccessTileTitle}>Emergency</Text>
-                  {emergencyContact && (
-                    <View style={[styles.tileBadge, { backgroundColor: COLORS.success }]}>
-                      <MaterialCommunityIcons name="check" size={14} color={COLORS.white} />
-                    </View>
-                  )}
+                  <Text style={styles.quickAccessTileTitle} numberOfLines={1} adjustsFontSizeToFit>Emergency</Text>
                 </LinearGradient>
               </TouchableWeb>
 
               {/* My Orders Tile */}
-              <TouchableWeb
-                style={styles.quickAccessTile}
-                activeOpacity={0.8}
-                onPress={() => navigation.navigate('PatientStoreOrders')}
-              >
-                <LinearGradient
-                  colors={['#10B981', '#059669']}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={styles.quickAccessTileGradient}
-                >
-                  <MaterialCommunityIcons name="package-variant" size={36} color={COLORS.white} />
-                  <Text style={styles.quickAccessTileTitle}>My Orders</Text>
-                  {pendingOrders.length > 0 && (
-                    <View style={styles.tileBadge}>
-                      <Text style={styles.tileBadgeText}>
-                        {pendingOrders.length}
-                      </Text>
-                    </View>
-                  )}
-                </LinearGradient>
-              </TouchableWeb>
+              <View style={{ flex: 1 }}>
+                <Text style={[styles.comingSoonText, { 
+                  fontSize: 10, 
+                  marginBottom: 0,
+                  position: 'absolute',
+                  top: -18,
+                  left: 0,
+                  right: 0,
+                  zIndex: 10
+                }]}>COMING SOON</Text>
+                <View style={[styles.quickAccessTile, { opacity: 0.6 }]}>
+                  <LinearGradient
+                    colors={['#10B981', '#059669']}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 0, y: 1 }}
+                    style={styles.quickAccessTileGradient}
+                  >
+                    <MaterialCommunityIcons name="package-variant" size={36} color={COLORS.white} />
+                    <Text style={styles.quickAccessTileTitle} numberOfLines={1} adjustsFontSizeToFit>My Orders</Text>
+                    {pendingOrders.length > 0 && (
+                      <View style={styles.tileBadge}>
+                        <Text style={styles.tileBadgeText}>
+                          {pendingOrders.length}
+                        </Text>
+                      </View>
+                    )}
+                  </LinearGradient>
+                </View>
+              </View>
             </View>
           </View>
         </View>
+
 
 
       </ScrollView>
@@ -642,7 +850,6 @@ export default function HomeScreen({ navigation }) {
                     color={COLORS.white} 
                   />
                   <Text style={styles.modalTitle}>{selectedService.title || 'Service'}</Text>
-                  <Text style={styles.modalCategory}>{selectedService.category || 'Healthcare'}</Text>
                 </LinearGradient>
 
                 <View style={styles.modalBody}>
@@ -841,9 +1048,16 @@ export default function HomeScreen({ navigation }) {
                         />
                       </TouchableWeb>
                       <View style={styles.reminderTextContainer}>
-                        <Text style={[styles.reminderTitle, reminder.completed && { textDecorationLine: 'line-through', color: COLORS.textLight }]}>
-                          {reminder.text}
-                        </Text>
+                        <View style={styles.reminderTitleRow}>
+                          <Text style={[styles.reminderTitle, reminder.completed && { textDecorationLine: 'line-through', color: COLORS.textLight }]}>
+                            {reminder.text}
+                          </Text>
+                          {reminder.notificationId && !reminder.completed && (
+                            <View style={styles.notificationIndicator}>
+                              <MaterialCommunityIcons name="bell" size={12} color={COLORS.accent} />
+                            </View>
+                          )}
+                        </View>
                         <Text style={styles.reminderDateTime}>{reminder.date} at {reminder.time}</Text>
                       </View>
                       <TouchableWeb
@@ -969,7 +1183,7 @@ export default function HomeScreen({ navigation }) {
                     onPress={handleCallEmergency}
                   >
                     <LinearGradient
-                      colors={[COLORS.error, '#ff6b6b']}
+                      colors={[COLORS.error, COLORS.error]}
                       style={styles.emergencyCallGradient}
                     >
                       <MaterialCommunityIcons name="phone" size={20} color={COLORS.white} />
@@ -1006,6 +1220,15 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
+  },
   header: {
     paddingHorizontal: 20,
     paddingBottom: 20,
@@ -1016,6 +1239,23 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+  },
+  headerTitleContainer: {
+    flex: 1,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginHorizontal: 12,
+  },
+  welcomeLabel: {
+    fontSize: 12,
+    fontFamily: 'Poppins_500Medium',
+    color: 'rgba(255, 255, 255, 0.8)',
+  },
+  userName: {
+    fontSize: 18,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.white,
+    marginTop: 2,
   },
   welcomeText: {
     fontSize: 18,
@@ -1060,7 +1300,7 @@ const styles = StyleSheet.create({
     marginTop: SPACING.xl,
   },
   scrollViewContent: {
-    paddingBottom: 100,
+    paddingBottom: 24,
   },
   fullWidthSection: {
     marginTop: SPACING.xl,
@@ -1600,6 +1840,11 @@ const styles = StyleSheet.create({
     shadowRadius: 4,
     elevation: 2,
   },
+  clockedInCard: {
+    backgroundColor: COLORS.success + '10',
+    borderLeftWidth: 4,
+    borderLeftColor: COLORS.success,
+  },
   appointmentCardGradient: {
     borderRadius: 20,
     padding: 20,
@@ -1727,6 +1972,18 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.text,
+    flex: 1,
+  },
+  reminderTitleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  notificationIndicator: {
+    backgroundColor: COLORS.background,
+    borderRadius: 8,
+    padding: 2,
+    marginLeft: SPACING.xs,
   },
   reminderTime: {
     fontSize: 12,
@@ -1944,8 +2201,7 @@ const styles = StyleSheet.create({
   storeLogo: {
     position: 'absolute',
     left: -20,
-    top: '-60%',
-    marginTop: -45,
+    top: -45,
     width: 250,
     height: 250,
     zIndex: 10,
@@ -1974,10 +2230,26 @@ const styles = StyleSheet.create({
     textShadowOffset: { width: 0, height: 2 },
     textShadowRadius: 6,
   },
+  storeCardContainer: {
+    position: 'relative',
+    overflow: 'visible',
+  },
+  comingSoonText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_700Bold',
+    color: '#FF4444',
+    textAlign: 'center',
+    marginBottom: 8,
+    letterSpacing: 1,
+    textTransform: 'uppercase',
+  },
+  storeCardDisabled: {
+    opacity: 0.7,
+  },
   // Quick Access Tiles
   quickAccessRow: {
     flexDirection: 'row',
-    gap: 16,
+    gap: 10,
     marginTop: 16,
   },
   quickAccessTile: {
@@ -2001,12 +2273,12 @@ const styles = StyleSheet.create({
     transform: [{ translateY: -3 }],
   },
   quickAccessTileGradient: {
-    padding: 20,
+    padding: 10,
     borderRadius: 20,
-    minHeight: 130,
+    minHeight: 110,
     justifyContent: 'center',
     alignItems: 'center',
-    gap: 12,
+    gap: 8,
     borderTopWidth: 2,
     borderLeftWidth: 1,
     borderRightWidth: 1,

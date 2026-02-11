@@ -10,6 +10,7 @@ import {
   TextInput,
   RefreshControl,
   Image,
+  Platform,
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -38,10 +39,96 @@ export default function InvoiceManagementScreen({ navigation }) {
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState('');
   const [invoiceToMarkPaid, setInvoiceToMarkPaid] = useState(null);
 
+  const coerceInvoiceDateString = (value) => {
+    const parsed = InvoiceService.parseDateInput(value);
+    return parsed ? InvoiceService.formatDateForInvoice(parsed) : null;
+  };
+
+  const resolveInvoicePeriod = (invoice) => {
+    if (!invoice || typeof invoice !== 'object') return invoice;
+
+    const existingStart = coerceInvoiceDateString(
+      invoice.periodStart || invoice.billingPeriodStart || invoice.recurringPeriodStart
+    );
+    const existingEnd = coerceInvoiceDateString(
+      invoice.periodEnd || invoice.billingPeriodEnd || invoice.recurringPeriodEnd
+    );
+    if (existingStart && existingEnd) {
+      return {
+        ...invoice,
+        periodStart: existingStart,
+        periodEnd: existingEnd,
+      };
+    }
+
+    const allAppointments = appointments?.appointments;
+    const lookupId = invoice.relatedAppointmentId ?? invoice.appointmentId ?? invoice.shiftRequestId ?? null;
+    if (!lookupId || !Array.isArray(allAppointments) || allAppointments.length === 0) return invoice;
+
+    const apt = allAppointments.find((a) => a?.id === lookupId || a?.appointmentId === lookupId);
+    if (!apt) return invoice;
+
+    const aptStart = coerceInvoiceDateString(
+      apt.billingPeriodStart ||
+        apt.recurringBilling?.cycleStartDate ||
+        apt.recurringPeriodStart ||
+        apt.recurringBilling?.periodStart ||
+        apt.recurringStartDate
+    );
+    const aptEnd = coerceInvoiceDateString(
+      apt.billingPeriodEnd ||
+        apt.recurringBilling?.cycleEndDate ||
+        apt.recurringPeriodEnd ||
+        apt.recurringBilling?.periodEnd ||
+        apt.recurringEndDate
+    );
+
+    if (aptStart && aptEnd) {
+      return {
+        ...invoice,
+        periodStart: aptStart,
+        periodEnd: aptEnd,
+      };
+    }
+
+    return invoice;
+  };
+
+  // Keep the preview using the latest invoice object after status changes.
+  useEffect(() => {
+    if (!selectedInvoice?.invoiceId) return;
+    const latest = invoices.find((inv) => inv?.invoiceId === selectedInvoice.invoiceId);
+    if (!latest) return;
+
+    // Avoid unnecessary state churn.
+    const latestUpdatedAt = latest?.updatedAt || latest?.invoiceUpdatedAt;
+    const selectedUpdatedAt = selectedInvoice?.updatedAt || selectedInvoice?.invoiceUpdatedAt;
+    const shouldReplace =
+      latest !== selectedInvoice &&
+      (latest?.status !== selectedInvoice?.status ||
+        latest?.paymentMethod !== selectedInvoice?.paymentMethod ||
+        latest?.paidDate !== selectedInvoice?.paidDate ||
+        (latestUpdatedAt && latestUpdatedAt !== selectedUpdatedAt));
+
+    if (shouldReplace) {
+      const merged = {
+        ...latest,
+        periodStart: latest?.periodStart || selectedInvoice?.periodStart,
+        periodEnd: latest?.periodEnd || selectedInvoice?.periodEnd,
+      };
+      setSelectedInvoice(merged);
+    }
+  }, [invoices, selectedInvoice?.invoiceId]);
+
   // Format date to a cleaner format (e.g., "Nov 4, 2025")
   const formatDate = (dateString) => {
     if (!dateString) return '';
     try {
+      // If it's already in "MMM DD, YYYY" format, return as is
+      if (typeof dateString === 'string' && /^[A-Z][a-z]{2}\s\d{1,2},\s\d{4}$/.test(dateString)) {
+        return dateString;
+      }
+      
       // Handle various date formats
       const date = new Date(dateString);
       // Check if date is valid
@@ -53,14 +140,73 @@ export default function InvoiceManagementScreen({ navigation }) {
     }
   };
 
+  const formatCurrency = (amount, currencyCode, serviceType) => {
+    const numericAmount = typeof amount === 'number'
+      ? amount
+      : parseFloat(amount || 0) || 0;
+
+    const currencyMap = {
+      JMD: '$',
+      USD: 'US$',
+      CAD: 'CA$',
+      EUR: '€',
+    };
+
+    const symbol = currencyMap[currencyCode] || currencyCode || '$';
+    // Add thousand separators with toLocaleString
+    return `${symbol}${numericAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+  };
+
+  const stripServiceDate = (value) => {
+    if (!value || typeof value !== 'string') return value;
+    return value
+      .replace(/\s*\b(\d{4}-\d{2}-\d{2}|\d{1,2}\/\d{1,2}\/\d{2,4}|[A-Za-z]{3,9}\s+\d{1,2},\s*\d{4})\b/g, '')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  };
+
+  const formatAddress = (addressValue) => {
+    if (!addressValue) return '';
+    if (typeof addressValue === 'string') return addressValue;
+
+    // Sometimes we persist address as an object: { parish, street, postalCode, country, city }
+    if (typeof addressValue === 'object') {
+      const parts = [];
+      if (addressValue.street) parts.push(addressValue.street);
+      if (addressValue.city) parts.push(addressValue.city);
+      if (addressValue.parish) parts.push(addressValue.parish);
+      if (addressValue.postalCode) parts.push(addressValue.postalCode);
+      if (addressValue.country) parts.push(addressValue.country);
+      return parts.filter(Boolean).join(', ');
+    }
+
+    return String(addressValue);
+  };
+
+  const toDisplayText = (value, fallback = '') => {
+    if (value === null || value === undefined) return fallback;
+    if (typeof value === 'string') return value;
+    if (typeof value === 'number' || typeof value === 'boolean') return String(value);
+    if (typeof value === 'object') {
+      const maybeAddress = formatAddress(value);
+      if (maybeAddress) return maybeAddress;
+      try {
+        return JSON.stringify(value);
+      } catch (err) {
+        return fallback;
+      }
+    }
+    return fallback;
+  };
+
   const [companyDetails, setCompanyDetails] = useState({
-    companyName: 'CARE Nursing Services and More',
-    fullName: 'NURSING SERVICES AND MORE',
-    address: 'Kingston, Jamaica',
-    phone: '876-288-7304',
-    email: 'care@nursingcareja.com',
+    companyName: '876 Nurses Home Care Services Limited',
+    fullName: '876 NURSES HOME CARE SERVICES LIMITED',
+    address: '60 Knutsford Blvd, Panjam Building, 9th Floor - Regus, Kingston 5, Jamaica, West Indies',
+    phone: '(876) 618-9876',
+    email: '876nurses@gmail.com',
     taxId: '',
-    website: ''
+    website: 'www.876nurses.com'
   });
 
   const [paymentInfo, setPaymentInfo] = useState({
@@ -87,6 +233,119 @@ export default function InvoiceManagementScreen({ navigation }) {
     loadPaymentInfo();
   }, []);
 
+  const prepareInvoicesForDisplay = React.useCallback((allInvoices) => {
+    const updatedAllInvoices = Array.isArray(allInvoices) ? allInvoices : [];
+
+    const realInvoices = updatedAllInvoices.filter((inv) => {
+      const isSample =
+        inv.appointmentId === 'SAMPLE-001' ||
+        inv.appointmentId?.includes('SAMPLE') ||
+        inv.invoiceId?.includes('SAMPLE') ||
+        inv.clientName === 'John Smith (Sample)' ||
+        inv.clientName === 'Sample Client' ||
+        (inv.clientName === 'John Smith' && inv.clientEmail === 'john.smith@example.com');
+
+      if (isSample) return false;
+
+      if (inv.service === 'Store Purchase' && inv.relatedOrderId) {
+        return true;
+      }
+
+      const invoiceAppointmentId = inv.relatedAppointmentId ?? inv.appointmentId ?? inv.shiftRequestId;
+      if (invoiceAppointmentId !== undefined && invoiceAppointmentId !== null) {
+        return true;
+      }
+
+      return Boolean(inv.invoiceId || inv.invoiceNumber) && Boolean(inv.clientName || inv.patientName || inv.clientEmail || inv.patientEmail);
+    });
+
+    const normalizeDateValue = (value) => {
+      if (!value) return null;
+
+      if (typeof value === 'object') {
+        if (typeof value.toDate === 'function') {
+          const date = value.toDate();
+          const ms = date instanceof Date ? date.getTime() : NaN;
+          return Number.isFinite(ms) ? ms : null;
+        }
+        if (typeof value.seconds === 'number') {
+          const ms = value.seconds * 1000 + (typeof value.nanoseconds === 'number' ? Math.floor(value.nanoseconds / 1e6) : 0);
+          return Number.isFinite(ms) ? ms : null;
+        }
+      }
+
+      const ms = Date.parse(value);
+      return Number.isFinite(ms) ? ms : null;
+    };
+
+    const formatOptionalDate = (value) => {
+      const ms = normalizeDateValue(value);
+      if (ms === null) return null;
+      const d = new Date(ms);
+      return Number.isFinite(d.getTime()) ? InvoiceService.formatDateForInvoice(d) : null;
+    };
+
+    const normalizedInvoices = realInvoices.map((inv) => {
+      const issueDateSource = inv.issueDate || inv.date || inv.createdAt;
+      const dueDateSource = inv.dueDate || inv.paymentDueDate || inv.billingDueDate || inv.billingPeriodEnd;
+
+      const periodStartSource =
+        inv.periodStart ||
+        inv.billingPeriodStart ||
+        inv.recurringPeriodStart ||
+        inv.recurringBilling?.cycleStartDate ||
+        inv.recurringBilling?.periodStart ||
+        inv.recurringBilling?.startDate ||
+        inv.recurringStartDate ||
+        null;
+
+      const periodEndSource =
+        inv.periodEnd ||
+        inv.billingPeriodEnd ||
+        inv.recurringPeriodEnd ||
+        inv.recurringBilling?.cycleEndDate ||
+        inv.recurringBilling?.periodEnd ||
+        inv.recurringBilling?.endDate ||
+        inv.recurringEndDate ||
+        null;
+
+      const periodStart = formatOptionalDate(periodStartSource);
+      const periodEnd = formatOptionalDate(periodEndSource);
+
+      return {
+        ...inv,
+        issueDate: InvoiceService.formatDateForInvoice(issueDateSource),
+        dueDate: InvoiceService.formatDateForInvoice(dueDateSource || issueDateSource),
+        ...(periodStart && periodEnd ? { periodStart, periodEnd } : null),
+      };
+    });
+
+    const extractInvoiceSequence = (invoiceIdValue) => {
+      if (!invoiceIdValue || typeof invoiceIdValue !== 'string') return null;
+      const match = invoiceIdValue.match(/(\d{1,})\s*$/);
+      if (!match) return null;
+      const seq = parseInt(match[1], 10);
+      return Number.isFinite(seq) ? seq : null;
+    };
+
+    return normalizedInvoices.sort((a, b) => {
+      const aMs = normalizeDateValue(a?.updatedAt) ?? normalizeDateValue(a?.createdAt) ?? normalizeDateValue(a?.issueDate) ?? normalizeDateValue(a?.date);
+      const bMs = normalizeDateValue(b?.updatedAt) ?? normalizeDateValue(b?.createdAt) ?? normalizeDateValue(b?.issueDate) ?? normalizeDateValue(b?.date);
+
+      if (aMs !== null && bMs !== null && aMs !== bMs) return bMs - aMs;
+      if (aMs !== null && bMs === null) return -1;
+      if (aMs === null && bMs !== null) return 1;
+
+      const aSeq = extractInvoiceSequence(a?.invoiceId || a?.invoiceNumber);
+      const bSeq = extractInvoiceSequence(b?.invoiceId || b?.invoiceNumber);
+      if (aSeq !== null && bSeq !== null && aSeq !== bSeq) return bSeq - aSeq;
+      if (aSeq !== null && bSeq === null) return -1;
+      if (aSeq === null && bSeq !== null) return 1;
+
+      return String(b?.invoiceId || '').localeCompare(String(a?.invoiceId || ''));
+    });
+  }, []);
+
   const loadPaymentInfo = async () => {
     try {
       const stored = await AsyncStorage.getItem('paymentInfo');
@@ -94,7 +353,7 @@ export default function InvoiceManagementScreen({ navigation }) {
         setPaymentInfo(JSON.parse(stored));
       }
     } catch (error) {
-      console.error('Error loading payment info:', error);
+      // Error loading payment info
     }
   };
 
@@ -102,10 +361,14 @@ export default function InvoiceManagementScreen({ navigation }) {
     try {
       const stored = await AsyncStorage.getItem('companyDetails');
       if (stored) {
-        setCompanyDetails(JSON.parse(stored));
+        const parsed = JSON.parse(stored);
+        setCompanyDetails({
+          ...parsed,
+          address: formatAddress(parsed?.address) || companyDetails.address,
+        });
       }
     } catch (error) {
-      console.error('Error loading company details:', error);
+      // Error loading company details
     }
   };
 
@@ -116,54 +379,123 @@ export default function InvoiceManagementScreen({ navigation }) {
     }, [])
   );
 
+  // Live updates so payment webhooks (Fygaro) reflect immediately.
+  useFocusEffect(
+    React.useCallback(() => {
+      const unsubscribe = InvoiceService.subscribeToInvoices(
+        async (liveInvoices) => {
+          setInvoices(prepareInvoicesForDisplay(liveInvoices));
+          try {
+            const invoiceStats = await InvoiceService.getInvoiceStats();
+            setStats(invoiceStats);
+          } catch {
+            // ignore stats errors
+          }
+        },
+        () => {
+          // ignore subscription errors (screen can still use manual refresh)
+        }
+      );
+
+      return () => {
+        try {
+          if (typeof unsubscribe === 'function') unsubscribe();
+        } catch {
+          // ignore
+        }
+      };
+    }, [prepareInvoicesForDisplay])
+  );
+
   const loadInvoices = async () => {
     try {
+      
       // Remove sample invoices from storage first
       await InvoiceService.removeSampleInvoices();
+
+      // Delete Kaddy Holmes and Unknown Patient invoices as requested
+      const currentInvoices = await InvoiceService.getAllInvoices();
+      const invoicesToDelete = currentInvoices.filter(inv => {
+        if (!inv.clientName) return false;
+        const name = inv.clientName.toLowerCase();
+        return name.includes('kaddy holmes') || 
+               name.includes('unknown patient') || 
+               name.includes('unknown client');
+      });
+      
+      if (invoicesToDelete.length > 0) {
+        for (const inv of invoicesToDelete) {
+          if (inv && inv.invoiceId) {
+            try {
+              await InvoiceService.deleteInvoice(inv.invoiceId);
+            } catch (err) {
+              console.warn(`Failed to delete invoice ${inv.invoiceId}:`, err);
+            }
+          }
+        }
+      }
       
       const allInvoices = await InvoiceService.getAllInvoices();
       
-      // Get all appointments to check for orphaned invoices
+      // Get all appointments to sync with real completed appointments
       const { appointments: allAppointments } = appointments;
-      const completedAppointmentIds = allAppointments
-        ?.filter(apt => apt.status === 'completed')
-        .map(apt => apt.id) || [];
+      const completedAppointments = allAppointments
+        ?.filter(apt => apt.status === 'completed') || [];
+      const completedAppointmentIds = completedAppointments.map(apt => apt.id);
       
-      // Filter out sample invoices, orphaned invoices (no matching appointment)
-      const realInvoices = allInvoices.filter(inv => {
-        const isSample = 
-          inv.appointmentId === 'SAMPLE-001' ||
-          inv.appointmentId?.includes('SAMPLE') ||
-          inv.invoiceId?.includes('SAMPLE') ||
-          inv.clientName === 'John Smith (Sample)' ||
-          inv.clientName === 'Sample Client' ||
-          (inv.clientName === 'John Smith' && inv.clientEmail === 'john.smith@example.com');
-        
-        if (isSample) {
-          return false;
+      
+      // Create invoices from completed appointments that don't have one yet
+      const invoiceAppointmentIds = allInvoices
+        .filter(inv => !inv.appointmentId?.includes('SAMPLE'))
+        .map(inv => inv.appointmentId);
+      
+      const appointmentsNeedingInvoices = completedAppointments.filter(
+        apt => !invoiceAppointmentIds.includes(apt.id)
+      );
+      
+      
+      // Auto-generate invoices for completed appointments
+      for (const apt of appointmentsNeedingInvoices) {
+        try {
+          // InvoiceService.createInvoice expects appointment-like data with an `id` and `appointmentDate`.
+          // If we pass only `appointmentId`, the invoice won't link back to the appointment and will look "missing".
+          const invoiceData = {
+            id: apt.id,
+            appointmentDate: apt.date || apt.appointmentDate || apt.preferredDate || new Date().toISOString(),
+            patientName: apt.patientName || 'Unknown Patient',
+            patientEmail: apt.patientEmail || apt.email || '',
+            patientPhone: apt.patientPhone || apt.phone || '',
+            address: formatAddress(apt.address || apt.clientAddress) || 'Address on file',
+            nurseName: apt.nurseName || apt.assignedNurseName || 'Assigned Nurse',
+            service: apt.service || 'Professional Care',
+            serviceType: apt.serviceType || apt.service || 'Professional Care',
+            billingFrequency: apt.billingFrequency || apt.recurringBilling?.frequency,
+            recurringBilling: apt.recurringBilling,
+            billingPeriodStart: apt.billingPeriodStart,
+            billingPeriodEnd: apt.billingPeriodEnd,
+            recurringPeriodStart: apt.recurringPeriodStart,
+            recurringPeriodEnd: apt.recurringPeriodEnd,
+            completionNotes: apt.completionNotes,
+            nurseNotes: apt.nurseNotes,
+            notes: apt.notes,
+            createdAt: new Date().toISOString()
+          };
+
+          await InvoiceService.createInvoice(invoiceData);
+        } catch (invError) {
+          // Failed to auto-generate invoice
         }
-        
-        // Store invoices have relatedOrderId instead of appointmentId
-        if (inv.service === 'Store Purchase' && inv.relatedOrderId) {
-          return true; // Keep all store invoices
-        }
-        
-        // Check if invoice has a matching completed appointment
-        const hasMatchingAppointment = completedAppointmentIds.includes(inv.appointmentId);
-        if (!hasMatchingAppointment && completedAppointmentIds.length > 0) {
-          return false;
-        }
-        
-        return true;
-      });
+      }
       
       const invoiceStats = await InvoiceService.getInvoiceStats();
       const schedules = await InvoiceService.getRecurringSchedules();
-      setInvoices(realInvoices.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt)));
+
+      // Reload all invoices after auto-generation
+      const updatedAllInvoices = await InvoiceService.getAllInvoices();
+      setInvoices(prepareInvoicesForDisplay(updatedAllInvoices));
       setStats(invoiceStats);
       setRecurringSchedules(schedules);
     } catch (error) {
-      console.error('Error loading invoices:', error);
       Alert.alert('Error', 'Failed to load invoices');
     }
   };
@@ -280,7 +612,7 @@ export default function InvoiceManagementScreen({ navigation }) {
   };
 
   const handleViewInvoice = (invoice) => {
-    setSelectedInvoice(invoice);
+    setSelectedInvoice(resolveInvoicePeriod(invoice));
     // Scroll to the preview section at the top
     // You can add scroll functionality here if needed
   };
@@ -321,14 +653,14 @@ export default function InvoiceManagementScreen({ navigation }) {
   const getStatusIcon = (status) => {
     switch (status) {
       case 'Paid': return 'check-circle';
-      case 'Pending': return 'clock-outline';
+      case 'Pending': return null;
       case 'Overdue': return 'alert-circle';
       default: return 'circle-outline';
     }
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       {/* Header */}
       <LinearGradient
         colors={GRADIENTS.header}
@@ -342,9 +674,6 @@ export default function InvoiceManagementScreen({ navigation }) {
           </TouchableWeb>
           <Text style={styles.headerTitle}>Invoice Management</Text>
           <View style={styles.headerActions}>
-            <TouchableWeb onPress={handleClearAllInvoices} style={styles.iconButton}>
-              <MaterialCommunityIcons name="delete-sweep" size={24} color={COLORS.white} />
-            </TouchableWeb>
             <TouchableWeb onPress={() => setSearchVisible(!searchVisible)} style={styles.iconButton}>
               <MaterialCommunityIcons name="magnify" size={24} color={COLORS.white} />
             </TouchableWeb>
@@ -379,6 +708,13 @@ export default function InvoiceManagementScreen({ navigation }) {
         {/* Invoice Preview Section */}
         <View style={styles.previewSection}>
           <View style={styles.previewHeader}>
+            <TouchableWeb
+              onPress={() => setSelectedInvoice(null)}
+              style={styles.closeIconButton}
+              activeOpacity={0.7}
+            >
+              <MaterialCommunityIcons name="close" size={18} color={COLORS.white} />
+            </TouchableWeb>
             <Text style={styles.previewTitle}>
               {selectedInvoice ? `Invoice Preview - ${selectedInvoice.invoiceId}` : 'Invoice Preview'}
             </Text>
@@ -392,14 +728,13 @@ export default function InvoiceManagementScreen({ navigation }) {
                     await InvoiceService.shareInvoice(sampleInvoice);
                   }
                 } catch (error) {
-                  console.error('Error sharing invoice:', error);
+                  // Error sharing invoice
                 }
               }}
-              style={styles.previewShareButton}
+              style={styles.shareIconButton}
               activeOpacity={0.7}
             >
-              <MaterialCommunityIcons name="share-variant" size={16} color={COLORS.primary} />
-              <Text style={styles.previewShareText}>Share PDF</Text>
+              <MaterialCommunityIcons name="file-pdf-box" size={18} color={COLORS.white} />
             </TouchableWeb>
           </View>
           
@@ -411,14 +746,23 @@ export default function InvoiceManagementScreen({ navigation }) {
                   <View style={styles.pdfHeaderTop}>
                     <View style={styles.pdfCompanyInfo}>
                       <Image 
-                        source={require('../assets/Images/CARElogo.png')} 
-                        style={styles.careLogoHeader}
+                        source={require('../assets/Images/Nurses-logo.png')} 
+                        style={styles.nursesLogoHeader}
                         resizeMode="cover"
                       />
                     </View>
                     <View style={styles.pdfInvoiceInfo}>
                       <Text style={styles.pdfInvoiceTitle}>INVOICE</Text>
-                      <Text style={styles.pdfInvoiceNumber}>{selectedInvoice.invoiceId}</Text>
+                      <Text style={styles.pdfInvoiceNumber}>
+                        {toDisplayText(selectedInvoice.invoiceId, '')?.replace?.('CARE-INV', 'NUR-INV') || toDisplayText(selectedInvoice.invoiceId, '')}
+                      </Text>
+                      {(selectedInvoice?.service !== 'Store Purchase') &&
+                      (selectedInvoice?.periodStart || selectedInvoice?.billingPeriodStart || selectedInvoice?.recurringPeriodStart) &&
+                      (selectedInvoice?.periodEnd || selectedInvoice?.billingPeriodEnd || selectedInvoice?.recurringPeriodEnd) ? (
+                        <Text style={styles.pdfInvoiceDate}>
+                          Period: {formatDate(selectedInvoice?.periodStart || selectedInvoice?.billingPeriodStart || selectedInvoice?.recurringPeriodStart)} - {formatDate(selectedInvoice?.periodEnd || selectedInvoice?.billingPeriodEnd || selectedInvoice?.recurringPeriodEnd)}
+                        </Text>
+                      ) : null}
                       <Text style={styles.pdfInvoiceDate}>Issue Date: {formatDate(selectedInvoice.issueDate)}</Text>
                       <Text style={styles.pdfInvoiceDate}>Due Date: {formatDate(selectedInvoice.dueDate)}</Text>
                     </View>
@@ -433,32 +777,34 @@ export default function InvoiceManagementScreen({ navigation }) {
                       <Text style={styles.pdfSectionTitle}>BILL TO:</Text>
                       <Text style={styles.pdfClientName}>
                         {selectedInvoice.service === 'Store Purchase' 
-                          ? (selectedInvoice.patientName || selectedInvoice.clientName)
-                          : selectedInvoice.clientName
+                          ? toDisplayText(selectedInvoice.patientName || selectedInvoice.clientName, 'Client')
+                          : toDisplayText(selectedInvoice.clientName, 'Client')
                         }
                       </Text>
                       <Text style={styles.pdfClientInfo}>
                         {selectedInvoice.service === 'Store Purchase'
-                          ? (selectedInvoice.patientEmail || selectedInvoice.clientEmail || 'N/A')
-                          : selectedInvoice.clientEmail
+                          ? toDisplayText(selectedInvoice.patientEmail || selectedInvoice.clientEmail, 'N/A')
+                          : toDisplayText(selectedInvoice.clientEmail, 'N/A')
                         }
                       </Text>
                       <Text style={styles.pdfClientInfo}>
                         {selectedInvoice.service === 'Store Purchase'
-                          ? (selectedInvoice.patientPhone || selectedInvoice.clientPhone || 'N/A')
-                          : selectedInvoice.clientPhone
+                          ? toDisplayText(selectedInvoice.patientPhone || selectedInvoice.clientPhone, 'N/A')
+                          : toDisplayText(selectedInvoice.clientPhone, 'N/A')
                         }
                       </Text>
                       {selectedInvoice.service === 'Store Purchase' ? (
                         <Text style={styles.pdfClientInfo}>Order #{selectedInvoice.relatedOrderId}</Text>
                       ) : (
-                        <Text style={styles.pdfClientInfo}>{selectedInvoice.clientAddress || '123 Main Street, Anytown, State 12345'}</Text>
+                        <Text style={styles.pdfClientInfo}>
+                          {formatAddress(selectedInvoice.clientAddress) || '123 Main Street, Anytown, State 12345'}
+                        </Text>
                       )}
                     </View>
                     <View style={styles.pdfServiceProvider}>
                       <Text style={styles.pdfSectionTitle}>SERVICE PROVIDED BY:</Text>
                       <Text style={styles.pdfProviderName}>{companyDetails.companyName}</Text>
-                      <Text style={styles.pdfProviderInfo}>{companyDetails.address}</Text>
+                      <Text style={styles.pdfProviderInfo}>{formatAddress(companyDetails.address)}</Text>
                       <Text style={styles.pdfProviderInfo}>Phone: {companyDetails.phone}</Text>
                       <Text style={styles.pdfProviderInfo}>Email: {companyDetails.email}</Text>
                       {companyDetails.website && <Text style={styles.pdfProviderInfo}>Web: {companyDetails.website}</Text>}
@@ -481,7 +827,6 @@ export default function InvoiceManagementScreen({ navigation }) {
                         </>
                       ) : (
                         <>
-                          <Text style={styles.pdfTableHeaderText}>Date</Text>
                           <Text style={styles.pdfTableHeaderText}>Hours</Text>
                           <Text style={styles.pdfTableHeaderText}>Rate</Text>
                           <Text style={styles.pdfTableHeaderText}>Amount</Text>
@@ -493,28 +838,27 @@ export default function InvoiceManagementScreen({ navigation }) {
                       selectedInvoice.items && selectedInvoice.items.length > 0 ? (
                         selectedInvoice.items.map((item, index) => (
                           <View key={index} style={styles.pdfTableRow}>
-                            <Text style={[styles.pdfTableCell, { flex: 2 }]}>{item.description}</Text>
+                            <Text style={[styles.pdfTableCell, { flex: 2 }]}>{stripServiceDate(item.description)}</Text>
                             <Text style={styles.pdfTableCell}>{item.quantity}</Text>
-                            <Text style={styles.pdfTableCell}>J${item.unitPrice?.toFixed(2) || '0.00'}</Text>
-                            <Text style={styles.pdfTableCellAmount}>J${item.total?.toFixed(2) || '0.00'}</Text>
+                            <Text style={styles.pdfTableCell}>{formatCurrency(item.unitPrice || 0, selectedInvoice?.currencyCode || selectedInvoice?.currency, selectedInvoice?.serviceType || selectedInvoice?.service)}</Text>
+                            <Text style={styles.pdfTableCellAmount}>{formatCurrency(item.total || 0, selectedInvoice?.currencyCode || selectedInvoice?.currency, selectedInvoice?.serviceType || selectedInvoice?.service)}</Text>
                           </View>
                         ))
                       ) : (
                         <View style={styles.pdfTableRow}>
-                          <Text style={[styles.pdfTableCell, { flex: 2 }]}>{selectedInvoice.description || selectedInvoice.service}</Text>
+                          <Text style={[styles.pdfTableCell, { flex: 2 }]}>{stripServiceDate(selectedInvoice.description || selectedInvoice.service)}</Text>
                           <Text style={styles.pdfTableCell}>1</Text>
-                          <Text style={styles.pdfTableCell}>J${selectedInvoice.total}</Text>
-                          <Text style={styles.pdfTableCellAmount}>J${selectedInvoice.total}</Text>
+                          <Text style={styles.pdfTableCell}>{formatCurrency(selectedInvoice.total || 0, selectedInvoice?.currencyCode || selectedInvoice?.currency, selectedInvoice?.serviceType || selectedInvoice?.service)}</Text>
+                          <Text style={styles.pdfTableCellAmount}>{formatCurrency(selectedInvoice.total || 0, selectedInvoice?.currencyCode || selectedInvoice?.currency, selectedInvoice?.serviceType || selectedInvoice?.service)}</Text>
                         </View>
                       )
                     ) : (
                       // Appointment Service
                       <View style={styles.pdfTableRow}>
-                        <Text style={[styles.pdfTableCell, { flex: 2 }]}>{selectedInvoice.service}</Text>
-                        <Text style={styles.pdfTableCell}>{formatDate(selectedInvoice.date)}</Text>
-                        <Text style={styles.pdfTableCell}>{selectedInvoice.hours}</Text>
-                        <Text style={styles.pdfTableCell}>${selectedInvoice.rate}</Text>
-                        <Text style={styles.pdfTableCellAmount}>${selectedInvoice.total}</Text>
+                        <Text style={[styles.pdfTableCell, { flex: 2 }]}>{stripServiceDate(selectedInvoice.service)}</Text>
+                        <Text style={styles.pdfTableCell}>{selectedInvoice.hours || 'N/A'}</Text>
+                        <Text style={styles.pdfTableCell}>{formatCurrency(selectedInvoice.rate || 0, selectedInvoice?.currencyCode || selectedInvoice?.currency, selectedInvoice?.serviceType || selectedInvoice?.service)}</Text>
+                        <Text style={styles.pdfTableCellAmount}>{formatCurrency(selectedInvoice.total || 0, selectedInvoice?.currencyCode || selectedInvoice?.currency, selectedInvoice?.serviceType || selectedInvoice?.service)}</Text>
                       </View>
                     )}
                   </View>
@@ -554,18 +898,24 @@ export default function InvoiceManagementScreen({ navigation }) {
                     {/* Invoice Totals */}
                     <View style={styles.pdfTotalsSection}>
                       <View style={styles.pdfTotalRow}>
-                        <Text style={styles.pdfTotalLabel}>Subtotal:</Text>
+                        <Text style={styles.pdfTotalLabel}>Deposit:</Text>
                         <Text style={styles.pdfTotalValue}>
-                          {selectedInvoice.service === 'Store Purchase' ? 'J$' : '$'}
-                          {(selectedInvoice.subtotal || selectedInvoice.total || selectedInvoice.amount || 0).toFixed(2)}
+                          {formatCurrency(
+                            selectedInvoice.subtotal || selectedInvoice.total || selectedInvoice.amount || 0,
+                            selectedInvoice?.currencyCode || selectedInvoice?.currency,
+                            selectedInvoice?.serviceType || selectedInvoice?.service
+                          )}
                         </Text>
                       </View>
                       <View style={styles.pdfBlueLine} />
                       <View style={styles.pdfFinalTotalRow}>
                         <Text style={styles.pdfFinalTotalLabel}>Total Amount:</Text>
                         <Text style={styles.pdfFinalTotalAmount}>
-                          {selectedInvoice.service === 'Store Purchase' ? 'J$' : '$'}
-                          {(selectedInvoice.finalTotal || selectedInvoice.total || selectedInvoice.amount || 0).toFixed(2)}
+                          {formatCurrency(
+                            selectedInvoice.finalTotal || selectedInvoice.total || selectedInvoice.amount || 0,
+                            selectedInvoice?.currencyCode || selectedInvoice?.currency,
+                            selectedInvoice?.serviceType || selectedInvoice?.service
+                          )}
                         </Text>
                       </View>
                       
@@ -587,15 +937,6 @@ export default function InvoiceManagementScreen({ navigation }) {
                   </View>
                 </View>
               </View>
-              
-              {/* Close Button */}
-              <TouchableWeb
-                style={styles.closePreviewButton}
-                onPress={() => setSelectedInvoice(null)}
-              >
-                <MaterialCommunityIcons name="close" size={18} color={COLORS.white} />
-                <Text style={styles.closePreviewText}>Close Preview</Text>
-              </TouchableWeb>
             </>
           ) : (
             <View style={styles.noInvoiceSelected}>
@@ -624,7 +965,7 @@ export default function InvoiceManagementScreen({ navigation }) {
                   colors={GRADIENTS.header}
                   style={styles.filterPillGradient}
                   start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
+                  end={{ x: 0, y: 1 }}
                 >
                   <Text style={styles.filterPillText}>
                     {filter.label}
@@ -655,50 +996,82 @@ export default function InvoiceManagementScreen({ navigation }) {
           </View>
         ) : (
           <View style={styles.invoicesList}>
-            {filteredInvoices.map((invoice) => (
-              <View
-                key={invoice.invoiceId}
-                style={styles.invoiceCard}
-              >
-                <View style={styles.invoiceHeader}>
-                  <View style={styles.invoiceInfo}>
-                    {invoice.service === 'Store Purchase' ? (
-                      <Text style={styles.invoiceId}>Order #{invoice.relatedOrderId}</Text>
-                    ) : (
-                      <>
-                        <Text style={styles.invoiceId}>{invoice.invoiceId}</Text>
-                        <Text style={styles.clientName}>{invoice.clientName}</Text>
-                      </>
-                    )}
-                  </View>
-                  <View style={styles.invoiceActions}>
-                    <TouchableWeb
-                      style={styles.viewButton}
-                      onPress={() => handleViewInvoice(invoice)}
+            {/* Grouped by Status Sectional Flow */}
+            {['Pending', 'Paid', 'Overdue'].map((status) => {
+              const statusInvoices = filteredInvoices.filter(inv => inv.status === status);
+              if (statusInvoices.length === 0 && filterStatus !== 'All') return null;
+              if (statusInvoices.length === 0) return null;
+
+              return (
+                <View key={status} style={styles.statusSection}>
+                  {statusInvoices.map((invoice) => (
+                    <View
+                      key={invoice.invoiceId}
+                      style={styles.invoiceCard}
                     >
-                      <LinearGradient
-                        colors={GRADIENTS.header}
-                        start={{ x: 0, y: 0 }}
-                        end={{ x: 1, y: 1 }}
-                        style={styles.viewButtonGradient}
-                      >
-                        <Text style={styles.viewButtonText}>View</Text>
-                      </LinearGradient>
-                    </TouchableWeb>
-                    
-                    {invoice.status === 'Pending' && (
-                      <TouchableWeb
-                        style={styles.paidButton}
-                        onPress={() => handleMarkAsPaid(invoice)}
-                      >
-                        <MaterialCommunityIcons name="check" size={16} color={COLORS.white} />
-                        <Text style={styles.paidButtonText}>Paid</Text>
-                      </TouchableWeb>
-                    )}
-                  </View>
+                      <View style={styles.invoiceHeader}>
+                        <View style={styles.invoiceInfo}>
+                          <View style={styles.invoiceCardInfo}>
+                            <Text style={styles.invoiceId}>
+                              {invoice.service === 'Store Purchase'
+                                ? `Order #${invoice.relatedOrderId || invoice.invoiceId}`
+                                : (invoice.invoiceId?.replace('CARE-INV', 'NUR-INV') || invoice.invoiceId)}
+                            </Text>
+                            {invoice.service !== 'Store Purchase' && (invoice.patientName || invoice.clientName) && (
+                              <Text style={styles.invoicePatientName}>
+                                {invoice.patientName || invoice.clientName}
+                              </Text>
+                            )}
+                          </View>
+                        </View>
+                        <View style={styles.invoiceActions}>
+                          <TouchableWeb
+                            style={styles.viewButton}
+                            onPress={() => handleViewInvoice(invoice)}
+                          >
+                            <LinearGradient
+                              colors={GRADIENTS.header}
+                              start={{ x: 0, y: 0 }}
+                              end={{ x: 0, y: 1 }}
+                              style={styles.viewButtonGradient}
+                            >
+                              <Text style={styles.viewButtonText}>View</Text>
+                            </LinearGradient>
+                          </TouchableWeb>
+                          
+                          {invoice.status === 'Pending' && (
+                            <TouchableWeb
+                              style={styles.paidButton}
+                              onPress={() => handleMarkAsPaid(invoice)}
+                            >
+                              <LinearGradient
+                                colors={['#10b981', '#059669']}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 0, y: 1 }}
+                                style={styles.paidButtonGradient}
+                              >
+                                <Text style={styles.paidButtonText}>Paid</Text>
+                              </LinearGradient>
+                            </TouchableWeb>
+                          )}
+
+                          {invoice.status === 'Paid' && (
+                            <LinearGradient
+                              colors={['#10b981', '#059669']}
+                              start={{ x: 0, y: 0 }}
+                              end={{ x: 0, y: 1 }}
+                              style={styles.paidStatusPill}
+                            >
+                              <Text style={styles.paidStatusPillText}>Paid</Text>
+                            </LinearGradient>
+                          )}
+                        </View>
+                      </View>
+                    </View>
+                  ))}
                 </View>
-              </View>
-            ))}
+              );
+            })}
           </View>
         )}
       </ScrollView>
@@ -734,15 +1107,15 @@ export default function InvoiceManagementScreen({ navigation }) {
                     <Text style={styles.sectionTitle}>Invoice Information</Text>
                     <View style={styles.detailRow}>
                       <Text style={styles.detailLabel}>Invoice ID:</Text>
-                      <Text style={styles.detailValue}>{selectedInvoice.invoiceId}</Text>
+                      <Text style={styles.detailValue}>{toDisplayText(selectedInvoice.invoiceId, '')}</Text>
                     </View>
                     <View style={styles.detailRow}>
                       <Text style={styles.detailLabel}>Issue Date:</Text>
-                      <Text style={styles.detailValue}>{selectedInvoice.issueDate}</Text>
+                      <Text style={styles.detailValue}>{formatDate(selectedInvoice.issueDate)}</Text>
                     </View>
                     <View style={styles.detailRow}>
                       <Text style={styles.detailLabel}>Due Date:</Text>
-                      <Text style={styles.detailValue}>{selectedInvoice.dueDate}</Text>
+                      <Text style={styles.detailValue}>{formatDate(selectedInvoice.dueDate)}</Text>
                     </View>
                     <View style={styles.detailRow}>
                       <Text style={styles.detailLabel}>Status:</Text>
@@ -758,15 +1131,15 @@ export default function InvoiceManagementScreen({ navigation }) {
                     <Text style={styles.sectionTitle}>Client Information</Text>
                     <View style={styles.detailRow}>
                       <Text style={styles.detailLabel}>Name:</Text>
-                      <Text style={styles.detailValue}>{selectedInvoice.clientName}</Text>
+                      <Text style={styles.detailValue}>{toDisplayText(selectedInvoice.clientName, '')}</Text>
                     </View>
                     <View style={styles.detailRow}>
                       <Text style={styles.detailLabel}>Email:</Text>
-                      <Text style={styles.detailValue}>{selectedInvoice.clientEmail}</Text>
+                      <Text style={styles.detailValue}>{toDisplayText(selectedInvoice.clientEmail, '')}</Text>
                     </View>
                     <View style={styles.detailRow}>
                       <Text style={styles.detailLabel}>Phone:</Text>
-                      <Text style={styles.detailValue}>{selectedInvoice.clientPhone}</Text>
+                      <Text style={styles.detailValue}>{toDisplayText(selectedInvoice.clientPhone, '')}</Text>
                     </View>
                   </View>
 
@@ -774,11 +1147,11 @@ export default function InvoiceManagementScreen({ navigation }) {
                     <Text style={styles.sectionTitle}>Service Details</Text>
                     <View style={styles.detailRow}>
                       <Text style={styles.detailLabel}>Service:</Text>
-                      <Text style={styles.detailValue}>{selectedInvoice.service}</Text>
+                      <Text style={styles.detailValue}>{stripServiceDate(selectedInvoice.service)}</Text>
                     </View>
                     <View style={styles.detailRow}>
                       <Text style={styles.detailLabel}>Date:</Text>
-                      <Text style={styles.detailValue}>{selectedInvoice.date}</Text>
+                      <Text style={styles.detailValue}>{formatDate(selectedInvoice.date)}</Text>
                     </View>
                     <View style={styles.detailRow}>
                       <Text style={styles.detailLabel}>Hours:</Text>
@@ -786,11 +1159,11 @@ export default function InvoiceManagementScreen({ navigation }) {
                     </View>
                     <View style={styles.detailRow}>
                       <Text style={styles.detailLabel}>Rate:</Text>
-                      <Text style={styles.detailValue}>${selectedInvoice.rate}</Text>
+                      <Text style={styles.detailValue}>{formatCurrency(selectedInvoice.rate || 0, selectedInvoice?.currencyCode || selectedInvoice?.currency, selectedInvoice?.serviceType || selectedInvoice?.service)}</Text>
                     </View>
                     <View style={styles.detailRow}>
                       <Text style={styles.detailLabel}>Total:</Text>
-                      <Text style={[styles.detailValue, styles.totalAmount]}>${selectedInvoice.total}</Text>
+                      <Text style={[styles.detailValue, styles.totalAmount]}>{formatCurrency(selectedInvoice.total || 0, selectedInvoice?.currencyCode || selectedInvoice?.currency, selectedInvoice?.serviceType || selectedInvoice?.service)}</Text>
                     </View>
                   </View>
 
@@ -811,15 +1184,15 @@ export default function InvoiceManagementScreen({ navigation }) {
 
                     {selectedInvoice.status === 'Pending' && (
                       <TouchableWeb
-                        style={styles.actionButton}
+                        style={[styles.actionButton, styles.paidActionButton]}
                         onPress={() => handleMarkAsPaid(selectedInvoice)}
                       >
                         <LinearGradient
-                          colors={[COLORS.success, '#2E7D32']}
-                          style={styles.actionButtonGradient}
+                          colors={['#10b981', '#059669']}
+                          style={[styles.actionButtonGradient, styles.paidActionButtonGradient]}
                         >
                           <MaterialCommunityIcons name="check" size={18} color={COLORS.white} />
-                          <Text style={styles.actionButtonText}>Mark Paid</Text>
+                          <Text style={[styles.actionButtonText, styles.paidActionButtonText]}>Mark Paid</Text>
                         </LinearGradient>
                       </TouchableWeb>
                     )}
@@ -902,14 +1275,14 @@ export default function InvoiceManagementScreen({ navigation }) {
                   <Text style={styles.paymentMethodCancelText}>Cancel</Text>
                 </TouchableWeb>
                 <TouchableWeb
-                  style={styles.paymentMethodConfirmButton}
+                  style={[styles.paymentMethodConfirmButton, styles.paidActionButton]}
                   onPress={confirmMarkAsPaid}
                 >
                   <LinearGradient
-                    colors={[COLORS.success, '#2E7D32']}
-                    style={styles.paymentMethodConfirmGradient}
+                    colors={['#10b981', '#059669']}
+                    style={[styles.paymentMethodConfirmGradient, styles.paidActionButtonGradient]}
                   >
-                    <Text style={styles.paymentMethodConfirmText}>Confirm Payment</Text>
+                    <Text style={[styles.paymentMethodConfirmText, styles.paidActionButtonText]}>Confirm Payment</Text>
                   </LinearGradient>
                 </TouchableWeb>
               </View>
@@ -981,15 +1354,48 @@ const styles = StyleSheet.create({
     paddingVertical: SPACING.md,
   },
   previewHeader: {
+    backgroundColor: COLORS.white,
     flexDirection: 'row',
-    justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: SPACING.sm,
+    justifyContent: 'space-between',
+    paddingHorizontal: 8,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
   },
   previewTitle: {
-    fontSize: 16,
+    fontSize: 15,
     fontWeight: '600',
-    color: COLORS.text,
+    color: '#333',
+    flex: 1,
+    textAlign: 'center',
+    marginHorizontal: 6,
+  },
+  closeIconButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#EF5350',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  shareIconButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#2196F3',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
   },
   previewShareButton: {
     flexDirection: 'row',
@@ -1009,6 +1415,8 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.white,
     borderRadius: 12,
     overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: COLORS.border,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 4 },
     shadowOpacity: 0.15,
@@ -1150,7 +1558,7 @@ const styles = StyleSheet.create({
   },
   pdfHeader: {
     backgroundColor: COLORS.white,
-    paddingTop: SPACING.md,
+    paddingTop: 4,
   },
   pdfHeaderTop: {
     flexDirection: 'row',
@@ -1163,10 +1571,10 @@ const styles = StyleSheet.create({
     flex: 1,
     marginRight: SPACING.sm,
   },
-  careLogoHeader: {
-    width: 200,
-    height: 80,
-    marginLeft: -40,
+  nursesLogoHeader: {
+    width: 70,
+    height: 70,
+    marginLeft: 24,
   },
   pdfCompanyName: {
     fontSize: 18,
@@ -1447,11 +1855,31 @@ const styles = StyleSheet.create({
   invoicesList: {
     padding: SPACING.md,
   },
+  statusSection: {
+    marginBottom: 24,
+  },
+  statusSectionHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 12,
+    paddingBottom: 8,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  statusSectionTitle: {
+    fontSize: 14,
+    fontFamily: 'Poppins_700Bold',
+    textTransform: 'uppercase',
+    letterSpacing: 1,
+  },
   invoiceCard: {
     backgroundColor: COLORS.white,
     borderRadius: 12,
     padding: 12,
     marginBottom: 8,
+    borderWidth: 1,
+    borderColor: COLORS.border,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.05,
@@ -1464,18 +1892,80 @@ const styles = StyleSheet.create({
     alignItems: 'flex-start',
     marginBottom: SPACING.sm,
   },
+  invoiceMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-end',
+    justifyContent: 'space-between',
+    gap: SPACING.md,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border + '80',
+    paddingTop: SPACING.sm,
+  },
+  invoiceMetaBlock: {
+    flex: 1,
+  },
+  invoiceMetaLabel: {
+    fontSize: 11,
+    color: COLORS.textLight,
+    fontFamily: 'Poppins_500Medium',
+  },
+  invoiceMetaValue: {
+    marginTop: 2,
+    fontSize: 13,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+  },
+  invoiceMetaOverdue: {
+    color: COLORS.error,
+  },
+  invoiceMetaAmountBlock: {
+    alignItems: 'flex-end',
+  },
+  invoiceMetaAmount: {
+    marginTop: 2,
+    fontSize: 16,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.text,
+  },
   invoiceInfo: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  invoiceCardInfo: {
     flex: 1,
   },
   invoiceId: {
-    fontSize: 16,
-    fontWeight: '600',
+    fontSize: 15,
+    fontFamily: 'Poppins_700Bold',
     color: COLORS.text,
+  },
+  invoicePatientName: {
+    marginTop: 2,
+    fontSize: 13,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.textLight,
   },
   clientName: {
     fontSize: 14,
     color: COLORS.textLight,
+  },
+  invoiceSubInfo: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
     marginTop: 2,
+  },
+  statusBadgeSmall: {
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    borderRadius: 4,
+  },
+  statusTextSmall: {
+    fontSize: 10,
+    fontFamily: 'Poppins_600SemiBold',
+    textTransform: 'uppercase',
   },
   invoiceService: {
     fontSize: 12,
@@ -1497,7 +1987,7 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.white,
     borderTopLeftRadius: 20,
     borderTopRightRadius: 20,
-    maxHeight: '90%',
+    maxHeight: Platform.OS === 'android' ? '93%' : '85%',
     minHeight: '50%',
   },
   modalHeader: {
@@ -1585,6 +2075,20 @@ const styles = StyleSheet.create({
     fontSize: 14,
     fontWeight: '600',
   },
+  paidActionButton: {
+    borderRadius: 20,
+    shadowColor: COLORS.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  paidActionButtonGradient: {
+    borderRadius: 20,
+  },
+  paidActionButtonText: {
+    fontFamily: 'Poppins_700Bold',
+  },
   deleteButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1606,33 +2110,63 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
   viewButton: {
-    borderRadius: 8,
+    borderRadius: 20,
     overflow: 'hidden',
+    shadowColor: COLORS.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
   },
   viewButtonGradient: {
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  viewButtonText: {
-    fontSize: 11,
-    fontFamily: 'Poppins_600SemiBold',
-    color: COLORS.white,
-  },
-  paidButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    paddingHorizontal: SPACING.sm,
+    justifyContent: 'center',
     paddingVertical: 6,
-    borderRadius: 6,
-    backgroundColor: COLORS.success,
+    paddingHorizontal: 14,
+    borderRadius: 20,
     gap: 4,
+  },
+  viewButtonText: {
+    color: COLORS.white,
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+  },
+  paidButton: {
+    borderRadius: 20,
+    overflow: 'hidden',
+    shadowColor: COLORS.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  paidButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    minWidth: 56,
   },
   paidButtonText: {
     color: COLORS.white,
     fontSize: 12,
-    fontWeight: '500',
+    fontFamily: 'Poppins_700Bold',
+  },
+  paidStatusPill: {
+    paddingHorizontal: SPACING.sm,
+    paddingVertical: 6,
+    borderRadius: 999,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minWidth: 56,
+  },
+  paidStatusPillText: {
+    color: COLORS.white,
+    fontSize: 12,
+    fontFamily: 'Poppins_700Bold',
   },
   noInvoiceSelected: {
     alignItems: 'center',

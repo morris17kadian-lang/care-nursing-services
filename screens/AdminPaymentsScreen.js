@@ -178,7 +178,7 @@ export default function AdminPaymentsScreen({ navigation }) {
   };
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <LinearGradient
         colors={GRADIENTS.header}
         start={{ x: 0, y: 0 }}
@@ -190,6 +190,13 @@ export default function AdminPaymentsScreen({ navigation }) {
         </View>
       </LinearGradient>
 
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
+
       {/* Tab Navigation */}
       <View style={styles.tabContainer}>
         <TouchableWeb
@@ -200,7 +207,7 @@ export default function AdminPaymentsScreen({ navigation }) {
             <LinearGradient
               colors={GRADIENTS.header}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.activeTabGradient}
             >
               <MaterialCommunityIcons 
@@ -234,7 +241,7 @@ export default function AdminPaymentsScreen({ navigation }) {
             <LinearGradient
               colors={GRADIENTS.header}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.activeTabGradient}
             >
               <MaterialCommunityIcons 
@@ -268,7 +275,7 @@ export default function AdminPaymentsScreen({ navigation }) {
             <LinearGradient
               colors={GRADIENTS.header}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.activeTabGradient}
             >
               <MaterialCommunityIcons 
@@ -754,6 +761,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
   },
   header: {
     paddingBottom: 20,

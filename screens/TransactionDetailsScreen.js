@@ -190,7 +190,7 @@ export default function TransactionDetailsScreen({ navigation, route }) {
             <LinearGradient
               colors={GRADIENTS.primary}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.actionButtonGradient}
             >
               <MaterialCommunityIcons name="download" size={20} color={COLORS.white} />

@@ -5,6 +5,7 @@ import {
   Text,
   StyleSheet,
   ScrollView,
+  Image,
 } from 'react-native';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -15,7 +16,7 @@ export default function TermsScreen({ navigation }) {
   const insets = useSafeAreaInsets();
   
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <LinearGradient
         colors={GRADIENTS.header}
         start={{ x: 0, y: 0 }}
@@ -31,6 +32,13 @@ export default function TermsScreen({ navigation }) {
         </View>
       </LinearGradient>
 
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
+
       <ScrollView 
         style={styles.scrollView} 
         contentContainerStyle={styles.scrollContent}
@@ -42,21 +50,24 @@ export default function TermsScreen({ navigation }) {
           <Text style={styles.section}>
             <Text style={styles.sectionTitle}>1. Acceptance of Terms{'\n'}</Text>
             <Text style={styles.bodyText}>
-              By accessing and using the CARE Nursing Services mobile application, you accept and agree to be bound by these Terms of Service. If you do not agree to these terms, please do not use our services.
+                  By accessing and using the 876Nurses mobile application, you accept and agree to be bound by these Terms of Service. If you do not agree to these terms, please do not use our services.
             </Text>
           </Text>
 
           <Text style={styles.section}>
             <Text style={styles.sectionTitle}>2. Services Provided{'\n'}</Text>
             <Text style={styles.bodyText}>
-              CARE provides professional nursing and healthcare services including but not limited to:{'\n\n'}
-              • Home nursing care{'\n'}
-              • Elder care services{'\n'}
-              • Post-surgery care{'\n'}
-              • Wound care and dressings{'\n'}
-              • IV therapy{'\n'}
-              • Health monitoring{'\n'}
-              • Emergency response services{'\n\n'}
+                  876 Nurses Home Care Services Limited provides professional nursing and healthcare services including but not limited to:{'\n\n'}
+                  • Home care assistance{'\n'}
+                  • Alternative post-op care{'\n'}
+                  • Assistance with acute/chronic illness{'\n'}
+                  • In-home phlebotomy service{'\n'}
+                  • In-hospital care giver{'\n'}
+                  • Physiotherapy{'\n'}
+                  • Wound care{'\n'}
+                  • IV medication administration and monitoring{'\n'}
+                  • Appointment accompaniment{'\n'}
+                  • Event nurses{'\n'}
               All services are provided by licensed and certified healthcare professionals.
             </Text>
           </Text>
@@ -64,7 +75,7 @@ export default function TermsScreen({ navigation }) {
           <Text style={styles.section}>
             <Text style={styles.sectionTitle}>3. Booking and Appointments{'\n'}</Text>
             <Text style={styles.bodyText}>
-              • Appointments must be booked through the CARE mobile app{'\n'}
+                  • Appointments must be booked through the 876Nurses mobile app{'\n'}
               • We will confirm all appointments within 24 hours{'\n'}
               • Cancellations must be made at least 24 hours in advance{'\n'}
               • Late cancellations may incur a fee{'\n'}
@@ -98,7 +109,7 @@ export default function TermsScreen({ navigation }) {
           <Text style={styles.section}>
             <Text style={styles.sectionTitle}>6. Limitation of Liability{'\n'}</Text>
             <Text style={styles.bodyText}>
-              CARE Nursing Services and its healthcare professionals will exercise reasonable care and skill in providing services. However, we are not liable for outcomes beyond our control or for complications arising from pre-existing medical conditions.
+                  876 Nurses Home Care Services Limited and its healthcare professionals will exercise reasonable care and skill in providing services. However, we are not liable for outcomes beyond our control or for complications arising from pre-existing medical conditions.
             </Text>
           </Text>
 
@@ -123,7 +134,7 @@ export default function TermsScreen({ navigation }) {
           <Text style={styles.section}>
             <Text style={styles.sectionTitle}>9. Changes to Terms{'\n'}</Text>
             <Text style={styles.bodyText}>
-              CARE reserves the right to modify these terms at any time. Users will be notified of significant changes. Continued use of the service constitutes acceptance of modified terms.
+                  876 Nurses Home Care Services Limited reserves the right to modify these terms at any time. Users will be notified of significant changes. Continued use of the service constitutes acceptance of modified terms.
             </Text>
           </Text>
 
@@ -131,16 +142,16 @@ export default function TermsScreen({ navigation }) {
             <Text style={styles.sectionTitle}>10. Contact Information{'\n'}</Text>
             <Text style={styles.bodyText}>
               For questions about these Terms of Service, please contact us:{'\n\n'}
-              Email: care@nursingcareja.com{'\n'}
-              Phone: 876-288-7304{'\n'}
-              Instagram: @carenursingservices
+                  Email: 876nurses@gmail.com{'\n'}
+                  Phone: (876) 618-9876{'\n'}
+                  Instagram: @876_nurses
             </Text>
           </Text>
 
           <View style={styles.footer}>
             <MaterialCommunityIcons name="shield-check" size={32} color={COLORS.primary} />
             <Text style={styles.footerText}>
-              By using CARE services, you acknowledge that you have read, understood, and agree to these Terms of Service.
+              By using 876Nurses services, you acknowledge that you have read, understood, and agree to these Terms of Service.
             </Text>
           </View>
         </View>
@@ -153,6 +164,15 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: COLORS.background,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
   },
   header: {
     paddingHorizontal: 20,

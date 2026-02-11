@@ -1,0 +1,11 @@
+{
+  "typescript.validate.enable": false,
+  "javascript.validate.enable": true,
+  "typescript.preferences.includePackageJsonAutoImports": "off",
+  "typescript.suggest.enabled": false,
+  "files.exclude": {
+    "**/node_modules": true,
+    "**/.expo": true,
+    "**/web-build": true
+  }
+}

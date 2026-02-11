@@ -20,20 +20,157 @@ import { useAppointments } from '../context/AppointmentContext';
 import { useShifts } from '../context/ShiftContext';
 import { useNurses } from '../context/NurseContext';
 import TouchableWeb from '../components/TouchableWeb';
+import ApiService from '../services/ApiService';
+import PayslipGenerator from '../services/PayslipGenerator';
+import PayslipComponent from '../components/PayslipComponent';
+
+const getEmptyReviewForm = () => ({
+  status: 'pending',
+  regularHours: '',
+  overtimeHours: '',
+  basePay: '',
+  manualAdjustment: '0',
+  allowances: { transport: '0', meal: '0', phone: '0', other: '0' },
+  deductions: { tax: '0', nis: '0', other: '0' },
+  notes: '',
+});
+
+const sanitizeNumber = (value) => {
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : 0;
+  }
+  if (!value && value !== 0) {
+    return 0;
+  }
+  const parsed = parseFloat(String(value).replace(/[^0-9.-]/g, ''));
+  return Number.isNaN(parsed) ? 0 : parsed;
+};
+
+const formatCurrencyValue = (amount) => {
+  const numeric = sanitizeNumber(amount);
+  return `J$${numeric.toLocaleString(undefined, { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
+};
+
+const formatDisplayDate = (value) => {
+  if (!value) {
+    return 'Pending';
+  }
+  
+  // Handle "Feb 19, 2026" format from BookScreen
+  if (typeof value === 'string') {
+    const match = value.match(/^([A-Za-z]{3})\s+(\d{1,2}),?\s+(\d{4})$/);
+    if (match) {
+      const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+      const monthIndex = monthNames.findIndex(m => m === match[1]);
+      if (monthIndex !== -1) {
+        const parsed = new Date(parseInt(match[3]), monthIndex, parseInt(match[2]));
+        if (!isNaN(parsed.getTime())) {
+          return parsed.toLocaleDateString('en-US', {
+            month: 'short',
+            day: 'numeric',
+            year: 'numeric',
+          });
+        }
+      }
+    }
+  }
+  
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toLocaleDateString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    year: 'numeric',
+  });
+};
+
+const sumObjectValues = (object = {}) => {
+  return Object.values(object || {}).reduce((sum, value) => sum + sanitizeNumber(value), 0);
+};
+
+const FILTER_OPTIONS = [
+  { key: 'available', label: 'Available' },
+  { key: 'past', label: 'Past' },
+  { key: 'all', label: 'All' },
+];
+
+const FILTER_LABELS = FILTER_OPTIONS.reduce((map, option) => {
+  map[option.key] = option.label;
+  return map;
+}, {});
 
 const RecentTransactionsScreen = ({ navigation }) => {
+  const handleClearTransactionData = async () => {
+    Alert.alert(
+      'Clear Transaction Data',
+      'This will clear all payslips, transactions, and payment records. Continue?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Clear',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              const keysToClear = [
+                'payslips',
+                'generatedPayslips',
+                'nursePayslips',
+                'recentTransactions',
+                'transactions',
+                'staffTransactions',
+                'staffPayments',
+                'paymentRecords',
+                'adminPayrollSettings',
+                'paymentMethods'
+              ];
+              await AsyncStorage.multiRemove(keysToClear);
+              await AsyncStorage.setItem('transactionsCleared', 'true');
+              setTransactionsCleared(true);
+              setAdminStaff([]);
+              setAdminPayrollSettings(null);
+              setPaymentMethods([]);
+              setGeneratedPayslips([]);
+              Alert.alert('Success', '✅ Transaction data cleared!');
+            } catch (error) {
+              Alert.alert('Error', 'Failed to clear data');
+            }
+          }
+        }
+      ]
+    );
+  };
   const insets = useSafeAreaInsets();
   const { nurses } = useNurses();
+  const [transactionsCleared, setTransactionsCleared] = useState(false);
   const [sortBy, setSortBy] = useState('date'); // 'date', 'amount', 'status'
-  const [selectedFilter, setSelectedFilter] = useState('all'); // 'all', 'completed', 'pending', 'failed'
+  const [selectedFilter, setSelectedFilter] = useState('available'); // 'available', 'past', 'all'
   const [newPaymentModalVisible, setNewPaymentModalVisible] = useState(false);
   const [selectedPayslip, setSelectedPayslip] = useState(null);
+  const [companyDetails, setCompanyDetails] = useState({
+    companyName: 'CARE Nursing Services and More',
+    address: 'Kingston, Jamaica',
+    city: 'Kingston, Jamaica',
+    phone: '876-288-7304',
+    email: 'care@nursingcareja.com',
+    website: '',
+  });
   const [searchQuery, setSearchQuery] = useState('');
   const [searchVisible, setSearchVisible] = useState(false);
   const [refreshing, setRefreshing] = useState(false);
   const [pastPayslipsModalVisible, setPastPayslipsModalVisible] = useState(false);
   const [selectedStaffForHistory, setSelectedStaffForHistory] = useState(null);
   const [staffPayslipHistory, setStaffPayslipHistory] = useState([]);
+  const [generatePayslipModalVisible, setGeneratePayslipModalVisible] = useState(false);
+  const [selectedStaffType, setSelectedStaffType] = useState('all'); // 'all', 'nurses', 'admin'
+  const [selectedStaff, setSelectedStaff] = useState([]);
+  const [adminStaff, setAdminStaff] = useState([]);
+  const [adminPayrollSettings, setAdminPayrollSettings] = useState(null);
+  const [paymentMethodModalVisible, setPaymentMethodModalVisible] = useState(false);
+  const [paymentMethods, setPaymentMethods] = useState([]);
+  const [selectedPaymentMethod, setSelectedPaymentMethod] = useState(null);
+  const [payslipToPay, setPayslipToPay] = useState(null);
   const { appointments } = useAppointments();
   const { shifts } = useShifts();
   const [paymentForm, setPaymentForm] = useState({
@@ -43,31 +180,364 @@ const RecentTransactionsScreen = ({ navigation }) => {
     paymentMethod: 'Bank Transfer',
     category: 'Salary'
   });
+  const [reviewModalVisible, setReviewModalVisible] = useState(false);
+  const [reviewPayslip, setReviewPayslip] = useState(null);
+  const [payslipReviewForm, setPayslipReviewForm] = useState(getEmptyReviewForm());
+  const [payrollValidation, setPayrollValidation] = useState({
+    status: 'idle',
+    issues: [],
+    totals: { gross: 0, net: 0 },
+    lastRun: null,
+  });
 
-  // Get staff members from nurses context
-  const staffMembers = useMemo(() => {
-    if (!nurses || nurses.length === 0) {
-      // Fallback to mock data if nurses context is empty
-      return [
-        { id: 'nurse-001', name: 'Sarah Johnson, RN', role: 'Registered Nurse', hourlyRate: 28.50, employeeId: 'NURSE001', code: 'NURSE001' },
-        { id: 'nurse-002', name: 'Michael Chen, RN', role: 'Registered Nurse', hourlyRate: 32.00, employeeId: 'NURSE002', code: 'NURSE002' },
-        { id: 'nurse-003', name: 'Emily Rodriguez, LPN', role: 'Licensed Practical Nurse', hourlyRate: 30.50, employeeId: 'NURSE003', code: 'NURSE003' },
-      ];
+  // Load admin staff, payroll settings, and payment methods
+  React.useEffect(() => {
+    const loadAdminData = async () => {
+      try {
+        // Check if data was cleared
+        const cleared = await AsyncStorage.getItem('transactionsCleared');
+        if (cleared === 'true') {
+          setTransactionsCleared(true);
+          setAdminStaff([]);
+          setAdminPayrollSettings(null);
+          setPaymentMethods([]);
+          return;
+        }
+        
+        // Load admin staff from backend
+        let adminUsers = [];
+        try {
+          const response = await ApiService.makeRequest('/staff/admins', { method: 'GET' });
+          if (response.success && response.data) {
+             adminUsers = response.data.filter(user => 
+                user.id !== 'admin-001' && // Exclude main admin
+                user.role === 'admin'
+             );
+          }
+        } catch (err) {
+           // Failed to fetch admin staff from backend, using local storage
+        }
+
+        if (adminUsers.length === 0) {
+          // Fallback to local storage
+          const usersData = await AsyncStorage.getItem('users');
+          if (usersData) {
+            const allUsers = JSON.parse(usersData);
+            adminUsers = allUsers.filter(user => 
+              user.role === 'admin' && 
+              user.id !== 'admin-001' && 
+              user.code && 
+              user.code.startsWith('ADMIN')
+            );
+          }
+        }
+        
+        setAdminStaff(adminUsers);
+
+        // Load payment methods from backend
+        let methods = [];
+        try {
+          const response = await ApiService.makeRequest('/payments/methods', { method: 'GET' });
+          if (response.success && response.data) {
+            methods = response.data;
+            // Update local storage
+            await AsyncStorage.setItem('paymentMethods', JSON.stringify(methods));
+          }
+        } catch (err) {
+           // Failed to fetch payment methods from backend, using local storage
+        }
+
+        if (methods.length === 0) {
+           // Fallback to local storage
+           const savedPaymentMethods = await AsyncStorage.getItem('paymentMethods');
+           if (savedPaymentMethods) {
+             methods = JSON.parse(savedPaymentMethods);
+           }
+        }
+
+        if (methods.length > 0) {
+          setPaymentMethods(methods);
+        } else {
+          // Default payment methods if none saved
+          setPaymentMethods([
+            { 
+              id: '1', 
+              type: 'Credit Card', 
+              name: 'Visa ****1234', 
+              cardType: 'visa',
+              lastFour: '1234',
+              default: true, 
+              icon: 'credit-card',
+              bgColor: '#1976d2'
+            },
+            { 
+              id: '2', 
+              type: 'Bank Account', 
+              name: 'Checking ****9012', 
+              bankName: 'Chase Bank',
+              default: false, 
+              icon: 'bank',
+              bgColor: '#4caf50'
+            },
+          ]);
+        }
+
+        // Load admin payroll settings
+        let payrollSettings = null;
+        
+        // Try to fetch from backend first to ensure sync
+        try {
+          const response = await ApiService.makeRequest('/payments/settings', { method: 'GET' });
+          if (response.success && response.data && response.data.adminPayrollSettings) {
+            payrollSettings = response.data.adminPayrollSettings;
+            // Update local storage to keep it in sync
+            await AsyncStorage.setItem('adminPayrollSettings', JSON.stringify(payrollSettings));
+          }
+        } catch (err) {
+          // Failed to fetch settings from backend, using local storage
+        }
+
+        // Fallback to local storage if backend fetch failed or returned no settings
+        if (!payrollSettings) {
+          const storedSettings = await AsyncStorage.getItem('adminPayrollSettings');
+          if (storedSettings) {
+            payrollSettings = JSON.parse(storedSettings);
+          }
+        }
+
+        if (payrollSettings) {
+          setAdminPayrollSettings(payrollSettings);
+        } else {
+          // Default settings if none exist
+          setAdminPayrollSettings({
+            defaultPayType: 'hourly',
+            salaryFrequency: 'monthly',
+            defaultSalaryAmount: '180000',
+            defaultHourlyRate: '625',
+            shiftRates: {
+              eightHours: 5000,
+              twelveHours: 7000
+            },
+            holidayMultiplier: 2,
+            taxEnabled: true,
+            allowances: {
+              transport: '15000',
+              meal: '8000',
+              phone: '5000'
+            },
+            deductions: {
+              tax: '25',
+              nis: '3',
+              education: '2'
+            }
+          });
+        }
+      } catch (error) {
+        console.error('Error loading admin data:', error);
+      }
+    };
+
+    loadAdminData();
+  }, []);
+
+  React.useEffect(() => {
+    const loadCompanyDetails = async () => {
+      try {
+        const stored = await AsyncStorage.getItem('companyDetails');
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          setCompanyDetails((prev) => ({ ...prev, ...parsed }));
+        }
+      } catch (error) {
+        console.error('Error loading company details:', error);
+      }
+    };
+
+    loadCompanyDetails();
+  }, []);
+
+  // Get all staff members (nurses + admin staff)
+  const allStaffMembers = useMemo(() => {
+    // Return empty array if data cleared
+    if (transactionsCleared) {
+      return [];
     }
     
-    // Map nurses to staff member format
-    return nurses.map(nurse => ({
-      id: nurse.id,
-      name: nurse.name,
-      role: nurse.specialization || nurse.title || 'Nurse',
-      hourlyRate: nurse.hourlyRate || 25.00,
-      employeeId: nurse.code || nurse.id,
-      code: nurse.code
+    const nursingStaff = nurses && nurses.length > 0 
+      ? nurses.map(nurse => ({
+          id: nurse.id,
+          name: nurse.name,
+          role: nurse.specialization || nurse.title || 'Nurse',
+          hourlyRate: nurse.hourlyRate || 25.00,
+          employeeId: nurse.code || nurse.id,
+          code: nurse.code,
+          staffType: 'nursing',
+          payType: 'hourly'
+        }))
+      : [
+          { id: 'nurse-001', name: 'Sarah Johnson, RN', role: 'Registered Nurse', hourlyRate: 28.50, employeeId: 'NURSE001', code: 'NURSE001', staffType: 'nursing', payType: 'hourly' },
+          { id: 'nurse-002', name: 'Michael Chen, RN', role: 'Registered Nurse', hourlyRate: 32.00, employeeId: 'NURSE002', code: 'NURSE002', staffType: 'nursing', payType: 'hourly' },
+          { id: 'nurse-003', name: 'Emily Rodriguez, LPN', role: 'Licensed Practical Nurse', hourlyRate: 30.50, employeeId: 'NURSE003', code: 'NURSE003', staffType: 'nursing', payType: 'hourly' },
+        ];
+
+    const administrativeStaff = adminStaff.map(admin => ({
+      id: admin.id,
+      name: admin.username || `${admin.firstName || ''} ${admin.lastName || ''}`.trim(),
+      role: admin.title || 'Administrator',
+      salary: admin.salary || (adminPayrollSettings?.defaultSalaryAmount || 180000),
+      hourlyRate: admin.hourlyRate || (adminPayrollSettings?.defaultHourlyRate || 2500),
+      employeeId: admin.code || admin.id,
+      code: admin.code,
+      staffType: 'admin',
+      payType: admin.payType || adminPayrollSettings?.defaultPayType || 'salary'
     }));
-  }, [nurses]);
+
+    return [...nursingStaff, ...administrativeStaff];
+  }, [nurses, adminStaff, adminPayrollSettings, transactionsCleared]);
+
+  // Keep backward compatibility - staffMembers for nursing staff only
+  const staffMembers = useMemo(() => {
+    return allStaffMembers.filter(staff => staff.staffType === 'nursing');
+  }, [allStaffMembers]);
+
+  const selectedStaffContact = React.useMemo(() => {
+    if (!selectedPayslip) {
+      return null;
+    }
+
+    const findMatch = (collection = []) => collection.find((staff) => {
+      const candidateId = staff.id || staff._id;
+      const employeeIdentifier = staff.employeeId || staff.code || staff.nurseCode;
+      return (
+        candidateId === selectedPayslip.staffId ||
+        employeeIdentifier === (selectedPayslip.employeeId || selectedPayslip.staffId) ||
+        staff.name === selectedPayslip.staffName ||
+        staff.fullName === selectedPayslip.staffName
+      );
+    });
+
+    const nurseMatch = findMatch(nurses || []);
+    if (nurseMatch) {
+      return {
+        role: nurseMatch.specialization || selectedPayslip.role || 'Nurse',
+        phone: nurseMatch.phone || 'Not provided',
+        email: nurseMatch.email || 'Not provided',
+        address: nurseMatch.address || nurseMatch.homeAddress || nurseMatch.location || 'Address on file',
+      };
+    }
+
+    const adminMatch = findMatch(adminStaff || []);
+    if (adminMatch) {
+      return {
+        role: adminMatch.title || selectedPayslip.role || 'Administrator',
+        phone: adminMatch.phone || adminMatch.contactNumber || 'Not provided',
+        email: adminMatch.email || 'Not provided',
+        address: adminMatch.address || adminMatch.officeLocation || 'Address on file',
+      };
+    }
+
+    return {
+      role: selectedPayslip.role || 'Team Member',
+      phone: 'Not provided',
+      email: 'Not provided',
+      address: 'Address on file',
+    };
+  }, [selectedPayslip, nurses, adminStaff]);
+
+  const previewFieldRows = React.useMemo(() => {
+    if (!selectedPayslip) {
+      return [];
+    }
+
+    const staffNumber = selectedPayslip.employeeId || selectedPayslip.staffId || 'Pending';
+    const payDateDisplay = formatDisplayDate(selectedPayslip.payDate || selectedPayslip.generatedDate);
+    const payFrequency = selectedPayslip.payType === 'salary' ? 'Monthly' : 'Weekly';
+
+    return [
+      [
+        { label: 'EMPLOYEE', value: selectedPayslip.staffName, flex: 2 },
+        { label: 'NUMBER', value: staffNumber, flex: 1 },
+      ],
+      [
+        { label: 'ADDRESS', value: selectedStaffContact?.address || 'Address on file' },
+        { label: 'PHONE', value: selectedStaffContact?.phone || 'Not provided' },
+        { label: 'EMAIL', value: selectedStaffContact?.email || 'Not provided' },
+      ],
+      [
+        { label: 'OTHER', value: selectedStaffContact?.role || selectedPayslip.role || 'Role on file' },
+        { label: 'PAY DATE', value: payDateDisplay },
+        { label: 'TIP', value: payFrequency },
+      ],
+    ];
+  }, [selectedPayslip, selectedStaffContact]);
+
+  const companyNameDisplay = companyDetails.companyName || 'Company Name';
+  const companyAddressDisplay = companyDetails.address || 'Street Address';
+  const companyEmailDisplay = companyDetails.email || 'company@company.com';
+  const companyPhoneDisplay = companyDetails.phone || '(000) 000-0000';
+  const companyCityDisplay = companyDetails.city || 'City, ST, ZIP';
+
+  const samplePayslipData = React.useMemo(() => {
+    const today = new Date();
+    const formattedToday = today.toISOString().split('T')[0];
+    const getLastTuesdayStart = (baseDate = new Date()) => {
+      const d = new Date(baseDate);
+      d.setHours(0, 0, 0, 0);
+      const diff = (d.getDay() - 2 + 7) % 7; // 2 = Tuesday
+      d.setDate(d.getDate() - diff);
+      return d;
+    };
+    const payRunDate = getLastTuesdayStart(today);
+    const periodEnd = new Date(payRunDate);
+    periodEnd.setDate(periodEnd.getDate() - 1); // Monday
+    const periodStart = new Date(payRunDate);
+    periodStart.setDate(periodStart.getDate() - 7); // previous Tuesday
+
+    return {
+      id: 'sample-payslip',
+      staffId: 'sample-nurse',
+      employeeId: 'NUR-001',
+      staffName: 'Sample Nurse',
+      role: 'Registered Nurse',
+      staffType: 'nursing',
+      payType: 'hourly',
+      periodStart: periodStart.toISOString().split('T')[0],
+      periodEnd: periodEnd.toISOString().split('T')[0],
+      generatedDate: payRunDate.toISOString().split('T')[0],
+      payDate: payRunDate.toISOString().split('T')[0],
+      hourlyRate: 2500,
+      regularHours: 35,
+      overtimeHours: 3,
+      shiftHours: 0,
+      regularPay: (35 * 2500).toFixed(2),
+      overtimePay: (3 * 2500 * 1.5).toFixed(2),
+      grossPay: (35 * 2500 + 3 * 2500 * 1.5).toFixed(2),
+      netPay: (35 * 2500 + 3 * 2500 * 1.5 - 12000).toFixed(2),
+      allowances: { transport: 15000, meal: 8000, phone: 5000 },
+      deductions: { tax: 10000, nis: 2000 },
+      status: 'pending',
+    };
+  }, []);
+
+  const handleSamplePayslipView = React.useCallback(() => {
+    setSelectedPayslip(samplePayslipData);
+  }, [samplePayslipData]);
 
   // Calculate actual hours from approved appointments and shifts
   const calculateStaffHours = (staffId, periodStart, periodEnd) => {
+    // Return zero hours if data cleared
+    if (transactionsCleared) {
+      return {
+        totalHours: 0,
+        regularHours: 0,
+        overtimeHours: 0,
+        appointmentHours: 0,
+        shiftHours: 0,
+        sessionsCompleted: 0,
+        shiftsCompleted: 0,
+      };
+    }
+    
     const start = new Date(periodStart);
     const end = new Date(periodEnd);
     
@@ -99,27 +569,53 @@ const RecentTransactionsScreen = ({ navigation }) => {
       return total + hours;
     }, 0);
 
+    const shiftBreakdown = {
+      eightHourShifts: 0,
+      twelveHourShifts: 0,
+      holidayEightHourShifts: 0,
+      holidayTwelveHourShifts: 0,
+    };
+
     // Calculate hours from shifts
     const shiftHours = staffShifts.reduce((total, shift) => {
+      let hours = 0;
       if (shift.startTime && shift.endTime) {
         const startTime = new Date(`${shift.date} ${shift.startTime}`);
         const endTime = new Date(`${shift.date} ${shift.endTime}`);
-        const hours = (endTime - startTime) / (1000 * 60 * 60); // Convert milliseconds to hours
-        return total + Math.max(0, hours); // Ensure positive hours
+        hours = (endTime - startTime) / (1000 * 60 * 60); // Convert milliseconds to hours
+      } else {
+        hours = shift.duration || shift.hours || shift.length || 8; // fallback to 8 hour shift
       }
-      return total + (shift.duration || 8); // fallback to 8 hour shift
+
+      const normalizedHours = hours >= 10 ? 12 : 8;
+      const isHoliday = Boolean(
+        shift.isHoliday ||
+        shift.holiday ||
+        shift.isHolidayShift ||
+        shift.holidayPay
+      );
+
+      if (normalizedHours === 12) {
+        shiftBreakdown.twelveHourShifts += 1;
+        if (isHoliday) shiftBreakdown.holidayTwelveHourShifts += 1;
+      } else {
+        shiftBreakdown.eightHourShifts += 1;
+        if (isHoliday) shiftBreakdown.holidayEightHourShifts += 1;
+      }
+
+      return total + Math.max(0, hours); // Ensure positive hours
     }, 0);
 
     const totalHours = appointmentHours + shiftHours;
     
     // If no real data, use realistic mock data based on staff role
     const mockHoursRange = {
-      'Senior Nurse': [75, 82],
-      'Physical Therapist': [70, 78],
-      'Wound Care Specialist': [68, 76],
-      'Home Care Nurse': [72, 80],
-      'Health Monitor': [65, 75],
-      'Medication Specialist': [70, 78]
+      'Senior Nurse': [37, 41],
+      'Physical Therapist': [35, 39],
+      'Wound Care Specialist': [34, 38],
+      'Home Care Nurse': [36, 40],
+      'Health Monitor': [32, 38],
+      'Medication Specialist': [35, 39]
     };
     
     const staff = staffMembers.find(s => s.id === staffId);
@@ -127,8 +623,8 @@ const RecentTransactionsScreen = ({ navigation }) => {
     const fallbackHours = totalHours > 0 ? totalHours : range[0] + Math.random() * (range[1] - range[0]);
     
     const finalTotalHours = totalHours > 0 ? totalHours : fallbackHours;
-    const regularHours = Math.min(finalTotalHours, 70); // Standard 70 hours per fortnight
-    const overtimeHours = Math.max(0, finalTotalHours - 70);
+    const regularHours = Math.min(finalTotalHours, 35); // Standard 35 hours per weekly period (Tue–Mon)
+    const overtimeHours = Math.max(0, finalTotalHours - 35);
 
     return {
       totalHours: parseFloat(finalTotalHours.toFixed(1)),
@@ -138,11 +634,12 @@ const RecentTransactionsScreen = ({ navigation }) => {
       shiftHours: parseFloat(shiftHours.toFixed(1)),
       sessionsCompleted: staffAppointments.length,
       shiftsCompleted: staffShifts.length,
+      shiftBreakdown,
     };
   };
 
   const paymentCategories = ['Salary', 'Overtime', 'Bonus', 'Commission', 'Allowance', 'Reimbursement'];
-  const paymentMethods = ['Bank Transfer', 'Mobile Money', 'Cash', 'Check'];
+  const paymentMethodOptions = ['Bank Transfer', 'Mobile Money', 'Cash', 'Check'];
 
   const handleNewPayment = () => {
     setNewPaymentModalVisible(true);
@@ -184,18 +681,219 @@ const RecentTransactionsScreen = ({ navigation }) => {
     );
   };
 
-  // Mock payslip data - Generated fortnightly for staff using actual appointment/shift hours
-  const generateFortnightlyPayslips = () => {
+  // Generate admin staff payslips with salary-based calculations
+  const generateAdminPayslip = (staff, period) => {
+    if (!adminPayrollSettings) return null;
+
+    const periodStart = new Date(period.start);
+    const periodEnd = new Date(period.end);
+    
+    let basePay = 0;
+    let hoursWorked = 0;
+
+    if (staff.payType === 'salary') {
+      // Calculate prorated salary for the period
+      const daysInPeriod = Math.ceil((periodEnd - periodStart) / (1000 * 60 * 60 * 24)) + 1;
+      const daysInMonth = new Date(periodStart.getFullYear(), periodStart.getMonth() + 1, 0).getDate();
+      basePay = (parseFloat(staff.salary) * daysInPeriod) / daysInMonth;
+    } else if (staff.payType === 'hourly') {
+      // For admin hourly staff, assume standard 8 hours/day for 7 days = 56 hours
+      hoursWorked = 56;
+      basePay = hoursWorked * parseFloat(staff.hourlyRate);
+    }
+
+    // Calculate allowances
+    const allowances = {
+      transport: parseFloat(adminPayrollSettings.allowances.transport || 0),
+      meal: parseFloat(adminPayrollSettings.allowances.meal || 0),
+      phone: parseFloat(adminPayrollSettings.allowances.phone || 0)
+    };
+    
+    const totalAllowances = Object.values(allowances).reduce((sum, amount) => sum + amount, 0);
+    const grossPay = basePay + totalAllowances;
+
+    // Calculate deductions
+    const deductions = {
+      tax: adminPayrollSettings.taxEnabled ? grossPay * (parseFloat(adminPayrollSettings.deductions.tax) / 100) : 0,
+      nis: adminPayrollSettings.taxEnabled ? grossPay * (parseFloat(adminPayrollSettings.deductions.nis) / 100) : 0,
+      education: adminPayrollSettings.taxEnabled ? grossPay * (parseFloat(adminPayrollSettings.deductions.education) / 100) : 0,
+      healthInsurance: adminPayrollSettings.healthInsurance ? 5000 : 0,
+      pension: adminPayrollSettings.pensionContribution ? grossPay * 0.05 : 0
+    };
+    
+    const totalDeductions = Object.values(deductions).reduce((sum, amount) => sum + amount, 0);
+    const netPay = grossPay - totalDeductions;
+
+    return {
+      id: `${staff.id}-admin-${Date.now()}`,
+      staffId: staff.id,
+      employeeId: staff.employeeId,
+      staffName: staff.name,
+      role: staff.role,
+      staffType: 'admin',
+      payType: staff.payType,
+      periodStart: period.start,
+      periodEnd: period.end,
+      basePay: basePay.toFixed(2),
+      allowances: allowances,
+      totalAllowances: totalAllowances.toFixed(2),
+      deductions: deductions,
+      totalDeductions: totalDeductions.toFixed(2),
+      grossPay: grossPay.toFixed(2),
+      netPay: netPay.toFixed(2),
+      status: 'pending',
+      paymentMethod: 'Bank Transfer',
+      generatedDate: new Date().toISOString().split('T')[0],
+      payDate: null,
+      hoursWorked: hoursWorked || 'N/A'
+    };
+  };
+
+  // Generate payslips for selected staff
+  const generatePayslipsForStaff = async (selectedStaff) => {
+    try {
+      const getLastTuesdayStart = (baseDate = new Date()) => {
+        const d = new Date(baseDate);
+        d.setHours(0, 0, 0, 0);
+        const diff = (d.getDay() - 2 + 7) % 7; // 2 = Tuesday
+        d.setDate(d.getDate() - diff);
+        return d;
+      };
+
+      const currentDate = new Date();
+      // Nurses are paid weekly on Tuesday.
+      // Pay period: Tue–Mon, Pay date: Tuesday.
+      const nursePayRunDate = getLastTuesdayStart(currentDate);
+      const nursePeriodEnd = new Date(nursePayRunDate);
+      nursePeriodEnd.setDate(nursePeriodEnd.getDate() - 1); // Monday
+      const nursePeriodStart = new Date(nursePayRunDate);
+      nursePeriodStart.setDate(nursePeriodStart.getDate() - 7); // previous Tuesday
+
+      // Keep admin payroll generation unchanged (still uses 2-week window here).
+      const adminPeriodEnd = new Date(currentDate);
+      const adminPeriodStart = new Date(adminPeriodEnd);
+      adminPeriodStart.setDate(adminPeriodStart.getDate() - 13);
+
+      const newPayslips = [];
+
+      for (const staff of selectedStaff) {
+        if (staff.staffType === 'admin') {
+          const periodStart = adminPeriodStart.toISOString().split('T')[0];
+          const periodEnd = adminPeriodEnd.toISOString().split('T')[0];
+          const adminPayslip = generateAdminPayslip(staff, {
+            start: periodStart,
+            end: periodEnd,
+          });
+          if (adminPayslip) {
+            newPayslips.push(adminPayslip);
+          }
+        } else {
+          const periodStart = nursePeriodStart.toISOString().split('T')[0];
+          const periodEnd = nursePeriodEnd.toISOString().split('T')[0];
+          const payDate = nursePayRunDate.toISOString().split('T')[0];
+
+          // Generate nursing payslip using shift-based payroll rules
+          const hoursData = calculateStaffHours(
+            staff.id,
+            periodStart,
+            periodEnd
+          );
+
+          const shiftRates = adminPayrollSettings?.shiftRates || { eightHours: 5000, twelveHours: 7000 };
+          const holidayMultiplier = parseFloat(adminPayrollSettings?.holidayMultiplier) || 2;
+          const hourlyRate = parseFloat(adminPayrollSettings?.defaultHourlyRate || staff.hourlyRate || 0);
+          const breakdown = hoursData.shiftBreakdown || {};
+
+          const baseShiftPay =
+            (breakdown.eightHourShifts || 0) * parseFloat(shiftRates.eightHours || 0) +
+            (breakdown.twelveHourShifts || 0) * parseFloat(shiftRates.twelveHours || 0);
+
+          const holidayExtra =
+            (breakdown.holidayEightHourShifts || 0) * parseFloat(shiftRates.eightHours || 0) * (holidayMultiplier - 1) +
+            (breakdown.holidayTwelveHourShifts || 0) * parseFloat(shiftRates.twelveHours || 0) * (holidayMultiplier - 1);
+
+          const appointmentPay = (hoursData.appointmentHours || 0) * hourlyRate;
+
+          const regularPay = baseShiftPay + appointmentPay + holidayExtra;
+          const overtimePay = 0;
+          const grossPay = regularPay + overtimePay;
+          const netPay = grossPay;
+          
+          newPayslips.push({
+            id: `${staff.id}-nurse-${Date.now()}`,
+            staffId: staff.id,
+            employeeId: staff.employeeId,
+            staffName: staff.name,
+            role: staff.role,
+            staffType: 'nursing',
+            payType: 'hourly',
+            periodStart,
+            periodEnd,
+            hourlyRate: hourlyRate,
+            hoursWorked: hoursData.totalHours,
+            regularHours: hoursData.regularHours,
+            overtimeHours: hoursData.overtimeHours,
+            regularPay: regularPay.toFixed(2),
+            overtimePay: overtimePay.toFixed(2),
+            grossPay: grossPay.toFixed(2),
+            netPay: netPay.toFixed(2),
+            status: 'pending',
+            paymentMethod: 'Bank Transfer',
+            generatedDate: payDate,
+            payDate
+          });
+        }
+      }
+
+      // Save to AsyncStorage (simulate database)
+      const existingPayslips = await AsyncStorage.getItem('generatedPayslips');
+      const allPayslips = existingPayslips ? JSON.parse(existingPayslips) : [];
+      allPayslips.push(...newPayslips);
+      await AsyncStorage.setItem('generatedPayslips', JSON.stringify(allPayslips));
+
+      // Update local state to show new payslips immediately
+      setGeneratedPayslips(allPayslips);
+
+      Alert.alert('Success', `Generated ${newPayslips.length} payslips successfully!`);
+      setGeneratePayslipModalVisible(false);
+      setSelectedStaff([]);
+
+    } catch (error) {
+      console.error('Error generating payslips:', error);
+      Alert.alert('Error', 'Failed to generate payslips. Please try again.');
+    }
+  };
+
+  // Mock payslip data - Generated weekly (Tue–Mon) for staff using actual appointment/shift hours
+  const generateWeeklyPayslips = () => {
+    // Return empty array if data cleared
+    if (transactionsCleared || staffMembers.length === 0) {
+      return [];
+    }
+    
     const currentDate = new Date();
     const payslips = [];
     
-    // Generate payslips for last 3 fortnights
+    const getLastTuesdayStart = (baseDate = new Date()) => {
+      const d = new Date(baseDate);
+      d.setHours(0, 0, 0, 0);
+      const diff = (d.getDay() - 2 + 7) % 7; // 2 = Tuesday
+      d.setDate(d.getDate() - diff);
+      return d;
+    };
+
+    const lastTuesday = getLastTuesdayStart(currentDate);
+
+    // Generate payslips for last 3 weekly pay runs
     for (let i = 0; i < 3; i++) {
-      const periodEnd = new Date(currentDate);
-      periodEnd.setDate(periodEnd.getDate() - (i * 14));
-      
-      const periodStart = new Date(periodEnd);
-      periodStart.setDate(periodStart.getDate() - 13);
+      const payRunDate = new Date(lastTuesday);
+      payRunDate.setDate(payRunDate.getDate() - (i * 7));
+
+      const periodEnd = new Date(payRunDate);
+      periodEnd.setDate(periodEnd.getDate() - 1); // Monday
+
+      const periodStart = new Date(payRunDate);
+      periodStart.setDate(periodStart.getDate() - 7); // previous Tuesday
       
       staffMembers.forEach((staff, index) => {
         // Calculate actual hours from appointments and shifts
@@ -205,8 +903,29 @@ const RecentTransactionsScreen = ({ navigation }) => {
           periodEnd.toISOString().split('T')[0]
         );
         
-        const regularPay = hoursData.regularHours * staff.hourlyRate;
-        const overtimePay = hoursData.overtimeHours * staff.hourlyRate * 1.5;
+        const shiftRates = adminPayrollSettings?.shiftRates || { eightHours: 5000, twelveHours: 7000 };
+        const holidayMultiplier = parseFloat(adminPayrollSettings?.holidayMultiplier) || 2;
+        const hourlyRate = parseFloat(adminPayrollSettings?.defaultHourlyRate || staff.hourlyRate || 1500);
+        const breakdown = hoursData.shiftBreakdown || {};
+
+        const baseShiftPay =
+          (breakdown.eightHourShifts || 0) * parseFloat(shiftRates.eightHours || 0) +
+          (breakdown.twelveHourShifts || 0) * parseFloat(shiftRates.twelveHours || 0);
+
+        const holidayExtra =
+          (breakdown.holidayEightHourShifts || 0) * parseFloat(shiftRates.eightHours || 0) * (holidayMultiplier - 1) +
+          (breakdown.holidayTwelveHourShifts || 0) * parseFloat(shiftRates.twelveHours || 0) * (holidayMultiplier - 1);
+
+        const appointmentPay = (hoursData.appointmentHours || 0) * hourlyRate;
+
+        // If no shifts were worked, calculate pay based on total hours at hourly rate
+        const hasShifts = (breakdown.eightHourShifts || 0) + (breakdown.twelveHourShifts || 0) > 0;
+        const baseHourlyPay = !hasShifts && hoursData.regularHours > 0 
+          ? hoursData.regularHours * hourlyRate 
+          : 0;
+
+        const regularPay = baseShiftPay + appointmentPay + holidayExtra + baseHourlyPay;
+        const overtimePay = hoursData.overtimeHours > 0 ? hoursData.overtimeHours * hourlyRate * 1.5 : 0;
         const grossPay = regularPay + overtimePay;
         
         // No deductions - gross pay equals net pay
@@ -220,7 +939,7 @@ const RecentTransactionsScreen = ({ navigation }) => {
           role: staff.role,
           periodStart: periodStart.toISOString().split('T')[0],
           periodEnd: periodEnd.toISOString().split('T')[0],
-          hourlyRate: staff.hourlyRate,
+          hourlyRate: hourlyRate,
           hoursWorked: hoursData.totalHours,
           regularHours: hoursData.regularHours,
           overtimeHours: hoursData.overtimeHours,
@@ -243,7 +962,62 @@ const RecentTransactionsScreen = ({ navigation }) => {
     return payslips.sort((a, b) => new Date(b.periodEnd) - new Date(a.periodEnd));
   };
 
-  const payslips = generateFortnightlyPayslips();
+  // Load generated payslips from AsyncStorage and combine with mock nursing payslips
+  const [generatedPayslips, setGeneratedPayslips] = React.useState([]);
+  
+  React.useEffect(() => {
+    const loadGeneratedPayslips = async () => {
+      try {
+        // Check if data was cleared
+        const cleared = await AsyncStorage.getItem('transactionsCleared');
+        if (cleared === 'true') {
+          setGeneratedPayslips([]);
+          return;
+        }
+        
+        const stored = await AsyncStorage.getItem('generatedPayslips');
+        if (stored) {
+          setGeneratedPayslips(JSON.parse(stored));
+        }
+      } catch (error) {
+        console.error('Error loading generated payslips:', error);
+      }
+    };
+    loadGeneratedPayslips();
+  }, [transactionsCleared]);
+
+  const payslips = React.useMemo(() => {
+    const nursingPayslips = generateWeeklyPayslips();
+    // De-dupe by id and let persisted/generated payslips override mock/generated-weekly ones.
+    const byId = new Map();
+    nursingPayslips.forEach((p) => byId.set(p.id, p));
+    generatedPayslips.forEach((p) => byId.set(p.id, p));
+    return Array.from(byId.values()).sort(
+      (a, b) => new Date(b.periodEnd || b.generatedDate) - new Date(a.periodEnd || a.generatedDate)
+    );
+  }, [generatedPayslips]);
+
+  const filterCounts = useMemo(() => {
+    const counts = {
+      all: payslips.length,
+      available: 0,
+      past: 0,
+    };
+
+    const currentDate = new Date();
+    payslips.forEach((p) => {
+      const periodEnd = new Date(p.periodEnd || p.generatedDate);
+      const daysSinceEnd = Math.floor((currentDate - periodEnd) / (1000 * 60 * 60 * 24));
+      
+      if (daysSinceEnd <= 14 && p.status !== 'paid') {
+        counts.available += 1;
+      } else {
+        counts.past += 1;
+      }
+    });
+
+    return counts;
+  }, [payslips]);
 
   // Refresh functionality
   const onRefresh = async () => {
@@ -260,10 +1034,19 @@ const RecentTransactionsScreen = ({ navigation }) => {
     
     // Apply status filter
     if (selectedFilter !== 'all') {
-      if (selectedFilter === 'completed') {
-        filtered = filtered.filter(p => p.status === 'paid');
-      } else {
-        filtered = filtered.filter(p => p.status === selectedFilter);
+      const currentDate = new Date();
+      if (selectedFilter === 'available') {
+        filtered = filtered.filter(p => {
+          const periodEnd = new Date(p.periodEnd || p.generatedDate);
+          const daysSinceEnd = Math.floor((currentDate - periodEnd) / (1000 * 60 * 60 * 24));
+          return daysSinceEnd <= 14 && p.status !== 'paid';
+        });
+      } else if (selectedFilter === 'past') {
+        filtered = filtered.filter(p => {
+          const periodEnd = new Date(p.periodEnd || p.generatedDate);
+          const daysSinceEnd = Math.floor((currentDate - periodEnd) / (1000 * 60 * 60 * 24));
+          return daysSinceEnd > 14 || p.status === 'paid';
+        });
       }
     }
 
@@ -299,10 +1082,19 @@ const RecentTransactionsScreen = ({ navigation }) => {
     
     // Apply status filter
     if (selectedFilter !== 'all') {
-      if (selectedFilter === 'completed') {
-        filtered = filtered.filter(p => p.status === 'paid');
-      } else {
-        filtered = filtered.filter(p => p.status === selectedFilter);
+      const currentDate = new Date();
+      if (selectedFilter === 'available') {
+        filtered = filtered.filter(p => {
+          const periodEnd = new Date(p.periodEnd || p.generatedDate);
+          const daysSinceEnd = Math.floor((currentDate - periodEnd) / (1000 * 60 * 60 * 24));
+          return daysSinceEnd <= 14 && p.status !== 'paid';
+        });
+      } else if (selectedFilter === 'past') {
+        filtered = filtered.filter(p => {
+          const periodEnd = new Date(p.periodEnd || p.generatedDate);
+          const daysSinceEnd = Math.floor((currentDate - periodEnd) / (1000 * 60 * 60 * 24));
+          return daysSinceEnd > 14 || p.status === 'paid';
+        });
       }
     }
     
@@ -327,6 +1119,95 @@ const RecentTransactionsScreen = ({ navigation }) => {
 
   const sortedPayslips = filteredAndSearchedPayslips; // Use the new filtered results
 
+  const runPayrollValidation = React.useCallback(() => {
+    if (!sortedPayslips || sortedPayslips.length === 0) {
+      setPayrollValidation((prev) => ({
+        ...prev,
+        status: 'idle',
+        issues: [],
+        totals: { gross: 0, net: 0 },
+        lastRun: new Date().toISOString(),
+      }));
+      return;
+    }
+
+    let grossTotal = 0;
+    let netTotal = 0;
+    const issues = [];
+
+    sortedPayslips.forEach((payslip) => {
+      const allowancesFallback =
+        payslip.staffType === 'admin' && adminPayrollSettings?.allowances
+          ? sumObjectValues(adminPayrollSettings.allowances)
+          : 0;
+
+      const allowancesTotal =
+        sumObjectValues(payslip.allowances) ||
+        sanitizeNumber(payslip.totalAllowances) ||
+        allowancesFallback;
+
+      const manualAdjustment = sanitizeNumber(payslip.manualAdjustment);
+      const hourlyRate = sanitizeNumber(payslip.hourlyRate);
+      const regularHours = sanitizeNumber(payslip.regularHours);
+      const overtimeHours = sanitizeNumber(payslip.overtimeHours);
+      const deductionsTotal =
+        sumObjectValues(payslip.deductions) || sanitizeNumber(payslip.totalDeductions);
+
+      let expectedGross = sanitizeNumber(payslip.grossPay);
+      if (payslip.staffType === 'nursing' || payslip.payType === 'hourly') {
+        const regularPay = regularHours * hourlyRate;
+        const overtimePay = overtimeHours * hourlyRate * 1.5;
+        expectedGross = regularPay + overtimePay + allowancesTotal + manualAdjustment;
+      } else {
+        expectedGross =
+          sanitizeNumber(payslip.basePay || payslip.grossPay) + allowancesTotal + manualAdjustment;
+      }
+
+      const expectedNet = expectedGross - deductionsTotal;
+
+      grossTotal += sanitizeNumber(payslip.grossPay);
+      netTotal += sanitizeNumber(payslip.netPay);
+
+      if (Math.abs(expectedGross - sanitizeNumber(payslip.grossPay)) > 1) {
+        issues.push({
+          id: payslip.id,
+          field: 'gross',
+          message: `${payslip.staffName}: expected gross ${formatCurrencyValue(expectedGross)} (current ${formatCurrencyValue(payslip.grossPay)})`,
+        });
+      }
+
+      if (Math.abs(expectedNet - sanitizeNumber(payslip.netPay)) > 1) {
+        issues.push({
+          id: payslip.id,
+          field: 'net',
+          message: `${payslip.staffName}: expected net ${formatCurrencyValue(expectedNet)}`,
+        });
+      }
+
+      if (sanitizeNumber(payslip.netPay) < 0) {
+        issues.push({
+          id: payslip.id,
+          field: 'negativeNet',
+          message: `${payslip.staffName}: net pay is negative`,
+        });
+      }
+    });
+
+    setPayrollValidation({
+      status: issues.length ? 'issues' : 'clean',
+      issues: issues.slice(0, 6),
+      totals: {
+        gross: parseFloat(grossTotal.toFixed(2)),
+        net: parseFloat(netTotal.toFixed(2)),
+      },
+      lastRun: new Date().toISOString(),
+    });
+  }, [sortedPayslips, adminPayrollSettings]);
+
+  React.useEffect(() => {
+    runPayrollValidation();
+  }, [runPayrollValidation]);
+
   const getStatusColor = (status) => {
     switch (status) {
       case 'paid': return COLORS.success;
@@ -345,11 +1226,24 @@ const RecentTransactionsScreen = ({ navigation }) => {
     }
   };
 
+  const getStatusLabel = (status) => {
+    switch (status) {
+      case 'paid':
+        return 'Recorded Offline';
+      case 'pending':
+        return 'Needs Review';
+      case 'failed':
+        return 'Action Needed';
+      default:
+        return 'Info';
+    }
+  };
+
   const handlePayslipPress = (payslip) => {
     setSelectedPayslip(payslip);
   };
 
-  const handleGeneratePayslip = (payslip) => {
+  const handleGeneratePayslip = async (payslip) => {
     Alert.alert(
       'Generate Payslip PDF',
       `Generate payslip for ${payslip.staffName} for period ${payslip.periodStart} to ${payslip.periodEnd}?`,
@@ -357,9 +1251,15 @@ const RecentTransactionsScreen = ({ navigation }) => {
         { text: 'Cancel', style: 'cancel' },
         { 
           text: 'Generate',
-          onPress: () => {
-            // Here you would integrate with a payslip generation service
-            Alert.alert('Success', 'Payslip PDF generated and saved');
+          onPress: async () => {
+            try {
+              const pdfUri = await PayslipGenerator.generatePayslipPDF(payslip);
+              await PayslipGenerator.sharePayslip(pdfUri, payslip.staffName);
+              Alert.alert('Success', 'Payslip PDF generated and shared successfully');
+            } catch (error) {
+              console.error('Error generating payslip PDF:', error);
+              Alert.alert('Error', 'Failed to generate payslip PDF. Please try again.');
+            }
           }
         }
       ]
@@ -374,22 +1274,35 @@ const RecentTransactionsScreen = ({ navigation }) => {
       const existingPayslips = existingPayslipsJson ? JSON.parse(existingPayslipsJson) : {};
       
       // Find the nurse ID from staffMembers
-      const nurse = staffMembers.find(s => s.employeeId === payslip.employeeId || s.name === payslip.staffName);
-      if (!nurse) return;
-      
-      // Initialize array for this nurse if doesn't exist
-      if (!existingPayslips[nurse.id]) {
-        existingPayslips[nurse.id] = [];
-      }
+      const nurse = staffMembers.find(
+        (s) => s.employeeId === payslip.employeeId || s.code === payslip.employeeId || s.name === payslip.staffName
+      );
+      if (!nurse) return false;
+
+      const keyCandidates = [
+        nurse.id,
+        nurse.employeeId,
+        nurse.code,
+        payslip.employeeId,
+        payslip.nurseCode,
+        payslip.code,
+        payslip.staffId,
+      ].filter(Boolean);
       
       // Add payslip to nurse's array
       const payslipRecord = {
         ...payslip,
         status: 'paid',
-        paidDate: new Date().toISOString(),
+        paidDate: payslip.paidDate || new Date().toISOString(),
       };
-      
-      existingPayslips[nurse.id].push(payslipRecord);
+
+      // Save under all candidate keys so NurseProfileScreen can find it regardless of id format.
+      keyCandidates.forEach((key) => {
+        if (!existingPayslips[key]) {
+          existingPayslips[key] = [];
+        }
+        existingPayslips[key].push(payslipRecord);
+      });
       
       // Save back to AsyncStorage
       await AsyncStorage.setItem('nursePayslips', JSON.stringify(existingPayslips));
@@ -401,12 +1314,279 @@ const RecentTransactionsScreen = ({ navigation }) => {
     }
   };
 
-  const handleMarkAsPaid = async (payslip) => {
-    const success = await savePayslipToNurseProfile(payslip);
-    if (success) {
-      Alert.alert('Payment Processed', `Payslip for ${payslip.staffName} marked as paid and sent to their profile`);
-    } else {
-      Alert.alert('Error', 'Failed to save payslip to nurse profile');
+  const updateReviewForm = (field, value, group) => {
+    setPayslipReviewForm((prev) => {
+      if (group) {
+        return {
+          ...prev,
+          [group]: {
+            ...prev[group],
+            [field]: value,
+          },
+        };
+      }
+      return { ...prev, [field]: value };
+    });
+  };
+
+  const openReviewModal = (payslip) => {
+    if (!payslip) {
+      return;
+    }
+
+    setReviewPayslip(payslip);
+    setPayslipReviewForm({
+      status: payslip.status || 'pending',
+      regularHours: payslip.regularHours !== undefined ? String(payslip.regularHours) : '',
+      overtimeHours: payslip.overtimeHours !== undefined ? String(payslip.overtimeHours) : '',
+      basePay: payslip.basePay !== undefined ? String(payslip.basePay) : String(payslip.grossPay || ''),
+      manualAdjustment: payslip.manualAdjustment !== undefined ? String(payslip.manualAdjustment) : '0',
+      allowances: {
+        transport: String(payslip.allowances?.transport ?? adminPayrollSettings?.allowances?.transport ?? 0),
+        meal: String(payslip.allowances?.meal ?? adminPayrollSettings?.allowances?.meal ?? 0),
+        phone: String(payslip.allowances?.phone ?? adminPayrollSettings?.allowances?.phone ?? 0),
+        other: String(payslip.allowances?.other ?? 0),
+      },
+      deductions: {
+        tax: String(payslip.deductions?.tax ?? 0),
+        nis: String(payslip.deductions?.nis ?? 0),
+        other: String(payslip.deductions?.other ?? 0),
+      },
+      notes: payslip.notes || '',
+    });
+    setReviewModalVisible(true);
+  };
+
+  const recalcPayslipFromForm = (payslip, form, payrollSettings) => {
+    if (!payslip) {
+      return null;
+    }
+
+    const isHourly = payslip.staffType === 'nursing' || payslip.payType === 'hourly';
+    const hourlyRate = sanitizeNumber(payslip.hourlyRate);
+
+    const regularHours = sanitizeNumber(form.regularHours || payslip.regularHours);
+    const overtimeHours = sanitizeNumber(form.overtimeHours || payslip.overtimeHours);
+    const basePayInput = sanitizeNumber(form.basePay || payslip.basePay || payslip.grossPay);
+    const manualAdjustment = sanitizeNumber(form.manualAdjustment);
+
+    const allowances = {
+      transport: sanitizeNumber(form.allowances?.transport),
+      meal: sanitizeNumber(form.allowances?.meal),
+      phone: sanitizeNumber(form.allowances?.phone),
+      other: sanitizeNumber(form.allowances?.other),
+    };
+
+    const deductions = {
+      tax: sanitizeNumber(form.deductions?.tax),
+      nis: sanitizeNumber(form.deductions?.nis),
+      other: sanitizeNumber(form.deductions?.other),
+    };
+
+    let regularPay = basePayInput;
+    let overtimePay = 0;
+
+    if (isHourly) {
+      regularPay = regularHours * hourlyRate;
+      overtimePay = overtimeHours * hourlyRate * 1.5;
+    }
+
+    const totalAllowances = sumObjectValues(allowances);
+    const totalDeductions = sumObjectValues(deductions);
+    const grossPay = regularPay + overtimePay + totalAllowances + manualAdjustment;
+    const netPay = grossPay - totalDeductions;
+
+    return {
+      ...payslip,
+      status: form.status,
+      regularHours: isHourly ? parseFloat(regularHours.toFixed(2)) : payslip.regularHours,
+      overtimeHours: isHourly ? parseFloat(overtimeHours.toFixed(2)) : payslip.overtimeHours,
+      basePay: parseFloat(regularPay.toFixed(2)),
+      regularPay: parseFloat(regularPay.toFixed(2)),
+      overtimePay: parseFloat(overtimePay.toFixed(2)),
+      allowances,
+      totalAllowances: parseFloat(totalAllowances.toFixed(2)),
+      manualAdjustment: parseFloat(manualAdjustment.toFixed(2)),
+      deductions,
+      totalDeductions: parseFloat(totalDeductions.toFixed(2)),
+      grossPay: parseFloat(grossPay.toFixed(2)),
+      netPay: parseFloat(netPay.toFixed(2)),
+      reviewedByAdmin: true,
+      reviewedAt: new Date().toISOString(),
+      notes: form.notes || '',
+    };
+  };
+
+  const previewReviewPayslip = React.useMemo(() => {
+    if (!reviewPayslip) {
+      return null;
+    }
+    return recalcPayslipFromForm(reviewPayslip, payslipReviewForm, adminPayrollSettings);
+  }, [reviewPayslip, payslipReviewForm, adminPayrollSettings]);
+
+  const persistReviewedPayslip = async (updatedPayslip) => {
+    try {
+      const stored = await AsyncStorage.getItem('generatedPayslips');
+      let updatedList = [];
+      if (stored) {
+        const parsed = JSON.parse(stored);
+        updatedList = parsed.map((p) => (p.id === updatedPayslip.id ? updatedPayslip : p));
+        if (!parsed.find((p) => p.id === updatedPayslip.id)) {
+          updatedList.push(updatedPayslip);
+        }
+      } else {
+        updatedList = [updatedPayslip];
+      }
+
+      await AsyncStorage.setItem('generatedPayslips', JSON.stringify(updatedList));
+      setGeneratedPayslips(updatedList);
+
+      if (updatedPayslip.status === 'paid') {
+        await savePayslipToNurseProfile(updatedPayslip);
+      }
+    } catch (error) {
+      console.error('Error updating payslip locally:', error);
+    }
+
+    try {
+      await ApiService.updatePayslip(updatedPayslip.id, {
+        status: updatedPayslip.status,
+        grossPay: updatedPayslip.grossPay,
+        netPay: updatedPayslip.netPay,
+        regularHours: updatedPayslip.regularHours,
+        overtimeHours: updatedPayslip.overtimeHours,
+        allowances: updatedPayslip.allowances,
+        deductions: updatedPayslip.deductions,
+        reviewedByAdmin: true,
+        reviewedAt: updatedPayslip.reviewedAt,
+        notes: updatedPayslip.notes,
+      });
+    } catch (error) {
+      console.warn('Unable to sync payslip update to backend:', error?.message || error);
+    }
+  };
+
+  const handleReviewSave = async () => {
+    if (!reviewPayslip) {
+      return;
+    }
+    const recalculated = recalcPayslipFromForm(reviewPayslip, payslipReviewForm, adminPayrollSettings);
+    await persistReviewedPayslip(recalculated);
+    setSelectedPayslip((prev) => (prev && prev.id === recalculated.id ? recalculated : prev));
+    setReviewModalVisible(false);
+    setReviewPayslip(null);
+    setPayslipReviewForm(getEmptyReviewForm());
+    runPayrollValidation();
+    Alert.alert('Payslip updated', `${recalculated.staffName}'s payslip has been updated.`);
+  };
+
+  const handleReviewCancel = () => {
+    setReviewModalVisible(false);
+    setReviewPayslip(null);
+    setPayslipReviewForm(getEmptyReviewForm());
+  };
+
+  const handlePayNow = async (payslip) => {
+    try {
+      const paidAtIso = new Date().toISOString();
+      const paidAtDate = paidAtIso.split('T')[0];
+
+      // Mark payslip as paid and add paid stamp
+      const paidPayslip = {
+        ...payslip,
+        status: 'paid',
+        // Keep both fields: the UI stamp uses paidDate, some lists use payDate.
+        paidDate: paidAtIso,
+        payDate: payslip.payDate || paidAtDate,
+      };
+
+      // Persist so paid status survives refresh AND overrides mock weekly payslips.
+      const storedPayslips = await AsyncStorage.getItem('generatedPayslips');
+      const list = storedPayslips ? JSON.parse(storedPayslips) : [];
+      const existingIndex = list.findIndex((p) => p.id === payslip.id);
+      const updatedList = [...list];
+      if (existingIndex >= 0) {
+        updatedList[existingIndex] = paidPayslip;
+      } else {
+        updatedList.push(paidPayslip);
+      }
+
+      await AsyncStorage.setItem('generatedPayslips', JSON.stringify(updatedList));
+      setGeneratedPayslips(updatedList);
+      setSelectedPayslip((prev) => (prev && prev.id === payslip.id ? paidPayslip : prev));
+
+      // Save stamped payslip to nurse profile
+      const saved = await savePayslipToNurseProfile(paidPayslip);
+      
+      if (saved) {
+        Alert.alert(
+          'Payslip Marked as Paid ✅',
+          `Payslip for ${payslip.staffName} has been marked as paid and sent to their profile.`,
+          [{ text: 'OK' }]
+        );
+      } else {
+        Alert.alert(
+          'Warning',
+          'Payslip marked as paid but could not be saved to nurse profile.',
+          [{ text: 'OK' }]
+        );
+      }
+    } catch (error) {
+      console.error('Error marking payslip as paid:', error);
+      Alert.alert('Error', 'Failed to mark payslip as paid. Please try again.');
+    }
+  };
+
+  const processPayment = async (payslip, paymentMethod) => {
+    try {
+      // Simulate payment processing
+      const isSuccess = Math.random() > 0.1; // 90% success rate
+      
+      if (isSuccess) {
+        // Update payslip status to paid
+        const updatedPayslips = await AsyncStorage.getItem('generatedPayslips');
+        if (updatedPayslips) {
+          const payslips = JSON.parse(updatedPayslips);
+          const updatedList = payslips.map(p => 
+            p.id === payslip.id 
+              ? { ...p, status: 'paid', payDate: new Date().toISOString().split('T')[0], paymentMethod: paymentMethod.name }
+              : p
+          );
+          await AsyncStorage.setItem('generatedPayslips', JSON.stringify(updatedList));
+          setGeneratedPayslips(updatedList);
+        }
+
+        // Save to staff profile
+        await savePayslipToNurseProfile({ ...payslip, status: 'paid', payDate: new Date().toISOString().split('T')[0] });
+        
+        Alert.alert(
+          'Payment Successful! 💳',
+          `Payment of J$${parseFloat(payslip.netPay).toLocaleString()} sent to ${payslip.staffName} via ${paymentMethod.name}`,
+          [{ text: 'OK' }]
+        );
+      } else {
+        // Update payslip status to failed
+        const updatedPayslips = await AsyncStorage.getItem('generatedPayslips');
+        if (updatedPayslips) {
+          const payslips = JSON.parse(updatedPayslips);
+          const updatedList = payslips.map(p => 
+            p.id === payslip.id 
+              ? { ...p, status: 'failed', paymentMethod: paymentMethod.name }
+              : p
+          );
+          await AsyncStorage.setItem('generatedPayslips', JSON.stringify(updatedList));
+          setGeneratedPayslips(updatedList);
+        }
+
+        Alert.alert(
+          'Payment Failed ❌',
+          'Payment could not be processed. Please try again or use a different payment method.',
+          [{ text: 'OK' }]
+        );
+      }
+    } catch (error) {
+      console.error('Error processing payment:', error);
+      Alert.alert('Error', 'Failed to process payment. Please try again.');
     }
   };
 
@@ -414,7 +1594,7 @@ const RecentTransactionsScreen = ({ navigation }) => {
     try {
       // In a real app, you'd fetch this from a persistent source.
       // For now, we'll filter the generated payslips.
-      const allPayslips = generateFortnightlyPayslips();
+      const allPayslips = generateWeeklyPayslips();
       const history = allPayslips.filter(p => (p.staffId === staffId || p.employeeId === staffId) && p.status === 'paid');
       
       // Sort by most recent first
@@ -438,12 +1618,7 @@ const RecentTransactionsScreen = ({ navigation }) => {
 
   const FilterPills = () => (
     <View style={styles.filterPillContainer}>
-      {[
-        { key: 'all', label: 'All' },
-        { key: 'completed', label: 'Paid' },
-        { key: 'pending', label: 'Pending' },
-        { key: 'failed', label: 'Failed' }
-      ].map((filter) => (
+      {FILTER_OPTIONS.map((filter) => (
         <TouchableOpacity
           key={filter.key}
           style={styles.filterPill}
@@ -453,7 +1628,7 @@ const RecentTransactionsScreen = ({ navigation }) => {
             <LinearGradient
               colors={GRADIENTS.header}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
               style={styles.filterPillGradient}
             >
               <Text style={styles.filterPillText}>
@@ -472,8 +1647,32 @@ const RecentTransactionsScreen = ({ navigation }) => {
     </View>
   );
 
+  const SampleAvailablePayslip = () => (
+    <View style={[styles.payslipCard, styles.samplePayslipCard]}>
+      <View style={styles.payslipHeaderRow}>
+        <View style={styles.payslipInfo}>
+          <Text style={styles.staffName}>Sample Nurse</Text>
+          <Text style={styles.staffIdentifier}>NUR-001</Text>
+        </View>
+        <View style={styles.cardActionGroup}>
+          <TouchableOpacity
+            style={styles.cardActionGhost}
+            onPress={handleSamplePayslipView}
+          >
+            <MaterialCommunityIcons name="eye" size={16} color={COLORS.primary} />
+            <Text style={styles.cardActionGhostText}>View</Text>
+          </TouchableOpacity>
+          <View style={[styles.cardActionSolid, styles.cardActionDisabled]}>
+            <MaterialCommunityIcons name="credit-card" size={16} color={COLORS.white} />
+            <Text style={[styles.cardActionSolidText, styles.cardActionSolidTextDisabled]}>Mark Paid</Text>
+          </View>
+        </View>
+      </View>
+    </View>
+  );
+
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       {/* Header */}
       <LinearGradient 
         colors={GRADIENTS.header} 
@@ -487,12 +1686,29 @@ const RecentTransactionsScreen = ({ navigation }) => {
             <MaterialCommunityIcons name="arrow-left" size={24} color={COLORS.white} />
           </TouchableWeb>
           <Text style={styles.headerTitle}>Staff Transactions</Text>
-          <TouchableWeb
-            onPress={() => setSearchVisible(!searchVisible)}
-            style={styles.searchToggle}
+          <TouchableOpacity
+            style={styles.validationRefreshButton}
+            onPress={runPayrollValidation}
           >
-            <MaterialCommunityIcons name="magnify" size={24} color={COLORS.white} />
-          </TouchableWeb>
+            <MaterialCommunityIcons name="refresh" size={18} color={COLORS.white} />
+            <Text style={styles.validationRefreshText}>Run</Text>
+          </TouchableOpacity>
+        </View>
+        <View style={styles.headerSubtitleRow}>
+          <MaterialCommunityIcons
+            name={payrollValidation.status === 'issues' ? 'alert-octagon' : 'check-circle'}
+            size={18}
+            color={payrollValidation.status === 'issues' ? COLORS.warning : COLORS.success}
+            style={styles.headerSubtitleIcon}
+          />
+          <Text
+            style={[
+              styles.headerSubtitle,
+              payrollValidation.status === 'issues' ? styles.headerSubtitleWarning : styles.headerSubtitleSuccess,
+            ]}
+          >
+            Payroll validation {payrollValidation.lastRun ? `updated ${new Date(payrollValidation.lastRun).toLocaleTimeString()}` : 'awaiting first run'}
+          </Text>
         </View>
         
         {/* Search Bar in Header */}
@@ -522,134 +1738,23 @@ const RecentTransactionsScreen = ({ navigation }) => {
       >
         {/* Payslip Preview Section */}
         <View style={styles.previewSection}>
-        <View style={styles.previewHeader}>
-          <Text style={styles.previewTitle}>
-            {selectedPayslip ? `Payslip Preview - ${selectedPayslip.staffName}` : 'Payslip Preview'}
-          </Text>
-          <TouchableOpacity
-            onPress={() => {
-              if (selectedPayslip) {
-                handleGeneratePayslip(selectedPayslip);
-              } else {
-                Alert.alert('Info', 'Select a payslip below to preview and generate PDF');
-              }
-            }}
-            style={styles.previewShareButton}
-          >
-            <MaterialCommunityIcons name="file-pdf-box" size={16} color={COLORS.primary} />
-            <Text style={styles.previewShareText}>Generate PDF</Text>
-          </TouchableOpacity>
-        </View>
-        
         {selectedPayslip ? (
-          <>
-            <ScrollView 
-              style={styles.payslipScrollView}
-              showsVerticalScrollIndicator={false}
-            >
-              <View style={styles.payslipPreviewCard}>
-                {/* Employee Information Table */}
-                <View style={styles.employeeInfoSection}>
-                  <LinearGradient
-                    colors={GRADIENTS.header}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 0 }}
-                    style={styles.sectionHeader}
-                  >
-                    <Text style={[styles.sectionHeaderText, { flex: 1 }]}>Employee Information</Text>
-                  </LinearGradient>
-                  <View style={styles.tableRow}>
-                    <Text style={[styles.tableCell, { flex: 1, fontWeight: '600' }]}>Name:</Text>
-                    <Text style={[styles.tableCell, { flex: 2 }]}>{selectedPayslip.staffName}</Text>
-                    <Text style={[styles.tableCell, { flex: 1, fontWeight: '600' }]}>Pay Period:</Text>
-                    <Text style={[styles.tableCell, { flex: 2 }]}>{selectedPayslip.periodStart} to {selectedPayslip.periodEnd}</Text>
-                  </View>
-                  <View style={styles.tableRow}>
-                    <Text style={[styles.tableCell, { flex: 1, fontWeight: '600' }]}>Employee ID:</Text>
-                    <Text style={[styles.tableCell, { flex: 2 }]}>{selectedPayslip.employeeId || selectedPayslip.staffId}</Text>
-                    <Text style={[styles.tableCell, { flex: 1, fontWeight: '600' }]}>Pay Date:</Text>
-                    <Text style={[styles.tableCell, { flex: 2 }]}>{selectedPayslip.payDate || selectedPayslip.generatedDate}</Text>
-                  </View>
-                  <View style={styles.tableRow}>
-                    <Text style={[styles.tableCell, { flex: 1, fontWeight: '600' }]}>Position:</Text>
-                    <Text style={[styles.tableCell, { flex: 2 }]}>{selectedPayslip.role}</Text>
-                    <Text style={[styles.tableCell, { flex: 1, fontWeight: '600' }]}>Pay Cycle:</Text>
-                    <Text style={[styles.tableCell, { flex: 2 }]}>Fortnightly</Text>
-                  </View>
-                  <View style={styles.tableRow}>
-                    <Text style={[styles.tableCell, { flex: 1, fontWeight: '600' }]}>Hourly Rate:</Text>
-                    <Text style={[styles.tableCell, { flex: 2 }]}>J${selectedPayslip.hourlyRate}/hour</Text>
-                  </View>
-                </View>
-
-                {/* Earnings Table */}
-                <View style={styles.earningsSection}>
-                  <LinearGradient
-                    colors={GRADIENTS.header}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 1, y: 0 }}
-                    style={styles.sectionHeader}
-                  >
-                    <Text style={styles.sectionHeaderText}>Earnings</Text>
-                    <Text style={styles.sectionHeaderText}>Hours</Text>
-                    <Text style={styles.sectionHeaderText}>Rate</Text>
-                    <Text style={styles.sectionHeaderText}>Current</Text>
-                  </LinearGradient>
-                  <View style={styles.tableRow}>
-                    <Text style={styles.tableCell}>Standard Pay</Text>
-                    <Text style={styles.tableCell}>{selectedPayslip.regularHours}</Text>
-                    <Text style={styles.tableCell}>J${selectedPayslip.hourlyRate}</Text>
-                    <Text style={styles.tableCell}>J${parseFloat(selectedPayslip.regularPay).toLocaleString()}</Text>
-                  </View>
-                  {parseFloat(selectedPayslip.overtimeHours) > 0 && (
-                    <View style={styles.tableRow}>
-                      <Text style={styles.tableCell}>Overtime Pay</Text>
-                      <Text style={styles.tableCell}>{selectedPayslip.overtimeHours}</Text>
-                      <Text style={styles.tableCell}>J${(selectedPayslip.hourlyRate * 1.5).toFixed(0)}</Text>
-                      <Text style={styles.tableCell}>J${parseFloat(selectedPayslip.overtimePay).toLocaleString()}</Text>
-                    </View>
-                  )}
-                  {parseFloat(selectedPayslip.shiftHours || 0) > 0 && (
-                    <View style={styles.tableRow}>
-                      <Text style={styles.tableCell}>Shift Hours</Text>
-                      <Text style={styles.tableCell}>{selectedPayslip.shiftHours}</Text>
-                      <Text style={styles.tableCell}>J${selectedPayslip.hourlyRate}</Text>
-                      <Text style={styles.tableCell}>J${(parseFloat(selectedPayslip.shiftHours) * parseFloat(selectedPayslip.hourlyRate)).toLocaleString()}</Text>
-                    </View>
-                  )}
-                  <View style={styles.totalRow}>
-                    <Text style={styles.totalLabel}>Gross Pay</Text>
-                    <Text style={styles.totalValue}>J${parseFloat(selectedPayslip.grossPay).toLocaleString()}</Text>
-                  </View>
-                </View>
-
-                {/* Net Pay */}
-                <LinearGradient
-                  colors={GRADIENTS.header}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 0 }}
-                  style={styles.netPaySection}
-                >
-                  <Text style={styles.netPayLabel}>Net Pay</Text>
-                  <Text style={styles.netPayAmount}>J${parseFloat(selectedPayslip.netPay).toLocaleString()}</Text>
-                </LinearGradient>
-              </View>
-            </ScrollView>
-            
-            {/* Close Button */}
-            <TouchableOpacity
-              style={styles.closePreviewButton}
-              onPress={() => setSelectedPayslip(null)}
-            >
-              <MaterialCommunityIcons name="close" size={18} color={COLORS.white} />
-              <Text style={styles.closePreviewText}>Close Preview</Text>
-            </TouchableOpacity>
-          </>
+          <PayslipComponent
+            payslip={selectedPayslip}
+            onClose={() => setSelectedPayslip(null)}
+            onShare={handleGeneratePayslip}
+            hideHeader={true}
+          />
         ) : (
-          <View style={styles.noPayslipSelected}>
-            <MaterialCommunityIcons name="receipt" size={60} color={COLORS.border} />
-            <Text style={styles.noPayslipText}>Select a payslip below to preview</Text>
-          </View>
+          <>
+            <View style={styles.previewHeader}>
+              <Text style={styles.previewTitle}>Payslip Preview</Text>
+            </View>
+            <View style={styles.noPayslipSelected}>
+              <MaterialCommunityIcons name="receipt" size={60} color={COLORS.border} />
+              <Text style={styles.noPayslipText}>Select a payslip below to preview</Text>
+            </View>
+          </>
         )}
       </View>
 
@@ -658,31 +1763,93 @@ const RecentTransactionsScreen = ({ navigation }) => {
         <FilterPills />
       </View>
 
+      {/* Payroll Validation */}
+      {payrollValidation.issues.length > 0 && (
+        <View style={styles.validationSection}>
+          <View style={styles.validationHeaderRow}>
+            <View style={styles.validationTitleGroup}>
+              <MaterialCommunityIcons name="alert-octagon" size={18} color={COLORS.warning} />
+              <Text style={styles.validationTitle}>Payroll Validation</Text>
+              {payrollValidation.lastRun && (
+                <Text style={styles.validationTimestamp}>
+                  Updated {new Date(payrollValidation.lastRun).toLocaleTimeString()}
+                </Text>
+              )}
+            </View>
+          </View>
+          <View style={styles.validationSummaryRow}>
+            <View>
+              <Text style={styles.validationLabel}>Gross</Text>
+              <Text style={styles.validationValue}>{formatCurrencyValue(payrollValidation.totals.gross)}</Text>
+            </View>
+            <View>
+              <Text style={styles.validationLabel}>Net</Text>
+              <Text style={styles.validationValue}>{formatCurrencyValue(payrollValidation.totals.net)}</Text>
+            </View>
+            <View>
+              <Text style={styles.validationLabel}>Issues</Text>
+              <Text style={[styles.validationValue, styles.validationValueWarning]}>
+                {payrollValidation.issues.length}
+              </Text>
+            </View>
+          </View>
+          <View style={styles.validationIssuesContainer}>
+            {payrollValidation.issues.slice(0, 3).map((issue, index) => (
+              <TouchableOpacity
+                key={`${issue.id}-${issue.field}-${index}`}
+                style={styles.validationIssueRow}
+                onPress={() => {
+                  const targetPayslip = sortedPayslips.find((p) => p.id === issue.id);
+                  if (targetPayslip) {
+                    setSelectedPayslip(targetPayslip);
+                    openReviewModal(targetPayslip);
+                  }
+                }}
+              >
+                <MaterialCommunityIcons name="alert-circle" size={16} color={COLORS.warning} />
+                <Text style={styles.validationIssueText}>{issue.message}</Text>
+              </TouchableOpacity>
+            ))}
+            {payrollValidation.issues.length > 3 && (
+              <Text style={styles.validationMoreText}>
+                +{payrollValidation.issues.length - 3} more items need attention
+              </Text>
+            )}
+          </View>
+        </View>
+      )}
+
       {/* Payslips List */}
       <View style={styles.payslipsContainer}>
         {sortedPayslips.length === 0 ? (
-          <View style={styles.emptyState}>
-            <MaterialCommunityIcons name="receipt" size={80} color={COLORS.border} />
-            <Text style={styles.emptyTitle}>
-              {searchQuery ? 'No matching payslips' : 'No payslips found'}
-            </Text>
-            <Text style={styles.emptyText}>
-              {searchQuery 
-                ? `No payslips match "${searchQuery}". Try a different search term.`
-                : selectedFilter !== 'all' 
-                ? 'Try adjusting your filter'
-                : 'Payslips will appear here when generated'
-              }
-            </Text>
-            {searchQuery && (
-              <TouchableWeb
-                style={styles.clearSearchInline}
-                onPress={() => setSearchQuery('')}
-              >
-                <Text style={styles.clearSearchText}>Clear Search</Text>
-              </TouchableWeb>
-            )}
-          </View>
+          selectedFilter === 'available' && !searchQuery ? (
+            <View style={styles.samplePreviewContainer}>
+              <SampleAvailablePayslip />
+            </View>
+          ) : (
+            <View style={styles.emptyState}>
+              <MaterialCommunityIcons name="receipt" size={80} color={COLORS.border} />
+              <Text style={styles.emptyTitle}>
+                {searchQuery ? 'No matching payslips' : 'No payslips found'}
+              </Text>
+              <Text style={styles.emptyText}>
+                {searchQuery 
+                  ? `No payslips match "${searchQuery}". Try a different search term.`
+                  : selectedFilter !== 'all' 
+                  ? 'Try adjusting your filter'
+                  : 'Payslips will appear here when generated'
+                }
+              </Text>
+              {searchQuery && (
+                <TouchableWeb
+                  style={styles.clearSearchInline}
+                  onPress={() => setSearchQuery('')}
+                >
+                  <Text style={styles.clearSearchText}>Clear Search</Text>
+                </TouchableWeb>
+              )}
+            </View>
+          )
         ) : (
           <>
             {/* Search Results Count */}
@@ -691,7 +1858,7 @@ const RecentTransactionsScreen = ({ navigation }) => {
                 <Text style={styles.searchResultsText}>
                   {sortedPayslips.length} payslip{sortedPayslips.length !== 1 ? 's' : ''} found
                   {searchQuery && ` for "${searchQuery}"`}
-                  {selectedFilter !== 'all' && ` (${selectedFilter})`}
+                    {selectedFilter !== 'all' && ` (${FILTER_LABELS[selectedFilter]})`}
                 </Text>
                 {searchQuery && (
                   <TouchableWeb onPress={() => setSearchQuery('')} style={styles.clearSearchSmall}>
@@ -702,67 +1869,67 @@ const RecentTransactionsScreen = ({ navigation }) => {
             )}
             
             <View style={styles.payslipsList}>
-            {sortedPayslips.map((payslip) => (
-              <TouchableOpacity
-                key={payslip.id}
-                style={styles.payslipCard}
-                onPress={() => {
-                  const staff = staffMembers.find(s => 
-                    s.employeeId === payslip.employeeId || s.name === payslip.staffName
-                  );
-                  if (staff) {
-                    handleViewStaffHistory(staff.id, payslip.staffName);
-                  }
-                }}
-                activeOpacity={0.7}
-              >
-                <View style={styles.payslipHeader}>
-                  <View style={styles.payslipInfo}>
-                    <Text style={styles.staffName}>{payslip.staffName}</Text>
+            {sortedPayslips.map((payslip) => {
+              const payslipNumber = payslip.payslipNumber || 
+                `NUR-PAY-${String(payslip.employeeId || '0001').padStart(4, '0')}`;
+              
+              return (
+              <View key={payslip.id} style={styles.payslipCard}>
+                <View style={styles.payslipCardContent}>
+                  <View style={styles.payslipCardInfo}>
+                    <Text style={styles.payslipCardId}>{payslipNumber}</Text>
+                    <Text style={styles.payslipCardName}>{payslip.staffName}</Text>
                   </View>
-                  <View style={styles.payslipActions}>
+                  <View style={styles.cardActionGroup}>
                     <TouchableOpacity
-                      style={styles.viewButton}
-                      onPress={(e) => {
-                        e.stopPropagation();
-                        handlePayslipPress(payslip);
+                      style={styles.cardActionButton}
+                      onPress={() => handlePayslipPress(payslip)}
+                    >
+                      <LinearGradient
+                        colors={['#6B46C1', '#9333EA']}
+                        style={styles.cardActionGradient}
+                      >
+                        <MaterialCommunityIcons name="eye" size={14} color={COLORS.white} />
+                        <Text style={styles.cardActionText}>View</Text>
+                      </LinearGradient>
+                    </TouchableOpacity>
+                    <TouchableOpacity
+                      style={styles.cardActionButton}
+                      disabled={payslip.status === 'paid'}
+                      onPress={() => {
+                        if (payslip.status !== 'paid') {
+                          handlePayNow(payslip);
+                        }
                       }}
                     >
-                      <MaterialCommunityIcons name="eye" size={16} color={COLORS.primary} />
-                      <Text style={styles.viewButtonText}>View</Text>
-                    </TouchableOpacity>
-                    
-                    {payslip.status === 'pending' && (
-                      <TouchableOpacity
-                        style={styles.paidButton}
-                        onPress={(e) => {
-                          e.stopPropagation();
-                          handleMarkAsPaid(payslip);
-                        }}
+                      <LinearGradient
+                        colors={payslip.status === 'paid' ? ['#9CA3AF', '#9CA3AF'] : ['#10B981', '#059669']}
+                        style={styles.cardActionGradient}
                       >
-                        <MaterialCommunityIcons name="check" size={16} color={COLORS.white} />
-                        <Text style={styles.paidButtonText}>Mark Paid</Text>
-                      </TouchableOpacity>
-                    )}
+                        <MaterialCommunityIcons
+                          name={payslip.status === 'paid' ? 'check-circle' : 'credit-card'}
+                          size={14}
+                          color={COLORS.white}
+                        />
+                        <Text style={styles.cardActionText}>
+                          Paid
+                        </Text>
+                      </LinearGradient>
+                    </TouchableOpacity>
                   </View>
                 </View>
-              </TouchableOpacity>
-            ))}
+              </View>
+              );
+            })}
             </View>
           </>
         )}
         
         {/* Generate New Payslips Button */}
-        <TouchableOpacity style={styles.newTransactionButton} onPress={() => {
-          Alert.alert(
-            'Generate Payslips',
-            'Generate payslips for the current fortnight for all active staff?',
-            [
-              { text: 'Cancel', style: 'cancel' },
-              { text: 'Generate', onPress: () => Alert.alert('Success', 'New payslips generated for all staff') }
-            ]
-          );
-        }}>
+        <TouchableOpacity 
+          style={styles.newTransactionButton} 
+          onPress={() => setGeneratePayslipModalVisible(true)}
+        >
           <LinearGradient
             colors={['#6B46C1', '#9333EA']}
             style={styles.newTransactionGradient}
@@ -775,6 +1942,229 @@ const RecentTransactionsScreen = ({ navigation }) => {
         <View style={styles.bottomPadding} />
       </View>
       </ScrollView>
+
+      {/* Payslip Review Modal */}
+      <Modal
+        visible={reviewModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={handleReviewCancel}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.reviewModalContainer}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>
+                {reviewPayslip ? `Review ${reviewPayslip.staffName}` : 'Review Payslip'}
+              </Text>
+              <TouchableOpacity style={styles.modalCloseButton} onPress={handleReviewCancel}>
+                <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
+              </TouchableOpacity>
+            </View>
+
+            <ScrollView style={styles.modalContent} showsVerticalScrollIndicator={false}>
+              {reviewPayslip && (
+                <View style={styles.reviewSummaryRow}>
+                  <View>
+                    <Text style={styles.reviewLabel}>Period</Text>
+                    <Text style={styles.reviewValue}>
+                      {reviewPayslip.periodStart} → {reviewPayslip.periodEnd}
+                    </Text>
+                  </View>
+                  <View>
+                    <Text style={styles.reviewLabel}>Current Net</Text>
+                    <Text style={styles.reviewValue}>{formatCurrencyValue(reviewPayslip.netPay)}</Text>
+                  </View>
+                  <View>
+                    <Text style={styles.reviewLabel}>New Net</Text>
+                    <Text style={[styles.reviewValue, styles.reviewValuePrimary]}>
+                      {formatCurrencyValue(previewReviewPayslip?.netPay ?? reviewPayslip.netPay)}
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              <Text style={styles.formLabel}>Status</Text>
+              <View style={styles.statusToggleRow}>
+                {['pending', 'paid', 'failed'].map((status) => (
+                  <TouchableOpacity
+                    key={status}
+                    style={[
+                      styles.statusToggle,
+                      payslipReviewForm.status === status && styles.statusToggleActive,
+                    ]}
+                    onPress={() => updateReviewForm('status', status)}
+                  >
+                    <Text
+                      style={[
+                        styles.statusToggleText,
+                        payslipReviewForm.status === status && styles.statusToggleTextActive,
+                      ]}
+                    >
+                      {status.charAt(0).toUpperCase() + status.slice(1)}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+              </View>
+
+              {reviewPayslip && (reviewPayslip.staffType === 'nursing' || reviewPayslip.payType === 'hourly') ? (
+                <View style={styles.formRow}>
+                  <View style={styles.formColumn}>
+                    <Text style={styles.formLabelSmall}>Regular Hours</Text>
+                    <TextInput
+                      style={styles.textInput}
+                      value={payslipReviewForm.regularHours}
+                      onChangeText={(text) => updateReviewForm('regularHours', text)}
+                      placeholder="70"
+                      keyboardType="numeric"
+                    />
+                  </View>
+                  <View style={styles.formColumn}>
+                    <Text style={styles.formLabelSmall}>Overtime Hours</Text>
+                    <TextInput
+                      style={styles.textInput}
+                      value={payslipReviewForm.overtimeHours}
+                      onChangeText={(text) => updateReviewForm('overtimeHours', text)}
+                      placeholder="5"
+                      keyboardType="numeric"
+                    />
+                  </View>
+                </View>
+              ) : (
+                <View style={styles.formGroup}>
+                  <Text style={styles.formLabel}>Base Pay (J$)</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    value={payslipReviewForm.basePay}
+                    onChangeText={(text) => updateReviewForm('basePay', text)}
+                    keyboardType="numeric"
+                    placeholder="180000"
+                  />
+                </View>
+              )}
+
+              <Text style={styles.formLabel}>Allowances</Text>
+              <View style={styles.formRow}>
+                <View style={styles.formColumn}>
+                  <Text style={styles.formLabelSmall}>Transport</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    value={payslipReviewForm.allowances.transport}
+                    onChangeText={(text) => updateReviewForm('transport', text, 'allowances')}
+                    keyboardType="numeric"
+                  />
+                </View>
+                <View style={styles.formColumn}>
+                  <Text style={styles.formLabelSmall}>Meal</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    value={payslipReviewForm.allowances.meal}
+                    onChangeText={(text) => updateReviewForm('meal', text, 'allowances')}
+                    keyboardType="numeric"
+                  />
+                </View>
+              </View>
+              <View style={styles.formRow}>
+                <View style={styles.formColumn}>
+                  <Text style={styles.formLabelSmall}>Phone</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    value={payslipReviewForm.allowances.phone}
+                    onChangeText={(text) => updateReviewForm('phone', text, 'allowances')}
+                    keyboardType="numeric"
+                  />
+                </View>
+                <View style={styles.formColumn}>
+                  <Text style={styles.formLabelSmall}>Other</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    value={payslipReviewForm.allowances.other}
+                    onChangeText={(text) => updateReviewForm('other', text, 'allowances')}
+                    keyboardType="numeric"
+                  />
+                </View>
+              </View>
+
+              <Text style={[styles.formLabel, { marginTop: 12 }]}>Deductions</Text>
+              <View style={styles.formRow}>
+                <View style={styles.formColumn}>
+                  <Text style={styles.formLabelSmall}>Tax</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    value={payslipReviewForm.deductions.tax}
+                    onChangeText={(text) => updateReviewForm('tax', text, 'deductions')}
+                    keyboardType="numeric"
+                  />
+                </View>
+                <View style={styles.formColumn}>
+                  <Text style={styles.formLabelSmall}>NIS</Text>
+                  <TextInput
+                    style={styles.textInput}
+                    value={payslipReviewForm.deductions.nis}
+                    onChangeText={(text) => updateReviewForm('nis', text, 'deductions')}
+                    keyboardType="numeric"
+                  />
+                </View>
+              </View>
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabelSmall}>Other Deductions</Text>
+                <TextInput
+                  style={styles.textInput}
+                  value={payslipReviewForm.deductions.other}
+                  onChangeText={(text) => updateReviewForm('other', text, 'deductions')}
+                  keyboardType="numeric"
+                />
+              </View>
+
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Manual Adjustment</Text>
+                <TextInput
+                  style={styles.textInput}
+                  value={payslipReviewForm.manualAdjustment}
+                  onChangeText={(text) => updateReviewForm('manualAdjustment', text)}
+                  keyboardType="numeric"
+                  placeholder="0"
+                />
+              </View>
+
+              <View style={styles.formGroup}>
+                <Text style={styles.formLabel}>Notes</Text>
+                <TextInput
+                  style={[styles.textInput, styles.textArea]}
+                  value={payslipReviewForm.notes}
+                  onChangeText={(text) => updateReviewForm('notes', text)}
+                  placeholder="Add internal notes"
+                  multiline
+                  numberOfLines={3}
+                />
+              </View>
+
+              {previewReviewPayslip && (
+                <View style={styles.reviewTotalsRow}>
+                  <View>
+                    <Text style={styles.reviewLabel}>Gross (calc)</Text>
+                    <Text style={styles.reviewValue}>{formatCurrencyValue(previewReviewPayslip.grossPay)}</Text>
+                  </View>
+                  <View>
+                    <Text style={styles.reviewLabel}>Net (calc)</Text>
+                    <Text style={[styles.reviewValue, styles.reviewValuePrimary]}>
+                      {formatCurrencyValue(previewReviewPayslip.netPay)}
+                    </Text>
+                  </View>
+                </View>
+              )}
+
+              <View style={styles.reviewModalActions}>
+                <TouchableOpacity style={styles.reviewCancelButton} onPress={handleReviewCancel}>
+                  <Text style={styles.reviewCancelText}>Cancel</Text>
+                </TouchableOpacity>
+                <TouchableOpacity style={styles.reviewSaveButton} onPress={handleReviewSave}>
+                  <Text style={styles.reviewSaveText}>Save Changes</Text>
+                </TouchableOpacity>
+              </View>
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
 
       {/* New Payment Modal */}
       <Modal
@@ -875,7 +2265,7 @@ const RecentTransactionsScreen = ({ navigation }) => {
               <View style={styles.formGroup}>
                 <Text style={styles.formLabel}>Payment Method</Text>
                 <ScrollView horizontal showsHorizontalScrollIndicator={false} style={styles.methodSelector}>
-                  {paymentMethods.map((method) => (
+                  {paymentMethodOptions.map((method) => (
                     <TouchableOpacity
                       key={method}
                       style={[
@@ -971,7 +2361,309 @@ const RecentTransactionsScreen = ({ navigation }) => {
           </View>
         </View>
       </Modal>
+
+      {/* Generate Payslip Staff Selection Modal */}
+      <Modal
+        visible={generatePayslipModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => {
+          setGeneratePayslipModalVisible(false);
+          setSelectedStaff([]);
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.paymentModalContainer}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Generate Payslips</Text>
+              <TouchableOpacity
+                style={styles.modalCloseButton}
+                onPress={() => {
+                  setGeneratePayslipModalVisible(false);
+                  setSelectedStaff([]);
+                }}
+              >
+                <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
+              </TouchableOpacity>
+            </View>
+
+            <Text style={styles.modalSubtitle}>
+              Select staff members to generate payslips for the current pay period
+            </Text>
+
+            <ScrollView style={styles.staffSelectionContainer} showsVerticalScrollIndicator={false}>
+              {/* Nursing Staff Section */}
+              {allStaffMembers.filter(staff => staff.staffType === 'nursing').length > 0 && (
+                <>
+                  <Text style={styles.staffTypeHeader}>🩺 Nursing Staff</Text>
+                  <View style={styles.staffListContainer}>
+                    <TouchableOpacity
+                      style={styles.selectAllButton}
+                      onPress={() => {
+                        const nursingStaff = allStaffMembers.filter(staff => staff.staffType === 'nursing');
+                        const allNursesSelected = nursingStaff.every(staff => (selectedStaff || []).includes(staff.id));
+                        
+                        if (allNursesSelected) {
+                          setSelectedStaff(prev => prev.filter(id => !nursingStaff.find(staff => staff.id === id)));
+                        } else {
+                          setSelectedStaff(prev => [
+                            ...prev.filter(id => !nursingStaff.find(staff => staff.id === id)),
+                            ...nursingStaff.map(staff => staff.id)
+                          ]);
+                        }
+                      }}
+                    >
+                      <View style={[
+                        styles.staffCheckbox,
+                        allStaffMembers.filter(staff => staff.staffType === 'nursing').every(staff => (selectedStaff || []).includes(staff.id)) && styles.staffCheckboxSelected
+                      ]}>
+                        {allStaffMembers.filter(staff => staff.staffType === 'nursing').every(staff => (selectedStaff || []).includes(staff.id)) && (
+                          <MaterialCommunityIcons name="check" size={14} color={COLORS.white} />
+                        )}
+                      </View>
+                      <Text style={styles.selectAllText}>Select All Nursing Staff</Text>
+                    </TouchableOpacity>
+
+                    {allStaffMembers
+                      .filter(staff => staff.staffType === 'nursing')
+                      .map(staff => (
+                        <StaffSelectionItem 
+                          key={staff.id} 
+                          staff={staff} 
+                          selected={(selectedStaff || []).includes(staff.id)}
+                          onToggle={(staffId) => {
+                            setSelectedStaff(prev => 
+                              (prev || []).includes(staffId) 
+                                ? (prev || []).filter(id => id !== staffId)
+                                : [...(prev || []), staffId]
+                            );
+                          }}
+                        />
+                      ))}
+                  </View>
+                </>
+              )}
+
+              {/* Admin Staff Section */}
+              {allStaffMembers.filter(staff => staff.staffType === 'admin').length > 0 && (
+                <>
+                  <Text style={styles.staffTypeHeader}>👔 Administrative Staff</Text>
+                  <View style={styles.staffListContainer}>
+                    <TouchableOpacity
+                      style={styles.selectAllButton}
+                      onPress={() => {
+                        const adminStaffList = allStaffMembers.filter(staff => staff.staffType === 'admin');
+                        const allAdminSelected = adminStaffList.every(staff => (selectedStaff || []).includes(staff.id));
+                        
+                        if (allAdminSelected) {
+                          setSelectedStaff(prev => prev.filter(id => !adminStaffList.find(staff => staff.id === id)));
+                        } else {
+                          setSelectedStaff(prev => [
+                            ...prev.filter(id => !adminStaffList.find(staff => staff.id === id)),
+                            ...adminStaffList.map(staff => staff.id)
+                          ]);
+                        }
+                      }}
+                    >
+                      <View style={[
+                        styles.staffCheckbox,
+                        allStaffMembers.filter(staff => staff.staffType === 'admin').every(staff => (selectedStaff || []).includes(staff.id)) && styles.staffCheckboxSelected
+                      ]}>
+                        {allStaffMembers.filter(staff => staff.staffType === 'admin').every(staff => (selectedStaff || []).includes(staff.id)) && (
+                          <MaterialCommunityIcons name="check" size={14} color={COLORS.white} />
+                        )}
+                      </View>
+                      <Text style={styles.selectAllText}>Select All Admin Staff</Text>
+                    </TouchableOpacity>
+
+                    {allStaffMembers
+                      .filter(staff => staff.staffType === 'admin')
+                      .map(staff => (
+                        <StaffSelectionItem 
+                          key={staff.id} 
+                          staff={staff} 
+                          selected={(selectedStaff || []).includes(staff.id)}
+                          onToggle={(staffId) => {
+                            setSelectedStaff(prev => 
+                              (prev || []).includes(staffId) 
+                                ? (prev || []).filter(id => id !== staffId)
+                                : [...(prev || []), staffId]
+                            );
+                          }}
+                        />
+                      ))}
+                  </View>
+                </>
+              )}
+
+              {allStaffMembers.length === 0 && (
+                <View style={styles.emptyHistoryState}>
+                  <MaterialCommunityIcons name="account-off" size={48} color={COLORS.textMuted} />
+                  <Text style={styles.emptyStateText}>No staff members found</Text>
+                </View>
+              )}
+            </ScrollView>
+
+            <TouchableOpacity
+              style={[
+                styles.generateButton,
+                (selectedStaff || []).length === 0 && styles.generateButtonDisabled
+              ]}
+              disabled={(selectedStaff || []).length === 0}
+              onPress={() => {
+                const staffToGenerate = allStaffMembers.filter(staff => 
+                  (selectedStaff || []).includes(staff.id)
+                );
+                generatePayslipsForStaff(staffToGenerate);
+              }}
+            >
+              <Text style={styles.generateButtonText}>
+                Generate Payslips ({(selectedStaff || []).length})
+              </Text>
+            </TouchableOpacity>
+          </View>
+        </View>
+      </Modal>
+
+      {/* Payment Method Selection Modal */}
+      <Modal
+        visible={paymentMethodModalVisible}
+        animationType="slide"
+        transparent={true}
+        onRequestClose={() => {
+          setPaymentMethodModalVisible(false);
+          setPayslipToPay(null);
+        }}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={styles.paymentModalContainer}>
+            <View style={styles.modalHeader}>
+              <Text style={styles.modalTitle}>Select Payment Method</Text>
+              <TouchableOpacity
+                style={styles.modalCloseButton}
+                onPress={() => {
+                  setPaymentMethodModalVisible(false);
+                  setPayslipToPay(null);
+                }}
+              >
+                <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
+              </TouchableOpacity>
+            </View>
+
+            {payslipToPay && (
+              <View style={styles.paymentInfoSection}>
+                <Text style={styles.paymentInfoText}>
+                  Pay <Text style={styles.paymentAmount}>J${parseFloat(payslipToPay.netPay).toLocaleString()}</Text> to {payslipToPay.staffName}
+                </Text>
+              </View>
+            )}
+
+            <ScrollView style={styles.modalContent} showsVerticalScrollIndicator={false}>
+              <Text style={styles.modalSubtitle}>Choose your payment method:</Text>
+              
+              {paymentMethods.map((method) => (
+                <TouchableOpacity
+                  key={method.id}
+                  style={styles.paymentMethodCard}
+                  onPress={() => {
+                    setSelectedPaymentMethod(method);
+                    Alert.alert(
+                      'Confirm Payment',
+                      `Pay J$${parseFloat(payslipToPay.netPay).toLocaleString()} to ${payslipToPay.staffName} using ${method.name}?`,
+                      [
+                        { text: 'Cancel', style: 'cancel' },
+                        { 
+                          text: 'Pay Now',
+                          onPress: async () => {
+                            setPaymentMethodModalVisible(false);
+                            await processPayment(payslipToPay, method);
+                            setPayslipToPay(null);
+                          }
+                        }
+                      ]
+                    );
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <View style={[styles.paymentCardPreview, { backgroundColor: method.bgColor }]}>
+                    <View style={styles.cardHeader}>
+                      <View style={styles.cardTypeContainer}>
+                        <MaterialCommunityIcons name={method.icon} size={24} color="white" />
+                        <Text style={styles.cardTypeText}>{method.type.toUpperCase()}</Text>
+                      </View>
+                      {method.default && (
+                        <View style={styles.defaultBadge}>
+                          <Text style={styles.defaultBadgeText}>Default</Text>
+                        </View>
+                      )}
+                    </View>
+                    
+                    <View style={styles.cardMiddle}>
+                      <Text style={styles.cardName}>{method.name}</Text>
+                      {method.bankName && (
+                        <Text style={styles.bankDetails}>{method.bankName}</Text>
+                      )}
+                    </View>
+                    
+                    <View style={styles.cardFooter}>
+                      <MaterialCommunityIcons name="chevron-right" size={20} color="white" />
+                    </View>
+                  </View>
+                </TouchableOpacity>
+              ))}
+
+              {paymentMethods.length === 0 && (
+                <View style={styles.emptyPaymentMethods}>
+                  <MaterialCommunityIcons name="credit-card-off" size={48} color={COLORS.textMuted} />
+                  <Text style={styles.emptyPaymentText}>No payment methods configured</Text>
+                  <TouchableOpacity 
+                    style={styles.addPaymentMethodButton}
+                    onPress={() => {
+                      setPaymentMethodModalVisible(false);
+                      navigation.navigate('PaymentSettings');
+                    }}
+                  >
+                    <Text style={styles.addPaymentMethodText}>Add Payment Method</Text>
+                  </TouchableOpacity>
+                </View>
+              )}
+            </ScrollView>
+          </View>
+        </View>
+      </Modal>
     </SafeAreaView>
+  );
+};
+
+// Staff Selection Item Component
+const StaffSelectionItem = ({ staff, selected, onToggle }) => {
+  if (!staff) return null;
+  
+  return (
+    <TouchableOpacity
+      style={[styles.staffItem, selected && styles.staffItemSelected]}
+      onPress={() => onToggle && onToggle(staff.id)}
+    >
+      <View style={[styles.staffCheckbox, selected && styles.staffCheckboxSelected]}>
+        {selected && (
+          <MaterialCommunityIcons name="check" size={14} color={COLORS.white} />
+        )}
+      </View>
+      <View style={styles.staffInfo}>
+        <Text style={styles.staffName}>{staff.name || 'Unknown Staff'}</Text>
+        <Text style={styles.staffRole}>
+          {staff.role || 'Unknown Role'} • {staff.payType === 'salary' ? 'Salary' : 'Hourly'}
+        </Text>
+        <Text style={styles.staffIdentifier}>{staff.code || staff.id}</Text>
+      </View>
+      <View style={styles.payTypeIndicator}>
+        <MaterialCommunityIcons 
+          name={staff.staffType === 'admin' ? 'account-tie' : 'medical-bag'} 
+          size={20} 
+          color={staff.staffType === 'admin' ? (COLORS.accent || COLORS.primary) : COLORS.primary} 
+        />
+      </View>
+    </TouchableOpacity>
   );
 };
 
@@ -1009,6 +2701,27 @@ const styles = StyleSheet.create({
     color: COLORS.white,
     flex: 1,
     textAlign: 'center',
+  },
+  headerSubtitle: {
+    fontSize: 13,
+    color: COLORS.white,
+    opacity: 0.85,
+  },
+  headerSubtitleRow: {
+    marginTop: 6,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: 8,
+  },
+  headerSubtitleIcon: {
+    marginTop: 0,
+  },
+  headerSubtitleWarning: {
+    color: COLORS.warning,
+  },
+  headerSubtitleSuccess: {
+    color: COLORS.success,
   },
   exportButton: {
     width: 40,
@@ -1049,13 +2762,116 @@ const styles = StyleSheet.create({
   },
   filterSection: {
     paddingHorizontal: 20,
-    paddingVertical: 16,
+    paddingVertical: 8,
     backgroundColor: COLORS.background,
+  },
+  validationSection: {
+    marginHorizontal: 20,
+    marginBottom: 12,
+    padding: 16,
+    borderRadius: 16,
+    backgroundColor: COLORS.white,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 6,
+    elevation: 2,
+  },
+  validationHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  validationTitleGroup: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  validationTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  validationTimestamp: {
+    fontSize: 12,
+    color: COLORS.textLight,
+  },
+  validationRefreshButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderRadius: 24,
+    backgroundColor: '#ff8a00',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  validationRefreshText: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.white,
+    textTransform: 'uppercase',
+  },
+  validationSummaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  validationLabel: {
+    fontSize: 12,
+    color: COLORS.textLight,
+  },
+  validationValue: {
+    fontSize: 16,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  validationValueWarning: {
+    color: COLORS.warning,
+  },
+  validationCleanRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: COLORS.success + '15',
+  },
+  validationCleanText: {
+    fontSize: 13,
+    color: COLORS.success,
+    fontWeight: '600',
+  },
+  validationIssuesContainer: {
+    gap: 8,
+  },
+  validationIssueRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    padding: 10,
+    borderRadius: 10,
+    backgroundColor: COLORS.warning + '10',
+  },
+  validationIssueText: {
+    flex: 1,
+    fontSize: 13,
+    color: COLORS.text,
+  },
+  validationMoreText: {
+    fontSize: 12,
+    color: COLORS.textLight,
+    fontStyle: 'italic',
   },
   filterPillContainer: {
     flexDirection: 'row',
     gap: 8,
-    paddingHorizontal: 20,
+    paddingHorizontal: 8,
     marginTop: 16,
     marginBottom: 20,
   },
@@ -1100,6 +2916,36 @@ const styles = StyleSheet.create({
     fontFamily: 'Poppins_700Bold',
     color: COLORS.textMuted,
     textAlign: 'center',
+  },
+  samplePreviewContainer: {
+    paddingHorizontal: 16,
+    paddingVertical: 8,
+  },
+  samplePayslipCard: {
+    opacity: 0.9,
+  },
+  sampleBanner: {
+    flexDirection: 'row',
+    gap: 12,
+    alignItems: 'flex-start',
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: COLORS.primary + '08',
+    marginBottom: 12,
+  },
+  sampleBannerCopy: {
+    flex: 1,
+    gap: 4,
+  },
+  sampleBannerTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: COLORS.primary,
+  },
+  sampleBannerText: {
+    fontSize: 12,
+    color: COLORS.primary,
+    lineHeight: 16,
   },
   filterContainer: {
     paddingHorizontal: 20,
@@ -1245,6 +3091,18 @@ const styles = StyleSheet.create({
     shadowRadius: 20,
     elevation: 10,
   },
+  reviewModalContainer: {
+    backgroundColor: COLORS.white,
+    borderRadius: 20,
+    margin: 20,
+    width: '95%',
+    maxHeight: '85%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    elevation: 12,
+  },
   modalHeader: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1269,11 +3127,25 @@ const styles = StyleSheet.create({
   formGroup: {
     marginBottom: 20,
   },
+  formRow: {
+    flexDirection: 'row',
+    gap: 12,
+    marginBottom: 16,
+  },
+  formColumn: {
+    flex: 1,
+  },
   formLabel: {
     fontSize: 16,
     fontWeight: '600',
     color: COLORS.text,
     marginBottom: 8,
+  },
+  formLabelSmall: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.text,
+    marginBottom: 6,
   },
   staffSelector: {
     flexDirection: 'row',
@@ -1388,12 +3260,91 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: COLORS.white,
   },
+  reviewSummaryRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginBottom: 16,
+  },
+  reviewLabel: {
+    fontSize: 12,
+    color: COLORS.textLight,
+  },
+  reviewValue: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  reviewValuePrimary: {
+    color: COLORS.primary,
+  },
+  statusToggleRow: {
+    flexDirection: 'row',
+    gap: 8,
+    marginBottom: 20,
+  },
+  statusToggle: {
+    flex: 1,
+    paddingVertical: 10,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 10,
+    alignItems: 'center',
+  },
+  statusToggleActive: {
+    borderColor: COLORS.primary,
+    backgroundColor: COLORS.primary + '10',
+  },
+  statusToggleText: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  statusToggleTextActive: {
+    color: COLORS.primary,
+  },
+  reviewTotalsRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    marginTop: 8,
+    marginBottom: 20,
+  },
+  reviewModalActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    gap: 12,
+    marginBottom: 16,
+  },
+  reviewCancelButton: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    alignItems: 'center',
+  },
+  reviewSaveButton: {
+    flex: 1,
+    paddingVertical: 14,
+    borderRadius: 12,
+    backgroundColor: COLORS.primary,
+    alignItems: 'center',
+  },
+  reviewCancelText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  reviewSaveText: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.white,
+  },
   
   // Payslip Preview Styles (similar to invoice management)
   previewSection: {
     backgroundColor: COLORS.background,
     paddingHorizontal: 16,
-    paddingVertical: 16,
+    paddingVertical: 8,
   },
   previewHeader: {
     flexDirection: 'row',
@@ -1433,6 +3384,100 @@ const styles = StyleSheet.create({
     shadowRadius: 8,
     elevation: 5,
     marginBottom: 12,
+  },
+  payTemplateHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    paddingHorizontal: 24,
+    paddingTop: 28,
+    paddingBottom: 8,
+  },
+  payTemplateTitle: {
+    fontSize: 28,
+    fontWeight: '700',
+    letterSpacing: 0.5,
+    color: '#0066CC',
+  },
+  payTemplateCompany: {
+    fontSize: 15,
+    fontWeight: '700',
+    color: COLORS.text,
+    marginTop: 6,
+    textTransform: 'uppercase',
+  },
+  payTemplateLogo: {
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    borderWidth: 1.5,
+    borderColor: '#E0E0E0',
+    borderRadius: 8,
+    backgroundColor: COLORS.white,
+  },
+  payTemplateLogoText: {
+    fontSize: 11,
+    color: '#FFA500',
+    fontWeight: '600',
+  },
+  payTemplateCompanyInfo: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    paddingHorizontal: 24,
+    paddingTop: 4,
+    paddingBottom: 18,
+  },
+  payTemplateCompanyColumn: {
+    flex: 1,
+  },
+  payTemplateCompanyColumnRight: {
+    flex: 1,
+    alignItems: 'flex-end',
+  },
+  payTemplateCompanyDetail: {
+    fontSize: 11,
+    color: '#666',
+    marginTop: 3,
+    lineHeight: 16,
+  },
+  payTemplateDivider: {
+    height: 2,
+    backgroundColor: '#333',
+    marginHorizontal: 24,
+    marginBottom: 24,
+  },
+  payTemplateFieldGrid: {
+    paddingHorizontal: 24,
+    paddingBottom: 28,
+    gap: 14,
+  },
+  payTemplateFieldRow: {
+    flexDirection: 'row',
+    gap: 14,
+  },
+  payTemplateField: {
+    flex: 1,
+    borderWidth: 1.5,
+    borderColor: '#CCCCCC',
+    borderRadius: 4,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    backgroundColor: COLORS.white,
+    minHeight: 68,
+    justifyContent: 'space-between',
+  },
+  payTemplateFieldLabel: {
+    fontSize: 9,
+    fontWeight: '600',
+    color: '#888',
+    marginBottom: 8,
+    textTransform: 'uppercase',
+    letterSpacing: 0.5,
+  },
+  payTemplateFieldValue: {
+    fontSize: 15,
+    fontWeight: '400',
+    color: '#222',
+    lineHeight: 20,
   },
   employeeInfoSection: {
     marginBottom: 0,
@@ -1742,21 +3787,46 @@ const styles = StyleSheet.create({
   payslipCard: {
     backgroundColor: COLORS.white,
     borderRadius: 12,
-    padding: 12,
-    marginBottom: 8,
+    padding: 16,
+    marginBottom: 12,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 4,
-    elevation: 2,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 8,
+    elevation: 3,
   },
-  payslipHeader: {
+  payslipCardContent: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
   },
+  payslipCardInfo: {
+    flex: 1,
+  },
+  payslipCardId: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: COLORS.primary,
+    marginBottom: 4,
+  },
+  payslipCardName: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  payslipHeaderRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: 12,
+  },
   payslipInfo: {
     flex: 1,
+  },
+  staffIdentifier: {
+    fontSize: 13,
+    color: COLORS.textLight,
+    marginTop: 2,
   },
   roleName: {
     fontSize: 14,
@@ -1768,44 +3838,89 @@ const styles = StyleSheet.create({
     color: COLORS.textLight,
     marginTop: 4,
   },
+  periodDateSmall: {
+    fontSize: 11,
+    color: COLORS.textLight,
+  },
+  payslipMetaRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  statusBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 12,
+    backgroundColor: COLORS.background,
+  },
+  statusBadgeText: {
+    fontSize: 12,
+    fontWeight: '600',
+  },
+  payslipAmountRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginTop: 12,
+  },
+  amountBreakdown: {
+    alignItems: 'flex-end',
+  },
+  breakdownLabel: {
+    fontSize: 11,
+    color: COLORS.textLight,
+  },
+  breakdownValue: {
+    fontSize: 13,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
   sessionInfo: {
     fontSize: 11,
     color: COLORS.primary,
     marginTop: 2,
     fontWeight: '500',
   },
-  payslipActions: {
+  cardActionGroup: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: 8,
-    alignItems: 'center',
   },
-  viewButton: {
+  cardActionButton: {
+    overflow: 'hidden',
+    borderRadius: 20,
+  },
+  cardActionGradient: {
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    borderRadius: 20,
+    alignItems: 'center',
+    justifyContent: 'center',
+    minHeight: 36,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 2,
     flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
-    backgroundColor: COLORS.primary + '10',
-    gap: 4,
+    gap: 6,
   },
-  viewButtonText: {
-    color: COLORS.primary,
-    fontSize: 12,
-    fontWeight: '500',
-  },
-  paidButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
-    backgroundColor: COLORS.success,
-    gap: 4,
-  },
-  paidButtonText: {
+  cardActionText: {
+    fontSize: 11,
+    fontFamily: 'Poppins_700Bold',
     color: COLORS.white,
-    fontSize: 12,
-    fontWeight: '500',
+    textAlign: 'center',
+  },
+  cardActionDisabled: {
+    backgroundColor: COLORS.textLight,
+  },
+  cardActionSolidTextDisabled: {
+    color: COLORS.white,
+    opacity: 0.9,
   },
   payslipDetails: {
     flexDirection: 'row',
@@ -1829,6 +3944,21 @@ const styles = StyleSheet.create({
     fontSize: 18,
     fontWeight: 'bold',
     color: COLORS.success,
+  },
+  reviewBadge: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    marginTop: 10,
+    paddingVertical: 4,
+    paddingHorizontal: 10,
+    borderRadius: 12,
+    backgroundColor: COLORS.success + '15',
+  },
+  reviewBadgeText: {
+    fontSize: 12,
+    color: COLORS.success,
+    fontWeight: '600',
   },
   emptyState: {
     flex: 1,
@@ -1978,6 +4108,208 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
     paddingVertical: 60,
+  },
+  // Generate Payslip Modal Styles
+  staffSelectionContainer: {
+    maxHeight: 400,
+  },
+  staffTypeHeader: {
+    fontSize: 16,
+    fontWeight: '700',
+    color: COLORS.text,
+    marginTop: 16,
+    marginBottom: 12,
+    paddingHorizontal: 16,
+  },
+  staffListContainer: {
+    paddingHorizontal: 16,
+  },
+  staffItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 16,
+    backgroundColor: COLORS.white,
+    borderRadius: 8,
+    marginBottom: 8,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  staffItemSelected: {
+    backgroundColor: COLORS.primary + '10',
+    borderColor: COLORS.primary,
+  },
+  staffCheckbox: {
+    width: 20,
+    height: 20,
+    borderRadius: 4,
+    borderWidth: 2,
+    borderColor: COLORS.border,
+    marginRight: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  staffCheckboxSelected: {
+    backgroundColor: COLORS.primary,
+    borderColor: COLORS.primary,
+  },
+  staffInfo: {
+    flex: 1,
+  },
+  staffName: {
+    fontSize: 14,
+    fontWeight: '600',
+    color: COLORS.text,
+  },
+  staffRole: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+    marginTop: 2,
+  },
+  staffCode: {
+    fontSize: 11,
+    color: COLORS.primary,
+    fontWeight: '500',
+  },
+  generateButton: {
+    backgroundColor: COLORS.primary,
+    borderRadius: 8,
+    paddingVertical: 12,
+    paddingHorizontal: 20,
+    margin: 16,
+    alignItems: 'center',
+  },
+  generateButtonDisabled: {
+    backgroundColor: COLORS.textMuted,
+  },
+  generateButtonText: {
+    color: COLORS.white,
+    fontSize: 16,
+    fontWeight: '600',
+  },
+  selectAllButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    marginBottom: 8,
+  },
+  selectAllText: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: COLORS.primary,
+    marginLeft: 8,
+  },
+  payTypeIndicator: {
+    marginLeft: 8,
+  },
+  // Payment Method Selection Styles
+  paymentInfoSection: {
+    backgroundColor: COLORS.background,
+    padding: 16,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  paymentInfoText: {
+    fontSize: 16,
+    color: COLORS.text,
+    textAlign: 'center',
+  },
+  paymentAmount: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: COLORS.success,
+  },
+  modalSubtitle: {
+    fontSize: 16,
+    fontWeight: '500',
+    color: COLORS.text,
+    marginBottom: 16,
+  },
+  paymentMethodCard: {
+    marginBottom: 12,
+    borderRadius: 12,
+    overflow: 'hidden',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  paymentCardPreview: {
+    padding: 16,
+    minHeight: 100,
+    justifyContent: 'space-between',
+  },
+  cardHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    marginBottom: 8,
+  },
+  cardTypeContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  cardTypeText: {
+    color: 'white',
+    fontSize: 12,
+    fontWeight: '700',
+    marginLeft: 8,
+    letterSpacing: 1,
+  },
+  defaultBadge: {
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+    borderRadius: 12,
+    borderWidth: 1,
+    borderColor: 'rgba(255,255,255,0.3)',
+  },
+  defaultBadgeText: {
+    color: 'white',
+    fontSize: 10,
+    fontWeight: '600',
+    textTransform: 'uppercase',
+  },
+  cardMiddle: {
+    flex: 1,
+    justifyContent: 'center',
+  },
+  cardName: {
+    color: 'white',
+    fontSize: 16,
+    fontWeight: '600',
+    marginBottom: 4,
+  },
+  bankDetails: {
+    color: 'rgba(255,255,255,0.8)',
+    fontSize: 14,
+    fontWeight: '400',
+  },
+  cardFooter: {
+    alignItems: 'flex-end',
+  },
+  emptyPaymentMethods: {
+    alignItems: 'center',
+    paddingVertical: 40,
+  },
+  emptyPaymentText: {
+    fontSize: 16,
+    color: COLORS.textMuted,
+    marginTop: 12,
+    marginBottom: 20,
+  },
+  addPaymentMethodButton: {
+    backgroundColor: COLORS.primary,
+    paddingHorizontal: 20,
+    paddingVertical: 12,
+    borderRadius: 8,
+  },
+  addPaymentMethodText: {
+    color: COLORS.white,
+    fontSize: 14,
+    fontWeight: '600',
   },
 });
 

@@ -1,0 +1,121 @@
+[{
+  "_id": {
+    "$oid": "691f8a2e35ff7d5e5047e496"
+  },
+  "appointmentId": {
+    "$oid": "691f8a2d35ff7d5e5047e492"
+  },
+  "seriesId": "SERIES-1763674669761",
+  "recipientId": {
+    "$oid": "691e4d50380a42895fb3e238"
+  },
+  "recipientType": "patient",
+  "appointmentDateTime": {
+    "$date": "2025-11-20T21:37:00.000Z"
+  },
+  "reminderTime": {
+    "$date": "2025-11-19T21:37:00.000Z"
+  },
+  "reminderType": "24h",
+  "status": "failed",
+  "notificationTitle": "Appointment Reminder",
+  "notificationBody": "Your Wound Care appointment is scheduled for tomorrow at 16:37",
+  "sendAttempts": 0,
+  "appointmentDetails": {
+    "patientName": "kadian red",
+    "service": "Wound Care",
+    "date": {
+      "$date": "2025-11-20T05:00:00.000Z"
+    },
+    "time": "16:37",
+    "location": "Grafton road"
+  },
+  "createdAt": {
+    "$date": "2025-11-20T21:37:50.067Z"
+  },
+  "updatedAt": {
+    "$date": "2025-11-20T21:38:24.562Z"
+  },
+  "__v": 0,
+  "lastAttemptError": "No FCM token available"
+},
+{
+  "_id": {
+    "$oid": "69205b852d1c23b2d1af2ad2"
+  },
+  "appointmentId": {
+    "$oid": "69205b852d1c23b2d1af2acc"
+  },
+  "recipientId": {
+    "$oid": "691e4d50380a42895fb3e238"
+  },
+  "recipientType": "patient",
+  "appointmentDateTime": {
+    "$date": "2025-11-21T13:30:00.000Z"
+  },
+  "reminderTime": {
+    "$date": "2025-11-20T13:30:00.000Z"
+  },
+  "reminderType": "24h",
+  "status": "failed",
+  "notificationTitle": "Appointment Reminder",
+  "notificationBody": "Your Wound Care appointment is scheduled for tomorrow at 08:30",
+  "sendAttempts": 0,
+  "appointmentDetails": {
+    "patientName": "kadian red",
+    "service": "Wound Care",
+    "date": {
+      "$date": "2025-11-21T05:00:00.000Z"
+    },
+    "time": "08:30",
+    "location": "Grafton road"
+  },
+  "createdAt": {
+    "$date": "2025-11-21T12:31:01.580Z"
+  },
+  "updatedAt": {
+    "$date": "2025-11-21T12:31:43.409Z"
+  },
+  "__v": 0,
+  "lastAttemptError": "No FCM token available"
+},
+{
+  "_id": {
+    "$oid": "69262b18e8d50fb48fd5b137"
+  },
+  "appointmentId": {
+    "$oid": "69262b18e8d50fb48fd5b133"
+  },
+  "recipientId": {
+    "$oid": "691e4d50380a42895fb3e238"
+  },
+  "recipientType": "patient",
+  "appointmentDateTime": {
+    "$date": "2025-11-26T22:17:00.000Z"
+  },
+  "reminderTime": {
+    "$date": "2025-11-25T22:17:00.000Z"
+  },
+  "reminderType": "24h",
+  "status": "failed",
+  "notificationTitle": "Appointment Reminder",
+  "notificationBody": "Your Wound Care appointment is scheduled for tomorrow at 17:17",
+  "sendAttempts": 0,
+  "appointmentDetails": {
+    "patientName": "kadian red",
+    "service": "Wound Care",
+    "date": {
+      "$date": "2025-11-26T05:00:00.000Z"
+    },
+    "time": "17:17",
+    "location": "Grafton road"
+  },
+  "createdAt": {
+    "$date": "2025-11-25T22:18:00.561Z"
+  },
+  "updatedAt": {
+    "$date": "2025-11-25T22:18:33.395Z"
+  },
+  "__v": 0,
+  "lastAttemptError": "No FCM token available"
+}]

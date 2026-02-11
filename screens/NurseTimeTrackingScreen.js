@@ -180,7 +180,7 @@ const NurseTimeTrackingScreen = ({ navigation }) => {
   const shiftStatus = getShiftStatus();
 
   return (
-    <SafeAreaView style={styles.container} edges={['bottom']}>
+    <SafeAreaView style={styles.container} edges={[]}>
       <LinearGradient
         colors={GRADIENTS.header}
         start={{ x: 0, y: 0 }}

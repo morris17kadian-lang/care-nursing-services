@@ -1,0 +1,240 @@
+import TouchableWeb from "../components/TouchableWeb";
+import React, { useState, useEffect, useRef } from 'react';
+import { View, Text, StyleSheet, Image } from 'react-native';
+import { LinearGradient } from 'expo-linear-gradient';
+import { MaterialCommunityIcons } from '@expo/vector-icons';
+import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
+import { COLORS, GRADIENTS, SPACING } from '../constants';
+
+// Import the existing screens as components
+import AdminClientsScreen from './AdminClientsScreen';
+import AdminAnalyticsScreen from './AdminAnalyticsScreen';
+
+export default function AdminUserManagementScreen({ navigation, route }) {
+  const insets = useSafeAreaInsets();
+  const [activeFilter, setActiveFilter] = useState('clients');
+  const addStaffFunctionRef = useRef(null);
+
+  // Get client and staff counts (you can enhance this with real data)
+  const [clientCount, setClientCount] = useState(0);
+  const [staffCount, setStaffCount] = useState(0);
+
+  // Function to handle setting the add staff function
+  const handleSetAddStaffFunction = (addFunction) => {
+    addStaffFunctionRef.current = addFunction;
+  };
+
+  // Filter Pills Component
+  const FilterPills = () => (
+    <View style={styles.filterContainer}>
+      <TouchableWeb 
+        style={[styles.filterPill, activeFilter === 'clients' && styles.activeFilter]}
+        onPress={() => setActiveFilter('clients')}
+        activeOpacity={0.7}
+      >
+        <MaterialCommunityIcons 
+          name="account-group" 
+          size={16} 
+          color={activeFilter === 'clients' ? COLORS.primary : COLORS.white} 
+        />
+        <Text style={[
+          styles.filterText, 
+          activeFilter === 'clients' && styles.activeFilterText
+        ]}>
+          Clients
+        </Text>
+        {clientCount > 0 && (
+          <View style={[styles.badge, activeFilter === 'clients' && styles.activeBadge]}>
+            <Text style={[
+              styles.badgeText, 
+              activeFilter === 'clients' && styles.activeBadgeText
+            ]}>
+              {clientCount}
+            </Text>
+          </View>
+        )}
+      </TouchableWeb>
+      
+      <TouchableWeb 
+        style={[styles.filterPill, activeFilter === 'staff' && styles.activeFilter]}
+        onPress={() => setActiveFilter('staff')}
+        activeOpacity={0.7}
+      >
+        <MaterialCommunityIcons 
+          name="account-tie" 
+          size={16} 
+          color={activeFilter === 'staff' ? COLORS.primary : COLORS.white} 
+        />
+        <Text style={[
+          styles.filterText, 
+          activeFilter === 'staff' && styles.activeFilterText
+        ]}>
+          Staff
+        </Text>
+        {staffCount > 0 && (
+          <View style={[styles.badge, activeFilter === 'staff' && styles.activeBadge]}>
+            <Text style={[
+              styles.badgeText, 
+              activeFilter === 'staff' && styles.activeBadgeText
+            ]}>
+              {staffCount}
+            </Text>
+          </View>
+        )}
+      </TouchableWeb>
+    </View>
+  );
+
+  return (
+    <SafeAreaView style={styles.container} edges={[]}>
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
+      
+      {/* Header */}
+      <LinearGradient
+        colors={GRADIENTS.header}
+        start={{ x: 0, y: 0 }}
+        end={{ x: 0, y: 1 }}
+        style={[styles.header, { paddingTop: insets.top + 20 }]}
+      >
+        <View style={styles.headerRow}>
+          <View style={{ width: 44 }} />
+          <Text style={styles.welcomeText}>User Management</Text>
+          {/* Add action button based on active filter */}
+          {activeFilter === 'staff' ? (
+            <TouchableWeb
+              style={styles.actionButton}
+              onPress={() => {
+                if (addStaffFunctionRef.current) {
+                  addStaffFunctionRef.current();
+                }
+              }}
+              activeOpacity={0.7}
+            >
+              <MaterialCommunityIcons name="plus" size={24} color={COLORS.white} />
+            </TouchableWeb>
+          ) : (
+            <View style={{ width: 44 }} />
+          )}
+        </View>
+        
+        {/* Filter Pills */}
+        <FilterPills />
+      </LinearGradient>
+
+      {/* Content - Render the appropriate screen based on active filter */}
+      <View style={styles.contentContainer}>
+        {activeFilter === 'clients' ? (
+          <AdminClientsScreen 
+            navigation={navigation} 
+            route={route}
+            isEmbedded={true}
+          />
+        ) : (
+          <AdminAnalyticsScreen 
+            navigation={navigation} 
+            route={route}
+            isEmbedded={true}
+            onAddPress={handleSetAddStaffFunction}
+          />
+        )}
+      </View>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  container: {
+    flex: 1,
+    backgroundColor: COLORS.background,
+  },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
+  },
+  header: {
+    paddingBottom: SPACING.lg,
+    paddingHorizontal: SPACING.lg,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
+  },
+  headerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: SPACING.md,
+  },
+  welcomeText: {
+    fontSize: 20,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.white,
+    textAlign: 'center',
+  },
+  filterContainer: {
+    flexDirection: 'row',
+    backgroundColor: 'rgba(255,255,255,0.1)',
+    borderRadius: 25,
+    padding: 4,
+    marginHorizontal: SPACING.md,
+  },
+  filterPill: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 10,
+    paddingHorizontal: SPACING.md,
+    borderRadius: 20,
+    gap: 6,
+  },
+  activeFilter: {
+    backgroundColor: COLORS.white,
+  },
+  filterText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.white,
+  },
+  activeFilterText: {
+    color: COLORS.primary,
+  },
+  badge: {
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    borderRadius: 10,
+    paddingHorizontal: 6,
+    paddingVertical: 2,
+    minWidth: 20,
+    alignItems: 'center',
+  },
+  activeBadge: {
+    backgroundColor: COLORS.primary,
+  },
+  badgeText: {
+    fontSize: 11,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.white,
+  },
+  activeBadgeText: {
+    color: COLORS.white,
+  },
+  contentContainer: {
+    flex: 1,
+  },
+  actionButton: {
+    width: 44,
+    height: 44,
+    borderRadius: 22,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+});

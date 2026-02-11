@@ -12,7 +12,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   TouchableWithoutFeedback,
-  useWindowDimensions,
+  
 } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -24,6 +24,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '../context/AuthContext';
 import { useChat } from '../context/ChatContext';
 import { useNotifications } from '../context/NotificationContext';
+import useWindowDimensions from '../hooks/useWindowDimensions';
 import ApiService from '../services/ApiService';
 
 const PRODUCTS_STORAGE_KEY = '@care_store_products';
@@ -35,7 +36,7 @@ const ONBOARDING_COMPLETE_KEY = '@care_store_onboarding_complete';
 const ONBOARDING_STEPS = [
   {
     id: 1,
-    title: 'Welcome to CARE Store! 🛒',
+    title: 'Welcome to 876Nurses Store! 🛒',
     description: 'Shop for medical supplies, personal care items, and mobility aids all in one place.',
     icon: 'shopping',
     highlightArea: null,
@@ -176,27 +177,12 @@ export default function CareStoreScreen({ navigation }) {
     }
   };
 
-  const showOnboardingHelp = () => {
-    Alert.alert(
-      'Store Tutorial',
-      'Would you like to view the interactive tutorial again?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Start Tutorial',
-          onPress: async () => {
-            await AsyncStorage.removeItem(ONBOARDING_COMPLETE_KEY);
-            setShowOnboarding(true);
-            setOnboardingStep(0);
-          }
-        }
-      ]
-    );
-  };
+
 
   // Reload products when screen comes into focus to sync with inventory
   useFocusEffect(
     React.useCallback(() => {
+      console.log('🔄 CareStore: Screen focused, refreshing products...');
       loadProducts();
     }, [])
   );
@@ -909,6 +895,13 @@ export default function CareStoreScreen({ navigation }) {
 
   return (
     <View style={styles.container}>
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+      />
+      
       {/* Header */}
       <LinearGradient
         colors={GRADIENTS.header}
@@ -916,13 +909,26 @@ export default function CareStoreScreen({ navigation }) {
       >
         <Text style={styles.headerTitle}>CARE Store</Text>
         <View style={styles.headerContent}>
-          <TouchableWeb
-            style={styles.backButton}
-            onPress={() => navigation.goBack()}
-            activeOpacity={0.7}
-          >
-            <MaterialCommunityIcons name="arrow-left" size={24} color={COLORS.white} />
-          </TouchableWeb>
+          <View style={styles.headerLeftButtons}>
+            <TouchableWeb
+              style={styles.backButton}
+              onPress={() => navigation.goBack()}
+              activeOpacity={0.7}
+            >
+              <MaterialCommunityIcons name="arrow-left" size={24} color={COLORS.white} />
+            </TouchableWeb>
+            
+            <TouchableWeb
+              style={[styles.backButton, { marginLeft: 8 }]}
+              onPress={() => {
+                console.log('🔄 Manual refresh triggered');
+                loadProducts();
+              }}
+              activeOpacity={0.7}
+            >
+              <MaterialCommunityIcons name="refresh" size={24} color={COLORS.white} />
+            </TouchableWeb>
+          </View>
           
           {/* Search Bar */}
           <View style={styles.searchContainer}>
@@ -985,14 +991,6 @@ export default function CareStoreScreen({ navigation }) {
           )}
 
           <TouchableWeb
-            style={styles.helpButton}
-            onPress={showOnboardingHelp}
-            activeOpacity={0.7}
-          >
-            <MaterialCommunityIcons name="help-circle-outline" size={24} color={COLORS.white} />
-          </TouchableWeb>
-
-          <TouchableWeb
             style={styles.cartButton}
             onPress={() => setCartModalVisible(true)}
             activeOpacity={0.7}
@@ -1020,7 +1018,7 @@ export default function CareStoreScreen({ navigation }) {
               <LinearGradient
                 colors={GRADIENTS.header}
                 start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
+                end={{ x: 0, y: 1 }}
                 style={styles.filterPillGradient}
               >
                 <Text style={styles.filterPillText}>{category}</Text>
@@ -1315,7 +1313,10 @@ export default function CareStoreScreen({ navigation }) {
                         key={index}
                         activeOpacity={0.9}
                         onPress={handleImagePress}
-                        style={styles.imageSlide}
+                        style={[
+                          styles.imageSlide,
+                          { width: width - 80 } // Dynamic width moved to inline style
+                        ]}
                       >
                         <Image 
                           source={{ uri }} 
@@ -1555,7 +1556,7 @@ export default function CareStoreScreen({ navigation }) {
           colors={GRADIENTS.header}
           style={styles.floatingLayoutGradient}
           start={{ x: 0, y: 0 }}
-          end={{ x: 1, y: 1 }}
+          end={{ x: 0, y: 1 }}
         >
           <MaterialCommunityIcons 
             name={layoutView === 'list' ? 'view-grid' : 'view-list'} 
@@ -1649,7 +1650,7 @@ export default function CareStoreScreen({ navigation }) {
                   colors={GRADIENTS.header}
                   style={styles.chatSendGradient}
                   start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
+                  end={{ x: 0, y: 1 }}
                 >
                   <MaterialCommunityIcons name="send" size={20} color={COLORS.white} />
                 </LinearGradient>
@@ -1694,7 +1695,7 @@ export default function CareStoreScreen({ navigation }) {
               colors={GRADIENTS.header}
               style={styles.onboardingCardGradient}
               start={{ x: 0, y: 0 }}
-              end={{ x: 1, y: 1 }}
+              end={{ x: 0, y: 1 }}
             >
               {/* Icon */}
               <View style={styles.onboardingIconContainer}>
@@ -1783,6 +1784,15 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
+  },
   header: {
     paddingHorizontal: 16,
     paddingBottom: 16,
@@ -1802,6 +1812,10 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     gap: 12,
   },
+  headerLeftButtons: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
   backButton: {
     width: 40,
     height: 40,
@@ -1810,14 +1824,7 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  helpButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: 'rgba(255, 255, 255, 0.2)',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
+
   cartButton: {
     width: 40,
     height: 40,
@@ -1959,39 +1966,47 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     paddingHorizontal: 8,
     paddingVertical: 16,
-    gap: 4,
+    gap: 8,
   },
   filterPill: {
     flex: 1,
   },
   filterPillGradient: {
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
     paddingVertical: 8,
-    borderRadius: 16,
-    minHeight: 32,
+    borderRadius: 20,
+    minHeight: 36,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.08,
+    shadowRadius: 4,
+    elevation: 2,
   },
   filterPillText: {
-    fontSize: 10,
-    fontFamily: 'Poppins_600SemiBold',
+    fontSize: 11,
+    fontFamily: 'Poppins_700Bold',
     color: COLORS.white,
   },
   inactiveFilterPill: {
-    paddingHorizontal: 8,
+    paddingHorizontal: 10,
     paddingVertical: 8,
-    borderRadius: 16,
-    minHeight: 32,
-    backgroundColor: COLORS.background,
-    borderWidth: 1,
-    borderColor: COLORS.border,
+    borderRadius: 20,
+    minHeight: 36,
+    backgroundColor: COLORS.white,
     alignItems: 'center',
     justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.05,
+    shadowRadius: 4,
+    elevation: 1,
   },
   inactiveFilterPillText: {
-    fontSize: 10,
-    fontFamily: 'Poppins_500Medium',
-    color: COLORS.text,
+    fontSize: 11,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.textMuted,
   },
   content: {
     flex: 1,
@@ -2690,7 +2705,7 @@ const styles = StyleSheet.create({
     height: 200,
   },
   imageSlide: {
-    width: width - 80,
+    // width moved to inline style to avoid dimension access during StyleSheet creation
     height: 200,
   },
   imageIndicators: {
