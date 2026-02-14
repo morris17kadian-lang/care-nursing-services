@@ -8,4 +8,14 @@ credentials.json
 credentials/
 node_modules
 node_modules
+
+# Environment files (DO NOT COMMIT)
 .env
+**/.env
+.env.*
+**/.env.*
+
+# Firebase service account keys (DO NOT COMMIT)
+firebase-service-key.json
+**/firebase-service-key.json
+*service-key*.json
