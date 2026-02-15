@@ -17,7 +17,7 @@ class EmailService {
     fromName: '876 Nurses Home Care Services',
     replyTo: '876nurses@gmail.com',
     backendUrl: 'http://localhost:3000', // Update this for production
-    apiKey: 'your-secure-api-key-here', // Update this to match backend .env
+    apiKey: '', // Set via config UI / AsyncStorage; never hard-code secrets in repo
     enabled: false
   };
 
@@ -86,7 +86,14 @@ class EmailService {
 
       // Get backend URL from config or use default
       const backendUrl = config.backendUrl || 'http://localhost:3000';
-      const apiKey = config.apiKey || 'your-secure-api-key-here';
+      const apiKey = config.apiKey;
+
+      if (!apiKey) {
+        return {
+          success: false,
+          error: 'Missing email API key. Configure Email Service before sending.'
+        };
+      }
 
       console.log('📧 Sending email via backend:', {
         to: payload.to,

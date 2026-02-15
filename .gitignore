@@ -15,7 +15,20 @@ node_modules
 .env.*
 **/.env.*
 
-# Firebase service account keys (DO NOT COMMIT)
+# But keep example templates in git
+!.env.example
+!**/.env.example
+
+
+# Firebase / Google Cloud credentials (DO NOT COMMIT)
 firebase-service-key.json
 **/firebase-service-key.json
+firebase-service-account*.json
+*service-account*.json
 *service-key*.json
+*-service-key*.json
+*.private.json
+
+# MongoDB Compass exports (DO NOT COMMIT)
+compass-connections.json
+**/compass-connections.json

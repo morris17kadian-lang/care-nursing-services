@@ -14,14 +14,20 @@ import { getStorage, connectStorageEmulator } from 'firebase/storage';
 import { Platform } from 'react-native';
 
 // Firebase Configuration
-// Replace with your Firebase project credentials from Firebase Console
+// NOTE:
+// - Do NOT hard-code Firebase keys in this repo.
+// - Configure these via environment variables (Expo: EXPO_PUBLIC_*) or your CI/CD secrets.
+// - Firebase "apiKey" is typically not treated as a secret by Firebase, but scanners will still
+//   flag it if committed. Keeping it in env prevents accidental exposure.
+const env = (globalThis?.process?.env || {});
+
 export const firebaseConfig = {
-  apiKey: 'REDACTED_FIREBASE_API_KEY',
-  authDomain: 'nurses-afb7e.firebaseapp.com',
-  projectId: 'nurses-afb7e',
-  storageBucket: 'nurses-afb7e.appspot.com',
-  messagingSenderId: '4033147002',
-  appId: '1:4033147002:web:6685ba84e685ac30004bc3'
+  apiKey: env.EXPO_PUBLIC_FIREBASE_API_KEY || '',
+  authDomain: env.EXPO_PUBLIC_FIREBASE_AUTH_DOMAIN || '',
+  projectId: env.EXPO_PUBLIC_FIREBASE_PROJECT_ID || '',
+  storageBucket: env.EXPO_PUBLIC_FIREBASE_STORAGE_BUCKET || '',
+  messagingSenderId: env.EXPO_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || '',
+  appId: env.EXPO_PUBLIC_FIREBASE_APP_ID || ''
 };
 
 // Initialize Firebase
