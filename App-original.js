@@ -24,7 +24,7 @@ import { ServicesProvider } from './context/ServicesContext';
 import { ShiftProvider } from './context/ShiftContext';
 import { ProfileEditProvider } from './context/ProfileEditContext';
 import ErrorBoundary from './components/ErrorBoundary';
-import AppOnboarding, { checkOnboardingStatus } from './components/AppOnboarding';
+import AppOnboarding, { checkOnboardingStatusForUser } from './components/AppOnboarding';
 import SplashScreen from './screens/SplashScreen';
 import LoginScreen from './screens/LoginScreen';
 import SignupScreen from './screens/SignupScreen';
@@ -73,6 +73,16 @@ import { useSafeAreaInsets } from 'react-native-safe-area-context';
 
 const Tab = createBottomTabNavigator();
 const Stack = createStackNavigator();
+
+const linking = {
+  prefixes: ['nurses876://'],
+  config: {
+    screens: {
+      InvoiceDisplay: 'invoice/:invoiceId',
+      InvoiceManagement: 'invoice-management/:invoiceId?',
+    },
+  },
+};
 
 function AuthStack() {
   return (
@@ -399,10 +409,10 @@ function AppNavigator() {
   useEffect(() => {
     const checkOnboarding = async () => {
       if (user && !isLoading && !showSplash) {
-        const completed = await checkOnboardingStatus();
+        const completed = await checkOnboardingStatusForUser(user?.id);
         if (!completed) {
-          // Show onboarding after a brief delay
-          setTimeout(() => setShowOnboarding(true), 800);
+          // Show onboarding immediately after authentication.
+          setShowOnboarding(true);
         }
       }
     };
@@ -439,8 +449,9 @@ function AppNavigator() {
         visible={showOnboarding} 
         onComplete={() => setShowOnboarding(false)} 
         userRole={user?.role}
+        userId={user?.id}
       />
-      <NavigationContainer>
+      <NavigationContainer linking={linking}>
         {user ? (
           isAdmin ? <AdminDashboardNavigator /> : 
           isNurse ? <NurseNavigator /> : 

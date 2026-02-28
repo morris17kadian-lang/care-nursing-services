@@ -1,7 +1,23 @@
 # Ignore node_modules
 node_modules/
+**/node_modules/
 .expo/
 .expo 2/
+
+# Local tooling / IDE
+.firebase/
+.venv/
+__pycache__/
+.pytest_cache/
+
+# macOS noise
+.DS_Store
+**/.DS_Store
+
+# Logs
+*.log
+*.icloud
+.firebase-debug.log*
 
 # EAS local signing credentials (DO NOT COMMIT)
 credentials.json
@@ -28,6 +44,23 @@ firebase-service-account*.json
 *service-key*.json
 *-service-key*.json
 *.private.json
+
+# OAuth / token artifacts (DO NOT COMMIT)
+token.json
+**/token.json
+oauth*.json
+**/oauth*.json
+firebase-service-key*.json
+**/firebase-service-key*.json
+
+# Database exports / local data (DO NOT COMMIT)
+876Nursesdatabase/
+**/876Nursesdatabase/
+*.sqlite
+*.db
+
+# Accidental stray file
+`
 
 # MongoDB Compass exports (DO NOT COMMIT)
 compass-connections.json

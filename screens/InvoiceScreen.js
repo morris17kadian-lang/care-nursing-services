@@ -234,7 +234,7 @@ const InvoiceDisplayScreen = ({ route, navigation }) => {
   const loadOrderDetails = async (invoice = invoiceData) => {
     if (!invoice) return;
     try {
-      const ordersData = await AsyncStorage.getItem('@care_store_orders');
+      const ordersData = await AsyncStorage.getItem('@876_store_orders');
       if (ordersData) {
         const orders = JSON.parse(ordersData);
         const order = orders.find(o => o.orderNumber === invoice.relatedOrderId);
@@ -488,7 +488,9 @@ const InvoiceDisplayScreen = ({ route, navigation }) => {
       // Return to Appointments screen and reopen the specific appointment modal
       navigation.navigate('Appointments', {
         openAppointmentDetails: true,
-        appointmentId: appointmentId
+        appointmentId: appointmentId,
+        appointmentTab: route.params?.appointmentTab || null,
+        appointmentModalType: route.params?.appointmentModalType || null,
       });
     } else {
       // Just go back to previous screen (order details)

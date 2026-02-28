@@ -20,7 +20,7 @@ const authenticateRequest = (req, res, next) => {
 };
 
 /**
- * POST /api/send-email
+ * POST /api/email/send-email
  * Send a single email
  */
 router.post('/send-email', authenticateRequest, async (req, res) => {
@@ -57,7 +57,7 @@ router.post('/send-email', authenticateRequest, async (req, res) => {
 });
 
 /**
- * POST /api/send-welcome-email
+ * POST /api/email/send-welcome-email
  * Send a welcome email to a newly registered user
  */
 router.post('/send-welcome-email', authenticateRequest, async (req, res) => {
@@ -84,7 +84,7 @@ router.post('/send-welcome-email', authenticateRequest, async (req, res) => {
 });
 
 /**
- * POST /api/send-bulk-emails
+ * POST /api/email/send-bulk-emails
  * Send multiple emails
  */
 router.post('/send-bulk-emails', authenticateRequest, async (req, res) => {
@@ -116,7 +116,7 @@ router.post('/send-bulk-emails', authenticateRequest, async (req, res) => {
 });
 
 /**
- * POST /api/test-email
+ * POST /api/email/test-email
  * Test email configuration
  */
 router.post('/test-email', authenticateRequest, async (req, res) => {
@@ -143,7 +143,7 @@ router.post('/test-email', authenticateRequest, async (req, res) => {
 });
 
 /**
- * GET /api/email-status
+ * GET /api/email/email-status
  * Check email service status
  */
 router.get('/email-status', authenticateRequest, async (req, res) => {

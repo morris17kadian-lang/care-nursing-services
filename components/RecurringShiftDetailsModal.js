@@ -19,6 +19,108 @@ import NurseDetailsModal from './NurseDetailsModal';
 import NotesAccordionList from './NotesAccordionList';
 
 const DAY_LABELS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const DAY_NAME_TO_INDEX = {
+  sun: 0,
+  sunday: 0,
+  mon: 1,
+  monday: 1,
+  tue: 2,
+  tues: 2,
+  tuesday: 2,
+  wed: 3,
+  wednesday: 3,
+  thu: 4,
+  thur: 4,
+  thurs: 4,
+  thursday: 4,
+  fri: 5,
+  friday: 5,
+  sat: 6,
+  saturday: 6,
+};
+
+const mapDayValueToIndex = (value) => {
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'number' && Number.isInteger(value)) {
+    return value >= 0 && value <= 6 ? value : null;
+  }
+  if (value instanceof Date && !Number.isNaN(value.getTime())) {
+    const day = value.getDay();
+    return day >= 0 && day <= 6 ? day : null;
+  }
+
+  const str = String(value).trim();
+  if (!str) return null;
+
+  const numeric = Number(str);
+  if (Number.isInteger(numeric)) {
+    return numeric >= 0 && numeric <= 6 ? numeric : null;
+  }
+
+  const mapped = DAY_NAME_TO_INDEX[str.toLowerCase()];
+  return typeof mapped === 'number' ? mapped : null;
+};
+
+const toDateObject = (value) => {
+  if (!value) return null;
+  if (value instanceof Date && !Number.isNaN(value.getTime())) return value;
+  if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
+    const localDateOnly = new Date(`${value.trim()}T00:00:00`);
+    return Number.isNaN(localDateOnly.getTime()) ? null : localDateOnly;
+  }
+  if (typeof value?.toDate === 'function') {
+    try {
+      const asDate = value.toDate();
+      if (asDate instanceof Date && !Number.isNaN(asDate.getTime())) {
+        return asDate;
+      }
+    } catch (error) {
+      // Swallow and fall through to other parsing strategies.
+    }
+  }
+  if (typeof value === 'object' && typeof value.seconds === 'number') {
+    const fromSeconds = new Date(value.seconds * 1000);
+    return Number.isNaN(fromSeconds.getTime()) ? null : fromSeconds;
+  }
+  if (typeof value === 'object' && typeof value._seconds === 'number') {
+    const fromUnderscoreSeconds = new Date(value._seconds * 1000);
+    return Number.isNaN(fromUnderscoreSeconds.getTime()) ? null : fromUnderscoreSeconds;
+  }
+
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+};
+
+const pickFirstDateValue = (...candidates) => {
+  for (const candidate of candidates) {
+    if (candidate === undefined || candidate === null) continue;
+    if (Array.isArray(candidate)) {
+      const nested = pickFirstDateValue(...candidate);
+      if (nested) return nested;
+      continue;
+    }
+
+    const asDate = toDateObject(candidate);
+    if (asDate) return asDate;
+  }
+  return null;
+};
+
+const containsOngoingIndicator = (candidates) => {
+  if (!Array.isArray(candidates)) return false;
+  const keywords = ['ongoing', 'no end', 'no-end', 'continuous', 'indefinite'];
+  return candidates.some((value) => {
+    if (typeof value === 'string') {
+      const normalized = value.trim().toLowerCase();
+      if (!normalized) return false;
+      return keywords.some((keyword) => normalized.includes(keyword));
+    }
+    if (typeof value === 'boolean') {
+      return value === true;
+    }
+    return false;
+  });
+};
 
 const SAFE_GRADIENTS = {
   header: Array.isArray(GRADIENTS?.header) ? GRADIENTS.header : [COLORS.primary, COLORS.primary],
@@ -50,7 +152,6 @@ const normalizeStatus = (value) => {
 
 const looksLikeFirebaseUid = (value) => {
   const s = normalizeId(value);
-  if (!s) return false;
   if (s.toUpperCase().includes('NURSE')) return false;
   return s.length >= 20;
 };
@@ -121,6 +222,14 @@ export default function RecurringShiftDetailsModal({
 }) {
   const [selectedNurseForDetails, setSelectedNurseForDetails] = useState(null);
   const activeShift = shift || {};
+
+  const debugBackupClock = useMemo(() => {
+    try {
+      return Boolean(__DEV__ && globalThis && globalThis.__DEBUG_BACKUP_CLOCK__ === true);
+    } catch (error) {
+      return false;
+    }
+  }, []);
 
   const lastSplitNotesDebugSigRef = useRef(null);
 
@@ -376,6 +485,13 @@ export default function RecurringShiftDetailsModal({
   };
 
   const getShiftScheduledStartDateTime = useMemo(() => {
+    const isAdminRecurring = activeShift?.adminRecurring === true || 
+      String(activeShift?.adminRecurring || '').trim().toLowerCase() === 'true';
+    const isPatientRecurring = activeShift?.isRecurring === true || 
+      String(activeShift?.isRecurring || '').trim().toLowerCase() === 'true' || 
+      (activeShift?.recurringSchedule && typeof activeShift?.recurringSchedule === 'object');
+    const isRecurring = isAdminRecurring || isPatientRecurring;
+
     const timeCandidate =
       activeShift?.startTime ||
       activeShift?.time ||
@@ -394,6 +510,240 @@ export default function RecurringShiftDetailsModal({
       activeShift?.requestedDate ||
       null;
 
+    // For recurring shifts, check if today (or upcoming days) matches scheduled days
+    if (isRecurring && timeCandidate) {
+      const normalizeDayKey = (value) => {
+        if (value == null) return null;
+        if (typeof value === 'string') {
+          const raw = value.trim();
+          if (!raw) return null;
+          if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+          if (/^\d{8}$/.test(raw)) {
+            const yyyy = raw.slice(0, 4);
+            const mm = raw.slice(4, 6);
+            const dd = raw.slice(6, 8);
+            return `${yyyy}-${mm}-${dd}`;
+          }
+          const d = new Date(raw);
+          if (!Number.isFinite(d.getTime())) return null;
+          const yyyy = String(d.getFullYear());
+          const mm = String(d.getMonth() + 1).padStart(2, '0');
+          const dd = String(d.getDate()).padStart(2, '0');
+          return `${yyyy}-${mm}-${dd}`;
+        }
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          const raw = String(Math.trunc(value));
+          if (/^\d{8}$/.test(raw)) {
+            const yyyy = raw.slice(0, 4);
+            const mm = raw.slice(4, 6);
+            const dd = raw.slice(6, 8);
+            return `${yyyy}-${mm}-${dd}`;
+          }
+        }
+        if (value instanceof Date && Number.isFinite(value.getTime())) {
+          const yyyy = String(value.getFullYear());
+          const mm = String(value.getMonth() + 1).padStart(2, '0');
+          const dd = String(value.getDate()).padStart(2, '0');
+          return `${yyyy}-${mm}-${dd}`;
+        }
+        try {
+          const d = new Date(value);
+          if (!Number.isFinite(d.getTime())) return null;
+          const yyyy = String(d.getFullYear());
+          const mm = String(d.getMonth() + 1).padStart(2, '0');
+          const dd = String(d.getDate()).padStart(2, '0');
+          return `${yyyy}-${mm}-${dd}`;
+        } catch (e) {
+          return null;
+        }
+      };
+
+      const getCompletedDayKeysForCurrentNurse = () => {
+        const completed = new Set();
+
+        const clockByNurse = activeShift?.clockByNurse;
+        const keysToTry = [currentNurseId, currentNurseCode]
+          .filter(Boolean)
+          .map((v) => String(v).trim())
+          .filter(Boolean);
+
+        const isKeyMatch = (rawKey) => {
+          if (!rawKey) return false;
+          const k = String(rawKey).trim();
+          if (!k) return false;
+          return keysToTry.some((t) => t === k || t.toUpperCase() === k.toUpperCase() || t.toLowerCase() === k.toLowerCase());
+        };
+
+        if (clockByNurse && typeof clockByNurse === 'object') {
+          for (const [key, entry] of Object.entries(clockByNurse)) {
+            if (!entry || typeof entry !== 'object') continue;
+            const entryId = entry.nurseId || entry.id || entry._id || entry.uid || entry.nurseCode || entry.staffCode || entry.code;
+            if (!isKeyMatch(key) && !isKeyMatch(entryId)) continue;
+
+            const sessions = Array.isArray(entry.clockEntries) ? entry.clockEntries : [];
+            sessions.forEach((s) => {
+              if (!s || typeof s !== 'object') return;
+              const hasOut = Boolean(s.clockOutTime || s.actualEndTime || s.completedAt);
+              if (!hasOut) return;
+              const outKey = normalizeDayKey(s.dayKey || s.clockOutTime || s.actualEndTime || s.completedAt);
+              if (outKey) completed.add(outKey);
+            });
+
+            const lastOutKey = normalizeDayKey(entry.lastClockOutTime || entry.clockOutTime || entry.actualEndTime || entry.completedAt);
+            if (lastOutKey) completed.add(lastOutKey);
+          }
+        }
+
+        const globalSessions = Array.isArray(activeShift?.clockEntries) ? activeShift.clockEntries : [];
+        globalSessions.forEach((s) => {
+          if (!s || typeof s !== 'object') return;
+          const sid = s.nurseId || s.id || s._id;
+          if (sid && !isKeyMatch(sid)) return;
+          const hasOut = Boolean(s.clockOutTime || s.actualEndTime || s.completedAt);
+          if (!hasOut) return;
+          const outKey = normalizeDayKey(s.dayKey || s.clockOutTime || s.actualEndTime || s.completedAt);
+          if (outKey) completed.add(outKey);
+        });
+
+        return completed;
+      };
+
+      const completedDayKeys = getCompletedDayKeysForCurrentNurse();
+
+      const isSplitSchedule = (() => {
+        if (String(activeShift?.assignmentType || '').trim().toLowerCase() === 'split-schedule') return true;
+        const schedule = activeShift?.nurseSchedule;
+        return Boolean(schedule && typeof schedule === 'object' && Object.keys(schedule).length > 0);
+      })();
+
+      const daysRaw = 
+        activeShift?.daysOfWeek ||
+        activeShift?.recurringDaysOfWeek ||
+        activeShift?.recurringDaysOfWeekList ||
+        activeShift?.selectedDays ||
+        activeShift?.recurringDays ||
+        null;
+      
+      const days = [];
+      if (Array.isArray(daysRaw)) {
+        daysRaw.forEach(d => {
+          const mapped = mapDayValueToIndex(d);
+          if (mapped !== null) days.push(mapped);
+        });
+      } else if (daysRaw !== null && daysRaw !== undefined) {
+        const mapped = mapDayValueToIndex(daysRaw);
+        if (mapped !== null) days.push(mapped);
+      }
+
+      // Split-schedule: only allow clock-in on the weekdays assigned to *this* nurse.
+      if (isSplitSchedule) {
+        const schedule = activeShift?.nurseSchedule;
+
+        const normalizeKey = (v) => {
+          if (v === null || v === undefined) return null;
+          const s = String(v).trim();
+          if (!s) return null;
+          return s.toLowerCase();
+        };
+
+        const nurseMatchesCurrent = (raw) => {
+          if (!raw) return false;
+          const currentKeys = [
+            normalizeKey(currentNurseId),
+            normalizeKey(currentNurseCode),
+          ].filter(Boolean);
+          if (currentKeys.length === 0) return false;
+
+          const candidates = [];
+          if (typeof raw === 'object') {
+            const obj = raw;
+            candidates.push(
+              obj.nurseId,
+              obj.id,
+              obj._id,
+              obj.uid,
+              obj.nurseCode,
+              obj.staffCode,
+              obj.code
+            );
+          } else {
+            candidates.push(raw);
+          }
+
+          return candidates
+            .map(normalizeKey)
+            .filter(Boolean)
+            .some((k) => currentKeys.includes(k));
+        };
+
+        if (schedule && typeof schedule === 'object') {
+          const assigned = [];
+          for (const [dayKey, nurseVal] of Object.entries(schedule)) {
+            if (!nurseVal) continue;
+            if (!nurseMatchesCurrent(nurseVal)) continue;
+            const mapped = mapDayValueToIndex(dayKey);
+            if (mapped !== null) assigned.push(mapped);
+          }
+
+          const uniqueAssigned = Array.from(new Set(assigned)).sort((a, b) => a - b);
+          if (uniqueAssigned.length === 0) return null;
+
+          days.splice(0, days.length, ...uniqueAssigned);
+        } else {
+          return null;
+        }
+      }
+      
+      if (days.length === 0) return null;
+
+      const periodStart = toDateObject(
+        activeShift?.recurringPeriodStart ||
+        activeShift?.recurringStartDate ||
+        activeShift?.startDate ||
+        null
+      );
+      const periodEnd = toDateObject(
+        activeShift?.recurringPeriodEnd ||
+        activeShift?.recurringEndDate ||
+        activeShift?.endDate ||
+        null
+      );
+
+      const timeParsed = parseTimeToDateOnDay(timeCandidate, new Date());
+      if (!timeParsed) return null;
+      
+      const hours = timeParsed.getHours();
+      const minutes = timeParsed.getMinutes();
+      const now = new Date();
+
+      // Search up to 14 days to find the next occurrence
+      for (let offset = 0; offset <= 14; offset++) {
+        const candidate = new Date(now);
+        candidate.setDate(candidate.getDate() + offset);
+        candidate.setHours(hours, minutes, 0, 0);
+
+        const candidateKey = normalizeDayKey(candidate);
+        if (candidateKey && completedDayKeys.has(candidateKey)) continue;
+
+        if (!days.includes(candidate.getDay())) continue;
+        
+        if (periodStart) {
+          const periodStartDate = new Date(periodStart.getFullYear(), periodStart.getMonth(), periodStart.getDate(), 0, 0, 0, 0);
+          if (candidate < periodStartDate) continue;
+        }
+        
+        if (periodEnd) {
+          const periodEndDate = new Date(periodEnd.getFullYear(), periodEnd.getMonth(), periodEnd.getDate(), 23, 59, 59, 999);
+          if (candidate > periodEndDate) continue;
+        }
+
+        return candidate;
+      }
+
+      return null;
+    }
+
+    // Non-recurring shift logic
     if (timeCandidate) {
       const asDate = parseTimeToDateOnDay(timeCandidate, new Date());
       if (asDate && String(timeCandidate).includes('T')) return asDate;
@@ -414,12 +764,40 @@ export default function RecurringShiftDetailsModal({
     }
 
     return null;
-  }, [activeShift]);
+  }, [activeShift, currentNurseId, currentNurseCode]);
 
   const canClockInNow = useMemo(() => {
-    if (!getShiftScheduledStartDateTime) return true;
-    return new Date(nowTs) >= getShiftScheduledStartDateTime;
-  }, [getShiftScheduledStartDateTime, nowTs]);
+    if (!getShiftScheduledStartDateTime) return false;
+    
+    const now = new Date(nowTs);
+    
+    // Check if current time is at or after shift start time
+    if (now < getShiftScheduledStartDateTime) return false;
+    
+    // For recurring shifts, allow clock-in for the scheduled day plus 24 hours
+    // This allows nurses to complete shifts they forgot to clock into,
+    // especially important for the last day of a recurring period
+    const endTimeCandidate =
+      activeShift?.recurringEndTime ||
+      activeShift?.endTime ||
+      activeShift?.scheduledEndTime ||
+      null;
+    
+    if (endTimeCandidate) {
+      const endTimeParsed = parseTimeToDateOnDay(endTimeCandidate, getShiftScheduledStartDateTime);
+      if (endTimeParsed) {
+        // Allow clock-in until 24 hours after the scheduled end time
+        // This gives nurses reasonable time to complete shifts, especially on the last day of the period
+        const graceHours = 24;
+        const endWithGrace = new Date(endTimeParsed.getTime() + graceHours * 60 * 60 * 1000);
+        
+        // If current time is past the end time + grace period, don't allow clock-in
+        if (now > endWithGrace) return false;
+      }
+    }
+    
+    return true;
+  }, [getShiftScheduledStartDateTime, nowTs, activeShift]);
 
   const currentNurseClockEntry = useMemo(() => {
     const clockByNurse = mergedClockByNurse;
@@ -462,6 +840,50 @@ export default function RecurringShiftDetailsModal({
     return Boolean(entry.lastClockOutTime || entry.actualEndTime || entry.clockOutTime || entry.completedAt);
   }, [currentNurseClockEntry]);
 
+  const currentNurseHasActiveClockIn = useMemo(() => {
+    const entry = currentNurseClockEntry;
+    if (!entry || typeof entry !== 'object') return false;
+
+    const sessions = Array.isArray(entry.clockEntries) ? entry.clockEntries : [];
+
+    const getSessionIn = (s) => s?.clockInTime || s?.actualStartTime || s?.startedAt || null;
+    const getSessionOut = (s) => s?.clockOutTime || s?.actualEndTime || s?.completedAt || null;
+
+    let latestInMs = -Infinity;
+    let latestSession = null;
+    for (const s of sessions) {
+      if (!s || typeof s !== 'object') continue;
+      const inTime = getSessionIn(s);
+      if (!inTime) continue;
+      const inMs = Date.parse(inTime);
+      if (!Number.isFinite(inMs)) continue;
+      if (inMs > latestInMs) {
+        latestInMs = inMs;
+        latestSession = s;
+      }
+    }
+
+    if (latestSession) {
+      const outTime = getSessionOut(latestSession);
+      if (!outTime) return true;
+      const outMs = Date.parse(outTime);
+      if (!Number.isFinite(outMs)) return true;
+      return outMs < latestInMs;
+    }
+
+    // Fallback to non-historical fields only.
+    const inTime = entry.actualStartTime || entry.clockInTime || entry.startedAt;
+    if (!inTime) return false;
+    const inMs = Date.parse(inTime);
+    if (!Number.isFinite(inMs)) return false;
+
+    const outTime = entry.actualEndTime || entry.clockOutTime || entry.completedAt;
+    if (!outTime) return true;
+    const outMs = Date.parse(outTime);
+    if (!Number.isFinite(outMs)) return true;
+    return outMs < inMs;
+  }, [currentNurseClockEntry]);
+
   const nurseNotesText = (() => {
     const fromCurrentClock =
       (currentNurseClockEntry &&
@@ -482,7 +904,6 @@ export default function RecurringShiftDetailsModal({
 
     return (
       resolveString(activeShift?.nurseNotes) ||
-      resolveString(activeShift?.notes) ||
       resolveString(activeShift?.completionNotes) ||
       resolveString(activeShift?.lastCompletionNotes) ||
       null
@@ -500,38 +921,137 @@ export default function RecurringShiftDetailsModal({
     activeShift?.scheduledEndTime ||
     null;
 
-  const startDate =
-    activeShift?.recurringStartDate ||
-    activeShift?.recurringPeriodStart ||
-    activeShift?.startDate ||
-    activeShift?.date ||
-    null;
+  const startDateCandidates = [
+    activeShift?.scheduledDate,
+    activeShift?.date,
+    activeShift?.shiftDate,
+    activeShift?.startDate,
+    activeShift?.start_date,
+    activeShift?.start,
+    activeShift?.serviceDate,
+    activeShift?.appointmentDate,
+    activeShift?.requestedDate,
+    activeShift?.requested_date,
+    activeShift?.preferredDate,
+    activeShift?.recurringPeriodStart,
+    activeShift?.recurring_period_start,
+    activeShift?.recurringStartDate,
+    activeShift?.recurring_start_date,
+    activeShift?.recurringPattern?.startDate,
+    activeShift?.recurringPattern?.start_date,
+    activeShift?.recurringPattern?.periodStart,
+    activeShift?.recurringPattern?.start,
+    activeShift?.recurringSchedule?.startDate,
+    activeShift?.recurringSchedule?.start_date,
+    activeShift?.recurringSchedule?.date,
+    activeShift?.schedule?.startDate,
+    activeShift?.schedule?.start_date,
+    activeShift?.schedule?.date,
+    activeShift?.requestedAt,
+    activeShift?.createdAt,
+  ];
+
+  const startDate = pickFirstDateValue(...startDateCandidates) || null;
+
+  const endDateCandidates = [
+    activeShift?.endDate,
+    activeShift?.end_date,
+    activeShift?.end,
+    activeShift?.appointmentEndDate,
+    activeShift?.serviceEndDate,
+    activeShift?.requestedEndDate,
+    activeShift?.requested_end_date,
+    activeShift?.completionDate,
+    activeShift?.completedDate,
+    activeShift?.completed_at,
+    activeShift?.recurringPeriodEnd,
+    activeShift?.recurring_period_end,
+    activeShift?.recurringEndDate,
+    activeShift?.recurring_end_date,
+    activeShift?.recurringPattern?.endDate,
+    activeShift?.recurringPattern?.end_date,
+    activeShift?.recurringPattern?.periodEnd,
+    activeShift?.recurringPattern?.end,
+    activeShift?.recurringSchedule?.endDate,
+    activeShift?.recurringSchedule?.end_date,
+    activeShift?.recurringSchedule?.end,
+    activeShift?.schedule?.endDate,
+    activeShift?.schedule?.end_date,
+    activeShift?.schedule?.end,
+    activeShift?.requestedAt,
+    activeShift?.createdAt,
+  ];
+
+  const hasExplicitOngoingIndicator =
+    containsOngoingIndicator(endDateCandidates) ||
+    Boolean(activeShift?.recurringPattern?.isOngoing) ||
+    Boolean(activeShift?.recurringPattern?.ongoing) ||
+    Boolean(activeShift?.recurringSchedule?.isOngoing) ||
+    Boolean(activeShift?.recurringSchedule?.ongoing) ||
+    Boolean(activeShift?.isOngoing);
+
   const endDate =
-    activeShift?.recurringEndDate ||
-    activeShift?.recurringPeriodEnd ||
-    activeShift?.endDate ||
-    null;
+    pickFirstDateValue(...endDateCandidates) ||
+    (!hasExplicitOngoingIndicator && startDate ? startDate : null);
 
   const recurringDaysForDisplay = useMemo(() => {
-    const toDayNumber = (value) => {
-      const n = typeof value === 'string' ? Number(value) : value;
-      return Number.isInteger(n) ? n : null;
+    const combined = [];
+
+    const addDayCandidates = (candidate) => {
+      if (!candidate) return;
+      if (Array.isArray(candidate)) {
+        candidate.forEach((value) => combined.push(value));
+        return;
+      }
+      if (typeof candidate === 'object') {
+        Object.entries(candidate).forEach(([key, value]) => {
+          if (typeof value === 'boolean') {
+            if (value) combined.push(key);
+            return;
+          }
+          combined.push(value);
+        });
+        return;
+      }
+      combined.push(candidate);
     };
+
+    addDayCandidates(activeShift?.daysOfWeek);
+    addDayCandidates(activeShift?.selectedDays);
+    addDayCandidates(activeShift?.requestedDays);
+    addDayCandidates(activeShift?.preferredDays);
+    addDayCandidates(activeShift?.recurringDaysOfWeek);
+    addDayCandidates(activeShift?.recurringDaysOfWeekList);
+    addDayCandidates(activeShift?.recurringPattern?.daysOfWeek);
+    addDayCandidates(activeShift?.recurringPattern?.selectedDays);
+    addDayCandidates(activeShift?.schedule?.daysOfWeek);
+    addDayCandidates(activeShift?.schedule?.selectedDays);
+    addDayCandidates(activeShift?.schedule?.requestedDays);
+    addDayCandidates(activeShift?.recurringSchedule?.daysOfWeek);
+    addDayCandidates(activeShift?.recurringSchedule?.selectedDays);
+    addDayCandidates(activeShift?.recurringSchedule?.requestedDays);
+
+    // Don't extract days from dates - only use explicit day assignments
+    // Extracting days from startDate/endDate incorrectly adds those days to the schedule
 
     const days = Array.from(
       new Set(
-        []
-          .concat(activeShift?.daysOfWeek || [])
-          .concat(activeShift?.recurringDaysOfWeek || [])
-          .concat(activeShift?.recurringDaysOfWeekList || [])
-          .concat(activeShift?.recurringPattern?.daysOfWeek || [])
-          .map(toDayNumber)
-          .filter((n) => n !== null && n >= 0 && n <= 6),
+        combined
+          .map(mapDayValueToIndex)
+          .filter((day) => day !== null),
       ),
     );
+    const baseDay = startDate instanceof Date && !Number.isNaN(startDate.getTime())
+      ? startDate.getDay()
+      : new Date(nowTs).getDay();
 
-    return days.sort((a, b) => a - b);
-  }, [activeShift]);
+    return days
+      .sort((a, b) => {
+        const aOffset = (a - baseDay + 7) % 7;
+        const bOffset = (b - baseDay + 7) % 7;
+        return aOffset - bOffset;
+      });
+  }, [activeShift, nowTs, startDate]);
 
   const nurseCards = useMemo(() => {
     const byId = new Map();
@@ -596,8 +1116,8 @@ export default function RecurringShiftDetailsModal({
     if (schedule && typeof schedule === 'object') {
       Object.entries(schedule).forEach(([dayKey, nurseId]) => {
         const id = resolveCanonicalId(nurseId);
-        const day = Number.parseInt(dayKey, 10);
-        if (!id || Number.isNaN(day)) return;
+        const day = mapDayValueToIndex(dayKey);
+        if (!id || day === null) return;
         const existing = byId.get(id) || { nurseId: id, days: new Set() };
         existing.days.add(day);
         byId.set(id, existing);
@@ -659,7 +1179,43 @@ export default function RecurringShiftDetailsModal({
       });
     }
 
-    const primary = resolveCanonicalId(activeShift?.primaryNurseId || activeShift?.nurseId);
+    // Detect accepted backup coverage and prefer the requesting/original nurse for display
+    const coverageBuckets = [
+      activeShift?.coverageRequests,
+      activeShift?.schedule?.coverageRequests,
+      activeShift?.recurringSchedule?.coverageRequests,
+      activeShift?.recurrence?.coverageRequests,
+      activeShift?.shift?.coverageRequests,
+      activeShift?.shiftDetails?.coverageRequests,
+    ].filter((b) => Array.isArray(b));
+
+    const coverageList = coverageBuckets.flat();
+    const acceptedCoverage =
+      (Array.isArray(coverageList)
+        ? coverageList.find((cr) => {
+            if (!cr) return false;
+            const s = String(cr.status || '').toLowerCase();
+            return s.includes('accept');
+          })
+        : null) || null;
+
+    const requestingPrimaryRaw =
+      acceptedCoverage?.requestingNurseId ||
+      acceptedCoverage?.requestedByNurseId ||
+      acceptedCoverage?.requestingNurseCode ||
+      acceptedCoverage?.requestedByNurseCode ||
+      null;
+    const requestingPrimary = requestingPrimaryRaw ? resolveCanonicalId(requestingPrimaryRaw, acceptedCoverage) : null;
+    const requestingCode = normalizeCode(
+      acceptedCoverage?.requestingNurseCode || acceptedCoverage?.requestedByNurseCode || null
+    );
+
+    if (requestingPrimary && !byId.has(requestingPrimary)) {
+      byId.set(requestingPrimary, { nurseId: requestingPrimary, days: new Set(), code: requestingCode || undefined });
+    }
+
+    const fallbackPrimary = resolveCanonicalId(activeShift?.primaryNurseId || activeShift?.nurseId);
+    const primary = requestingPrimary || fallbackPrimary;
     if (primary && !byId.has(primary)) byId.set(primary, { nurseId: primary, days: new Set() });
 
     const resolveNurse = (id) => {
@@ -785,6 +1341,90 @@ export default function RecurringShiftDetailsModal({
     return [...merged.values()];
   }, [activeShift, nurses]);
 
+  // Select the primary nurse card for Service Information display
+  const primaryServiceNurseCard = useMemo(() => {
+    const cards = Array.isArray(nurseCards) ? nurseCards : [];
+    if (cards.length === 0) return null;
+
+    // First priority: requesting nurse from accepted coverage
+    const coverageBuckets = [
+      activeShift?.coverageRequests,
+      activeShift?.schedule?.coverageRequests,
+      activeShift?.recurringSchedule?.coverageRequests,
+      activeShift?.recurrence?.coverageRequests,
+      activeShift?.shift?.coverageRequests,
+      activeShift?.shiftDetails?.coverageRequests,
+    ].filter((b) => Array.isArray(b));
+
+    const coverageList = coverageBuckets.flat();
+    const acceptedCoverage =
+      (Array.isArray(coverageList)
+        ? coverageList.find((cr) => {
+            if (!cr) return false;
+            const s = String(cr.status || '').toLowerCase();
+            return s.includes('accept');
+          })
+        : null) || null;
+
+    const requestingId = normalizeId(
+      acceptedCoverage?.requestingNurseId || acceptedCoverage?.requestedByNurseId || null
+    );
+    const requestingCode = normalizeCode(
+      acceptedCoverage?.requestingNurseCode || acceptedCoverage?.requestedByNurseCode || null
+    );
+
+    if (requestingId || requestingCode) {
+      const matched =
+        cards.find((card) => {
+          const cardId = normalizeId(card?.nurseId);
+          const cardCode = normalizeCode(card?.nurse?.code || card?.code);
+          if (requestingId && cardId && cardId === requestingId) return true;
+          if (requestingCode && cardCode && cardCode === requestingCode) return true;
+          return false;
+        }) || null;
+
+      if (matched) return matched;
+    }
+
+    // Second priority: assigned nurse hints
+    const assignedIdCandidates = [
+      activeShift?.assignedNurseId,
+      activeShift?.primaryNurseId,
+      activeShift?.assignedNurse?.id,
+      activeShift?.assignedNurse?._id,
+      activeShift?.nurse?.id,
+      activeShift?.nurse?._id,
+      activeShift?.primaryNurse?.id,
+      activeShift?.primaryNurse?._id,
+    ]
+      .map(normalizeId)
+      .filter(Boolean);
+
+    const assignedCodeCandidates = [
+      activeShift?.assignedNurseCode,
+      activeShift?.primaryNurseCode,
+      activeShift?.assignedNurse?.code,
+      activeShift?.assignedNurse?.staffCode,
+      activeShift?.nurse?.code,
+      activeShift?.nurse?.staffCode,
+      activeShift?.primaryNurse?.code,
+      activeShift?.primaryNurse?.staffCode,
+    ]
+      .map(normalizeCode)
+      .filter(Boolean);
+
+    const matched =
+      cards.find((card) => {
+        const cardId = normalizeId(card?.nurseId);
+        const cardCode = normalizeCode(card?.nurse?.code || card?.code);
+        if (cardId && assignedIdCandidates.includes(cardId)) return true;
+        if (cardCode && assignedCodeCandidates.includes(cardCode)) return true;
+        return false;
+      }) || null;
+
+    return matched || cards[0];
+  }, [activeShift, nurseCards]);
+
   const splitScheduleNurseNotes = useMemo(() => {
     if (!isSplitScheduleShift) return [];
     const clockByNurse = mergedClockByNurse;
@@ -902,25 +1542,7 @@ export default function RecurringShiftDetailsModal({
       noteLength: typeof n?.note === 'string' ? n.note.length : 0,
     }));
 
-    console.log('[RecurringShiftDetailsModal][split-notes-debug]', {
-      shiftId,
-      assignmentType: activeShift?.assignmentType || null,
-      status: activeShift?.status || null,
-      currentNurseId: currentNurseId || null,
-      currentNurseCode: currentNurseCode || null,
-      clockBuckets: {
-        root: bucketKeys(rootMap),
-        clockDetails: bucketKeys(clockDetailsMap),
-        activeShift: bucketKeys(activeShiftMap),
-        shiftDetails: bucketKeys(shiftDetailsMap),
-        shift: bucketKeys(shiftMap),
-      },
-      mergedClockByNurseKeys: bucketKeys(mergedClockByNurse).slice(0, 10),
-      mergedClockByNurseKeyCount: mergedCount,
-      nurseCards: safeNurseCards,
-      resolvedNotes: safeResolvedNotes,
-      fallbackShiftNotesPresent: Boolean(nurseNotesText),
-    });
+    // Debug logging for split-notes removed per request; keeping computation in case it's reused later
   }, [
     activeShift,
     currentNurseCode,
@@ -1275,7 +1897,7 @@ export default function RecurringShiftDetailsModal({
     const statusSuggestsActive = statusRaw.includes('active') || statusRaw.includes('clock');
 
     if (isSplitScheduleShift) {
-      return currentNurseHasClockIn && !currentNurseHasClockOut;
+      return currentNurseHasActiveClockIn;
     }
 
     const startedByRaw = clockRoot?.startedBy;
@@ -1295,12 +1917,25 @@ export default function RecurringShiftDetailsModal({
       Boolean(currentId && startedById && startedById === currentId) ||
       Boolean(currentCode && startedByCode && startedByCode === currentCode);
 
-    const hasClockOut = Boolean(clockRoot?.actualEndTime || clockRoot?.completedAt || clockRoot?.clockOutTime || clockRoot?.clockOutLocation);
+    const rootHasClockIn = Boolean(
+      clockRoot?.actualStartTime ||
+        clockRoot?.startedAt ||
+        clockRoot?.clockInTime ||
+        clockRoot?.clockInLocation
+    );
+    const rootHasClockOut = Boolean(
+      clockRoot?.actualEndTime ||
+        clockRoot?.completedAt ||
+        clockRoot?.clockOutTime ||
+        clockRoot?.clockOutLocation
+    );
 
-    // Strict check: Only show Clock Out if I officially started it or have a clock-in entry.
-    // We ignore generic 'hasClockIn' or 'active' status because those might belong to a backup nurse.
-    return (startedByMe || currentNurseHasClockIn) && !hasClockOut;
-  }, [activeShift?.status, clockRoot, contextType, currentNurseCode, currentNurseHasClockIn, currentNurseHasClockOut, currentNurseId, isSplitScheduleShift]);
+    // Only show Clock Out when there's an ACTIVE clock-in session.
+    // NOTE: lastClockInTime/lastClockOutTime represent history for prior occurrences.
+    if (currentNurseHasActiveClockIn) return true;
+    if (startedByMe && rootHasClockIn && !rootHasClockOut) return true;
+    return false;
+  }, [clockRoot, contextType, currentNurseCode, currentNurseHasActiveClockIn, currentNurseId, isSplitScheduleShift]);
 
   const getNurseClockStatus = (nurseId, nurseCode) => {
     const nId = normalizeId(nurseId);
@@ -1371,6 +2006,13 @@ export default function RecurringShiftDetailsModal({
   const shouldHideFooter =
     contextType === 'patient' || shouldHideNonNurseFooter || (contextType === 'nurse' && hideFooter);
 
+  const isPatientContext =
+    String(contextType || '').trim().toLowerCase() === 'patient' ||
+    (contextType == null && typeof onOpenPatientInvoice === 'function');
+
+  const isPatientPending =
+    isPatientContext && String(activeShift?.status || '').toLowerCase() === 'pending';
+
   return (
     <Modal visible={!!visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.overlay}>
@@ -1386,6 +2028,7 @@ export default function RecurringShiftDetailsModal({
             {pendingCoverageForCurrentNurse ? (
               <Text style={styles.emergencyTextOnly}>Emergency backup request for this shift</Text>
             ) : null}
+            {!isPatientContext && !isPatientPending ? (
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Client Information</Text>
               <View style={styles.detailRow}>
@@ -1417,6 +2060,7 @@ export default function RecurringShiftDetailsModal({
                 </View>
               </View>
             </View>
+            ) : null}
 
             {isSplitScheduleShift ? (
               nurseCards.map((card) => {
@@ -1541,18 +2185,56 @@ export default function RecurringShiftDetailsModal({
                 const statusLabel = status === 'accepted' ? 'Accepted' : status === 'declined' ? 'Declined' : 'Pending';
 
                 return (
-                  <View key={card.nurseId} style={styles.section}>
-                    <Text style={styles.sectionTitle}>Service Information</Text>
+                  <React.Fragment key={card.nurseId}>
+                    {isPatientPending ? (
+                      <View style={styles.section}>
+                        <Text style={styles.sectionTitle}>Requested Nurse</Text>
+                        <View style={styles.card}>
+                          <View style={styles.cardHeader}>
+                            {card.nurse.photo ? (
+                              <Image source={{ uri: card.nurse.photo }} style={styles.avatar} resizeMode="cover" />
+                            ) : (
+                              <View style={styles.avatarFallback}>
+                                <MaterialCommunityIcons name="account" size={30} color={COLORS.primary} />
+                              </View>
+                            )}
+                            <View style={{ flex: 1 }}>
+                              <Text style={styles.nurseName}>{card.nurse.name}</Text>
+                              <Text style={styles.nurseMeta}>{card.nurse.specialty}</Text>
+                              {card.nurse.code ? <Text style={styles.nurseCode}>{card.nurse.code}</Text> : null}
+                            </View>
+                            <TouchableWeb
+                              style={styles.statusChip}
+                              onPress={() => setSelectedNurseForDetails(card.nurse)}
+                            >
+                              <LinearGradient
+                                colors={SAFE_GRADIENTS.primary}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 0, y: 1 }}
+                                style={styles.statusChipGradient}
+                              >
+                                <MaterialCommunityIcons name="eye" size={14} color={COLORS.white} />
+                                <Text style={styles.statusChipText}>View</Text>
+                              </LinearGradient>
+                            </TouchableWeb>
+                          </View>
+                        </View>
+                      </View>
+                    ) : null}
 
-                    <View
-                      style={[
-                        styles.card,
-                        isSplitScheduleShift && isCurrentlyClockedIn ? styles.cardClockedIn : null,
-                        status === 'pending' && contextType !== 'nurse' ? { borderColor: COLORS.primary, backgroundColor: COLORS.white } : null,
-                        shouldFadeServiceCard ? styles.cardFaded : null,
-                      ]}
-                    >
-                      <View style={styles.cardHeader}>
+                    <View style={styles.section}>
+                      <Text style={styles.sectionTitle}>Service Information</Text>
+
+                      <View
+                        style={[
+                          styles.card,
+                          isSplitScheduleShift && isCurrentlyClockedIn ? styles.cardClockedIn : null,
+                          status === 'pending' && contextType !== 'nurse' ? { borderColor: COLORS.primary, backgroundColor: COLORS.white } : null,
+                          shouldFadeServiceCard ? styles.cardFaded : null,
+                        ]}
+                      >
+                        {!isPatientPending ? (
+                        <View style={styles.cardHeader}>
                         {card.nurse.photo ? (
                           <Image source={{ uri: card.nurse.photo }} style={styles.avatar} resizeMode="cover" />
                         ) : (
@@ -1591,6 +2273,7 @@ export default function RecurringShiftDetailsModal({
                           </LinearGradient>
                         </TouchableWeb>
                       </View>
+                        ) : null}
 
                       <View style={styles.row}>
                         <MaterialCommunityIcons name="medical-bag" size={16} color={COLORS.primary} />
@@ -1648,7 +2331,7 @@ export default function RecurringShiftDetailsModal({
                           <MaterialCommunityIcons name="calendar-start" size={16} color={COLORS.success} />
                           <View style={styles.timeContent}>
                             <Text style={styles.timeLabel}>Start Date</Text>
-                            <Text style={styles.timeValue}>{formatDate(startDate)}</Text>
+                            <Text style={styles.timeValue}>{formatDate(startDate || endDate)}</Text>
                           </View>
                         </View>
                         <View style={styles.timeDivider} />
@@ -1656,49 +2339,87 @@ export default function RecurringShiftDetailsModal({
                           <MaterialCommunityIcons name="calendar-end" size={16} color={COLORS.error} />
                           <View style={styles.timeContent}>
                             <Text style={styles.timeLabel}>End Date</Text>
-                            <Text style={styles.timeValue}>{endDate ? formatDate(endDate) : 'Ongoing'}</Text>
+                            <Text style={styles.timeValue}>{formatDate(endDate || startDate)}</Text>
                           </View>
                         </View>
                       </View>
 
-                      <Text style={styles.helperText}>Status: {statusLabel}</Text>
+                      {!isPatientPending ? (
+                        <Text style={styles.helperText}>Status: {statusLabel}</Text>
+                      ) : null}
                     </View>
                   </View>
+
+                  {isPatientPending && card.nurse ? (
+                    <View style={styles.section}>
+                      <Text style={styles.sectionTitle}>Requested Nurse</Text>
+                      <View style={styles.card}>
+                        <View style={[styles.cardHeader, styles.cardHeaderNoDivider]}>
+                          {card.nurse.photo ? (
+                            <Image source={{ uri: card.nurse.photo }} style={styles.avatar} resizeMode="cover" />
+                          ) : (
+                            <View style={styles.avatarFallback}>
+                              <MaterialCommunityIcons name="account" size={30} color={COLORS.primary} />
+                            </View>
+                          )}
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.nurseName}>{card.nurse.name}</Text>
+                          </View>
+                          <TouchableWeb
+                            style={styles.statusChip}
+                            onPress={() => setSelectedNurseForDetails(card.nurse)}
+                          >
+                            <LinearGradient
+                              colors={SAFE_GRADIENTS.primary}
+                              start={{ x: 0, y: 0 }}
+                              end={{ x: 0, y: 1 }}
+                              style={styles.statusChipGradient}
+                            >
+                              <MaterialCommunityIcons name="eye" size={14} color={COLORS.white} />
+                              <Text style={styles.statusChipText}>View</Text>
+                            </LinearGradient>
+                          </TouchableWeb>
+                        </View>
+                      </View>
+                    </View>
+                  ) : null}
+                  </React.Fragment>
                 );
               })
             ) : (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Service Information</Text>
-                <View style={styles.card}>
-                  {nurseCards.length > 0 && nurseCards[0].nurse && (
-                    <View style={styles.cardHeader}>
-                      {nurseCards[0].nurse.photo ? (
-                        <Image source={{ uri: nurseCards[0].nurse.photo }} style={styles.avatar} resizeMode="cover" />
+              <>
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>Service Information</Text>
+                  <View style={styles.card}>
+                    {!isPatientPending && primaryServiceNurseCard && primaryServiceNurseCard.nurse && (
+                      <View style={styles.cardHeader}>
+                      {primaryServiceNurseCard.nurse.photo ? (
+                        <Image source={{ uri: primaryServiceNurseCard.nurse.photo }} style={styles.avatar} resizeMode="cover" />
                       ) : (
                         <View style={styles.avatarFallback}>
                           <MaterialCommunityIcons name="account" size={30} color={COLORS.primary} />
                         </View>
                       )}
                       <View style={{ flex: 1 }}>
-                        <Text style={styles.nurseName}>{nurseCards[0].nurse.name}</Text>
-                        <Text style={styles.nurseMeta}>{nurseCards[0].nurse.specialty}</Text>
-                        {nurseCards[0].nurse.code ? <Text style={styles.nurseCode}>{nurseCards[0].nurse.code}</Text> : null}
+                        <Text style={styles.nurseName}>{primaryServiceNurseCard.nurse.name}</Text>
+                        <Text style={styles.nurseMeta}>{primaryServiceNurseCard.nurse.specialty}</Text>
+                        {primaryServiceNurseCard.nurse.code ? <Text style={styles.nurseCode}>{primaryServiceNurseCard.nurse.code}</Text> : null}
                       </View>
                       <TouchableWeb
                         style={styles.statusChip}
                         onPress={() => {
                           const useClockDetailsView = contextType !== 'nurse' && typeof onOpenClockDetails === 'function';
-                          const isClockedIn = getNurseClockStatus(nurseCards[0].nurseId, nurseCards[0].nurse?.code);
+                          const isClockedIn = getNurseClockStatus(primaryServiceNurseCard.nurseId, primaryServiceNurseCard.nurse?.code);
 
                           if (useClockDetailsView && isClockedIn) {
                             onOpenClockDetails?.({
                               shift: activeShift,
-                              nurse: nurseCards[0].nurse,
-                              nurseId: nurseCards[0].nurseId,
-                              nurseCode: nurseCards[0].nurse?.code || null,
+                              nurse: primaryServiceNurseCard.nurse,
+                              nurseId: primaryServiceNurseCard.nurseId,
+                              nurseCode: primaryServiceNurseCard.nurse?.code || null,
                             });
                           } else {
-                            setSelectedNurseForDetails(nurseCards[0].nurse);
+                            setSelectedNurseForDetails(primaryServiceNurseCard.nurse);
                           }
                         }}
                       >
@@ -1706,7 +2427,7 @@ export default function RecurringShiftDetailsModal({
                           colors={
                             contextType !== 'nurse' &&
                             typeof onOpenClockDetails === 'function' &&
-                            getNurseClockStatus(nurseCards[0].nurseId, nurseCards[0].nurse?.code)
+                            getNurseClockStatus(primaryServiceNurseCard.nurseId, primaryServiceNurseCard.nurse?.code)
                               ? SAFE_GRADIENTS.warning
                               : SAFE_GRADIENTS.primary
                           }
@@ -1719,19 +2440,19 @@ export default function RecurringShiftDetailsModal({
                         </LinearGradient>
                       </TouchableWeb>
                     </View>
-                  )}
-                  <View style={styles.row}>
+                    )}
+                    <View style={styles.row}>
                     <MaterialCommunityIcons name="medical-bag" size={16} color={COLORS.primary} />
                     <Text style={styles.rowText}>{activeShift?.service || 'N/A'}</Text>
                   </View>
 
-                  {(nurseCards.length > 0 && nurseCards[0].days && nurseCards[0].days.length > 0) ||
+                  {(primaryServiceNurseCard && primaryServiceNurseCard.days && primaryServiceNurseCard.days.length > 0) ||
                   recurringDaysForDisplay.length > 0 ? (
                     <View style={styles.daysContainer}>
                       <Text style={styles.daysLabel}>Assigned Days</Text>
                       <ScrollView horizontal showsHorizontalScrollIndicator={false}>
-                        {(nurseCards.length > 0 && nurseCards[0].days && nurseCards[0].days.length > 0
-                          ? nurseCards[0].days
+                        {(primaryServiceNurseCard && primaryServiceNurseCard.days && primaryServiceNurseCard.days.length > 0
+                          ? primaryServiceNurseCard.days
                           : recurringDaysForDisplay
                         ).map((d) => (
                           <View key={d} style={styles.dayPill}>
@@ -1771,7 +2492,7 @@ export default function RecurringShiftDetailsModal({
                       <MaterialCommunityIcons name="calendar-start" size={16} color={COLORS.success} />
                       <View style={styles.timeContent}>
                         <Text style={styles.timeLabel}>Start Date</Text>
-                        <Text style={styles.timeValue}>{formatDate(startDate)}</Text>
+                        <Text style={styles.timeValue}>{formatDate(startDate || endDate)}</Text>
                       </View>
                     </View>
                     <View style={styles.timeDivider} />
@@ -1779,15 +2500,53 @@ export default function RecurringShiftDetailsModal({
                       <MaterialCommunityIcons name="calendar-end" size={16} color={COLORS.error} />
                       <View style={styles.timeContent}>
                         <Text style={styles.timeLabel}>End Date</Text>
-                        <Text style={styles.timeValue}>{endDate ? formatDate(endDate) : 'Ongoing'}</Text>
+                        <Text style={styles.timeValue}>{formatDate(endDate || startDate)}</Text>
                       </View>
                     </View>
                   </View>
-                  <Text style={styles.durationText}>{calculateDuration(startTime, endTime)}</Text>
+                    {!isPatientPending ? (
+                      <Text style={styles.durationText}>{calculateDuration(startTime, endTime)}</Text>
+                    ) : null}
+                  </View>
                 </View>
-              </View>
+
+                {isPatientPending && primaryServiceNurseCard && primaryServiceNurseCard.nurse ? (
+                  <View style={styles.section}>
+                    <Text style={styles.sectionTitle}>Requested Nurse</Text>
+                    <View style={styles.card}>
+                      <View style={[styles.cardHeader, styles.cardHeaderNoDivider]}>
+                        {primaryServiceNurseCard.nurse.photo ? (
+                          <Image source={{ uri: primaryServiceNurseCard.nurse.photo }} style={styles.avatar} resizeMode="cover" />
+                        ) : (
+                          <View style={styles.avatarFallback}>
+                            <MaterialCommunityIcons name="account" size={30} color={COLORS.primary} />
+                          </View>
+                        )}
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.nurseName}>{primaryServiceNurseCard.nurse.name}</Text>
+                        </View>
+                        <TouchableWeb
+                          style={styles.statusChip}
+                          onPress={() => setSelectedNurseForDetails(primaryServiceNurseCard.nurse)}
+                        >
+                          <LinearGradient
+                            colors={SAFE_GRADIENTS.primary}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 0, y: 1 }}
+                            style={styles.statusChipGradient}
+                          >
+                            <MaterialCommunityIcons name="eye" size={14} color={COLORS.white} />
+                            <Text style={styles.statusChipText}>View</Text>
+                          </LinearGradient>
+                        </TouchableWeb>
+                      </View>
+                    </View>
+                  </View>
+                ) : null}
+              </>
             )}
 
+            {!isPatientPending ? (
             <View style={styles.section}>
               <View style={styles.sectionHeaderRow}>
                 <Text style={styles.sectionTitle}>Emergency Backup Nurses</Text>
@@ -1809,53 +2568,99 @@ export default function RecurringShiftDetailsModal({
                 <>
                   <Text style={styles.helperText}>Priority order for emergency coverage</Text>
                   {backupNurses.map((backup, index) => {
-                    const backupId = normalizeId(backup?.nurseId || backup?.id || backup?._id);
-                    const backupCode = normalizeCode(backup?.staffCode || backup?.nurseCode || backup?.code);
-                    
-                    const isAccepted = isAcceptedCoverageForNurse(backupId, backupCode);
-                    
-                    let isClockedIn = false;
-                    if (isAccepted && mergedClockByNurse) {
-                       const candidates = [
-                         backupId, 
-                         backupCode, 
-                         normalizeId(backup?.id), 
-                         normalizeId(backup?._id)
-                       ].filter(Boolean).map(v => String(v).trim());
-                       
-                       let entry = null;
-                        for (const key of candidates) {
-                             if (mergedClockByNurse[key]) { entry = mergedClockByNurse[key]; break; }
-                             const upper = key.toUpperCase();
-                             if (mergedClockByNurse[upper]) { entry = mergedClockByNurse[upper]; break; }
-                             const lower = key.toLowerCase();
-                             if (mergedClockByNurse[lower]) { entry = mergedClockByNurse[lower]; break; }
+                    const backupId = normalizeId(backup?.nurseId || backup?.uid || backup?.id || backup?._id);
+                    const backupCode = normalizeCode(
+                      backup?.staffCode || backup?.nurseCode || backup?.code || backup?.username
+                    );
+
+                    let clockEntry = null;
+                    let hasClockIn = false;
+                    let isActivelyClockedIn = false;
+                    let clockInValue = null;
+                    let clockOutValue = null;
+
+                    if (mergedClockByNurse && typeof mergedClockByNurse === 'object') {
+                      const idCandidates = [
+                        backupId,
+                        normalizeId(backup?.nurseId),
+                        normalizeId(backup?.uid),
+                        normalizeId(backup?.id),
+                        normalizeId(backup?._id),
+                      ]
+                        .filter(Boolean)
+                        .map((v) => String(v).trim());
+
+                      const codeCandidates = [
+                        backupCode,
+                        normalizeCode(backup?.staffCode),
+                        normalizeCode(backup?.nurseCode),
+                        normalizeCode(backup?.code),
+                      ]
+                        .filter(Boolean)
+                        .map((v) => String(v).trim());
+
+                      const lookupKeys = [...idCandidates, ...codeCandidates].filter(Boolean);
+
+                      for (const rawKey of lookupKeys) {
+                        const key = String(rawKey).trim();
+                        if (!key) continue;
+                        if (mergedClockByNurse[key]) {
+                          clockEntry = mergedClockByNurse[key];
+                          break;
                         }
-                        
-                        if (!entry) {
-                           const values = Object.values(mergedClockByNurse);
-                           entry = values.find(v => {
-                              if (!v || typeof v !== 'object') return false;
-                              const vId = normalizeId(v.nurseId || v.id || v._id || v.uid);
-                              const vCode = normalizeCode(v.nurseCode || v.staffCode || v.code);
-                              if (backupId && vId && backupId === vId) return true;
-                              if (backupCode && vCode && backupCode === vCode) return true;
-                              return false;
-                           });
+                        const upper = key.toUpperCase();
+                        if (mergedClockByNurse[upper]) {
+                          clockEntry = mergedClockByNurse[upper];
+                          break;
                         }
-                        
-                        if (entry) {
-                          // Check if they have ANY clock activity (like a clock in time), 
-                          // regardless of whether they have clocked out.
-                          // This ensures admins can see clock details even after shift completion.
-                          const hasIn = entry.lastClockInTime || entry.actualStartTime || entry.clockInTime || entry.startedAt;
-                          isClockedIn = Boolean(hasIn);
+                        const lower = key.toLowerCase();
+                        if (mergedClockByNurse[lower]) {
+                          clockEntry = mergedClockByNurse[lower];
+                          break;
                         }
+                      }
+
+                      if (!clockEntry) {
+                        const values = Object.values(mergedClockByNurse);
+                        clockEntry =
+                          values.find((v) => {
+                            if (!v || typeof v !== 'object') return false;
+                            const vId = normalizeId(v.nurseId || v.id || v._id || v.uid);
+                            const vCode = normalizeCode(v.nurseCode || v.staffCode || v.code);
+                            if (backupId && vId && backupId === vId) return true;
+                            if (backupCode && vCode && backupCode === vCode) return true;
+                            return false;
+                          }) || null;
+                      }
+
+                      if (clockEntry && typeof clockEntry === 'object') {
+                        clockInValue =
+                          clockEntry.lastClockInTime ||
+                          clockEntry.actualStartTime ||
+                          clockEntry.clockInTime ||
+                          clockEntry.startedAt ||
+                          null;
+                        clockOutValue =
+                          clockEntry.lastClockOutTime ||
+                          clockEntry.actualEndTime ||
+                          clockEntry.clockOutTime ||
+                          clockEntry.completedAt ||
+                          null;
+
+                        hasClockIn = Boolean(clockInValue);
+                        isActivelyClockedIn = Boolean(clockInValue) && !Boolean(clockOutValue);
+                      }
+
+                      // Backup clock debug logging removed per request
                     }
 
                     const canViewClockDetails = contextType !== 'nurse' && typeof onOpenClockDetails === 'function';
-                    // We can use activeShift status here since backup nurses are part of the shift context
-                    const shiftStatus = normalizeStatus(activeShift?.status);
+                    const shiftStatusRaw = String(activeShift?.status || '').trim().toLowerCase();
+                    const shiftIsPending =
+                      !shiftStatusRaw ||
+                      shiftStatusRaw.includes('pending') ||
+                      shiftStatusRaw.includes('request') ||
+                      shiftStatusRaw.includes('assign');
 
                     return (
                     <View key={backup?.nurseId || backup?.id || index} style={{ marginBottom: 10 }}>
@@ -1865,19 +2670,21 @@ export default function RecurringShiftDetailsModal({
                       <NurseInfoCard
                         nurse={backup}
                         nursesRoster={nurses}
-                        openDetailsOnPress={!(isClockedIn && canViewClockDetails)}
+                        openDetailsOnPress={!(hasClockIn && canViewClockDetails)}
                         hideSpecialty={true}
                         hideCode={true}
                         style={[
-                          isClockedIn ? styles.cardClockedIn : undefined,
-                          shiftStatus === 'pending' && contextType !== 'nurse' ? { borderColor: COLORS.primary, backgroundColor: COLORS.white } : undefined
+                          isActivelyClockedIn ? styles.cardClockedIn : undefined,
+                          shiftIsPending && !isActivelyClockedIn && contextType !== 'nurse'
+                            ? { borderColor: COLORS.primary, backgroundColor: COLORS.white }
+                            : undefined,
                         ]}
                         showViewButton={false}
                         actionButton={
                              <TouchableWeb
                                 style={styles.statusChip}
                                 onPress={() => {
-                                  if (isClockedIn && canViewClockDetails) {
+                                  if (hasClockIn && canViewClockDetails) {
                                     onOpenClockDetails?.({ 
                                         shift: activeShift, 
                                         nurse: backup, 
@@ -1891,7 +2698,7 @@ export default function RecurringShiftDetailsModal({
                                 }}
                              >
                                 <LinearGradient
-                                    colors={isClockedIn && canViewClockDetails ? SAFE_GRADIENTS.warning : SAFE_GRADIENTS.primary}
+                                    colors={hasClockIn && canViewClockDetails ? SAFE_GRADIENTS.warning : SAFE_GRADIENTS.primary}
                                     start={{x:0, y:0}}
                                     end={{x:0, y:1}}
                                     style={styles.statusChipGradient}
@@ -1923,6 +2730,7 @@ export default function RecurringShiftDetailsModal({
                 </View>
               )}
             </View>
+            ) : null}
 
             {contextType === 'patient' && showPatientPostVisitSections ? (
               <View style={styles.section}>
@@ -2030,47 +2838,56 @@ export default function RecurringShiftDetailsModal({
             ) : null}
 
             {(() => {
-              const candidates = [
+              const patientCandidates = [
                 activeShift?.patientNotes,
                 activeShift?.bookingNotes,
                 activeShift?.clientNotes,
                 activeShift?.specialInstructions,
               ];
-              const raw = candidates.find((value) => {
+
+              const legacyNotes = activeShift?.notes; // Legacy field (historically patient notes, but sometimes used for nurse notes)
+              const legacyTrimmed = legacyNotes === null || legacyNotes === undefined ? '' : String(legacyNotes).trim();
+              const nurseTrimmed = nurseNotesText === null || nurseNotesText === undefined ? '' : String(nurseNotesText).trim();
+              const splitNurseNotes = Array.isArray(splitScheduleNurseNotes)
+                ? splitScheduleNurseNotes.map((n) => (n?.note === null || n?.note === undefined ? '' : String(n.note).trim())).filter(Boolean)
+                : [];
+
+              const legacyLooksLikeNurseNotes =
+                Boolean(legacyTrimmed) &&
+                (legacyTrimmed === nurseTrimmed || splitNurseNotes.some((t) => t === legacyTrimmed));
+
+              const candidates = legacyLooksLikeNurseNotes
+                ? patientCandidates
+                : [...patientCandidates, legacyNotes];
+
+              const text = candidates.find((value) => {
                 if (value === null || value === undefined) return false;
-                const text = String(value).trim();
-                return Boolean(text);
+                const str = String(value).trim();
+                return Boolean(str);
               });
-              const legacyNotes = (activeShift?.notes && String(activeShift.notes).trim()) || '';
-              const hasNurseNotes = Boolean(
-                activeShift?.nurseNotes && String(activeShift.nurseNotes).trim().length
-              );
-              const text = raw === null || raw === undefined
-                ? (!hasNurseNotes ? legacyNotes : '')
-                : String(raw).trim();
 
               if (!text) return null;
 
               const dateCandidate =
+                activeShift?.requestedAt ||
                 activeShift?.createdAt ||
+                activeShift?.bookingCreatedAt ||
+                activeShift?.bookingRequestedAt ||
                 activeShift?.updatedAt ||
-                activeShift?.scheduledDate ||
-                activeShift?.date ||
-                activeShift?.startDate ||
-                activeShift?.serviceDate ||
                 null;
 
               return (
                 <View style={styles.section}>
                   <Text style={styles.sectionTitle}>Patient Notes</Text>
                   <NotesAccordionList
+                    showTime
                     items={[
                       {
                         id: `patient-notes-${activeShift?.id || activeShift?._id || activeShift?.shiftId || 'note'}`,
                         date: dateCandidate,
                         title: shiftClientName || 'Patient Note',
                         subtitle: 'From booking',
-                        body: text,
+                        body: String(text).trim(),
                       },
                     ]}
                     emptyText="No notes yet"
@@ -2079,64 +2896,110 @@ export default function RecurringShiftDetailsModal({
               );
             })()}
 
-            {contextType === 'nurse' ? (
-              <View style={styles.section}>
-                <Text style={styles.sectionTitle}>Nurses Notes</Text>
-                <NotesAccordionList
-                  items={(() => {
-                    const items = Array.isArray(splitScheduleNurseNotes)
-                      ? splitScheduleNurseNotes.filter((n) => n?.note)
-                      : [];
+            {(() => {
+              const isNurseContext = contextType === 'nurse';
+              const isPatientContext = contextType === 'patient';
+              const isAdminContext = !isNurseContext && !isPatientContext;
 
-                    if (items.length > 0) {
-                      return items.map((item) => ({
-                        id: item.key,
-                        date: item.noteDate,
-                        title: item.nurseName,
-                        subtitle: item.nurseCode || item.nurseId || '',
-                        body: item.note || '',
-                      }));
-                    }
+              // For nurses: keep existing rule (hide section while decision buttons are shown).
+              if (isNurseContext && shouldShowNurseDecisionButtons) return null;
 
-                    if (!nurseNotesText) return [];
+              // Build items array (split schedule nurse notes)
+              const items = Array.isArray(splitScheduleNurseNotes)
+                ? splitScheduleNurseNotes.filter((n) => n?.note)
+                : [];
 
-                    const fallbackDate =
-                      activeShift?.nurseNotesUpdatedAt ||
-                      activeShift?.notesUpdatedAt ||
-                      activeShift?.completedAt ||
-                      activeShift?.actualEndTime ||
-                      activeShift?.scheduledDate ||
-                      activeShift?.date ||
-                      activeShift?.shiftDate ||
-                      activeShift?.startDate ||
-                      activeShift?.serviceDate ||
-                      activeShift?.requestedDate ||
-                      activeShift?.recurringStartDate ||
-                      activeShift?.recurringPeriodStart ||
-                      null;
+              const hasSplitNotes = items.length > 0;
+              const hasNurseText = Boolean(nurseNotesText);
+              const hasAnyNurseNotes = hasSplitNotes || hasNurseText;
 
-                    const nurseTitle =
-                      (nurseCards && nurseCards.length > 0 && (nurseCards[0].nurse?.name || nurseCards[0].nurseName)) ||
-                      'Nurse Note';
+              // Determine if anyone has clocked in (admin should see Nurses Notes section once clock-in starts)
+              const hasAnyClockIn = (() => {
+                if (!mergedClockByNurse || typeof mergedClockByNurse !== 'object') return false;
+                const values = Object.values(mergedClockByNurse);
+                return values.some((entry) => {
+                  if (!entry || typeof entry !== 'object') return false;
+                  const clockInValue =
+                    entry.lastClockInTime ||
+                    entry.actualStartTime ||
+                    entry.clockInTime ||
+                    entry.startedAt ||
+                    null;
+                  return Boolean(clockInValue);
+                });
+              })();
 
-                    const nurseSubtitle =
-                      (nurseCards && nurseCards.length > 0 && (nurseCards[0].nurse?.code || nurseCards[0].nurseCode)) ||
-                      null;
+              // Nurse context: don't render section if no notes exist (per nurse UX requirement).
+              if (isNurseContext && !hasAnyNurseNotes) return null;
 
-                    return [
-                      {
-                        id: 'primary-nurse-note',
-                        date: fallbackDate,
-                        title: nurseTitle,
-                        subtitle: nurseSubtitle,
-                        body: nurseNotesText,
-                      },
-                    ];
-                  })()}
-                  emptyText="No notes yet"
-                />
-              </View>
-            ) : null}
+              // Patient context never shows Nurses Notes (patients use Medical Notes section instead).
+              if (isPatientContext) return null;
+
+              // Admin context: show section once clock-in starts, or if notes exist.
+              if (isAdminContext && !hasAnyClockIn && !hasAnyNurseNotes) return null;
+
+              return (
+                <View style={styles.section}>
+                  <Text style={styles.sectionTitle}>Nurses Notes</Text>
+                  <NotesAccordionList
+                    showTime
+                    items={(() => {
+                      if (items.length > 0) {
+                        return items.map((item) => ({
+                          id: item.key,
+                          date: item.noteDate,
+                          title: item.nurseName,
+                          subtitle: item.nurseCode || item.nurseId || '',
+                          body: item.note || '',
+                        }));
+                      }
+
+                      if (!nurseNotesText) return [];
+
+                      const fallbackDate =
+                        activeShift?.nurseNotesUpdatedAt ||
+                        activeShift?.notesUpdatedAt ||
+                        activeShift?.completedAt ||
+                        activeShift?.actualEndTime ||
+                        activeShift?.updatedAt ||
+                        activeShift?.scheduledDate ||
+                        activeShift?.date ||
+                        activeShift?.shiftDate ||
+                        activeShift?.startDate ||
+                        activeShift?.serviceDate ||
+                        activeShift?.requestedDate ||
+                        activeShift?.recurringStartDate ||
+                        activeShift?.recurringPeriodStart ||
+                        activeShift?.createdAt ||
+                        activeShift?.requestedAt ||
+                        null;
+
+                      const primaryNoteNurseCard =
+                        primaryServiceNurseCard || (nurseCards && nurseCards.length > 0 ? nurseCards[0] : null);
+
+                      const nurseTitle =
+                        (primaryNoteNurseCard && (primaryNoteNurseCard.nurse?.name || primaryNoteNurseCard.nurseName)) ||
+                        'Nurse Note';
+
+                      const nurseSubtitle =
+                        (primaryNoteNurseCard && (primaryNoteNurseCard.nurse?.code || primaryNoteNurseCard.nurseCode)) ||
+                        null;
+
+                      return [
+                        {
+                          id: 'primary-nurse-note',
+                          date: fallbackDate,
+                          title: nurseTitle,
+                          subtitle: nurseSubtitle,
+                          body: nurseNotesText,
+                        },
+                      ];
+                    })()}
+                    emptyText="No notes yet"
+                  />
+                </View>
+              );
+            })()}
           </ScrollView>
 
           {shouldHideFooter ? null : (
@@ -2346,6 +3209,11 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.md,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
+  },
+  cardHeaderNoDivider: {
+    paddingBottom: 0,
+    marginBottom: 0,
+    borderBottomWidth: 0,
   },
   avatar: {
     width: 56,

@@ -1,6 +1,7 @@
 import * as Print from 'expo-print';
 import * as Sharing from 'expo-sharing';
 import * as FileSystem from 'expo-file-system/legacy';
+import { Asset } from 'expo-asset';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { auth, db } from '../config/firebase';
 import {
@@ -21,21 +22,239 @@ import {
 import InvoiceImageGenerator from './InvoiceImageGenerator';
 import ApiService from './ApiService';
 import EmailService from './EmailService';
+import FirebaseEmailQueueService from './FirebaseEmailQueueService';
 
 class InvoiceService {
+  static ADMIN_NOTIFICATION_CATEGORIES = {
+    ALL: 'all',
+    SCHEDULING: 'scheduling',
+    FINANCIAL: 'financial',
+  };
+
+  static normalizeInvoiceId(invoiceId) {
+    if (typeof invoiceId !== 'string') return invoiceId;
+    const trimmed = invoiceId.trim();
+    if (/^CARE-INV-/i.test(trimmed)) return trimmed.replace(/^CARE-INV-/i, 'NUR-INV-');
+    return trimmed;
+  }
+
+  static getInvoiceIdVariants(invoiceId) {
+    if (typeof invoiceId !== 'string') return [];
+    const trimmed = invoiceId.trim();
+    if (!trimmed) return [];
+
+    if (/^CARE-INV-/i.test(trimmed)) {
+      return [trimmed, trimmed.replace(/^CARE-INV-/i, 'NUR-INV-')];
+    }
+    if (/^NUR-INV-/i.test(trimmed)) {
+      return [trimmed, trimmed.replace(/^NUR-INV-/i, 'CARE-INV-')];
+    }
+    return [trimmed];
+  }
+
+  static invoiceIdsMatch(a, b) {
+    const aNorm = this.normalizeInvoiceId(a);
+    const bNorm = this.normalizeInvoiceId(b);
+    if (typeof aNorm !== 'string' || typeof bNorm !== 'string') return false;
+    return aNorm.toUpperCase() === bNorm.toUpperCase();
+  }
+
+  static _normalizeNotificationRole(value) {
+    return String(value || '').trim().toLowerCase();
+  }
+
+  static _getAdminDisplayName(record) {
+    return (
+      record?.fullName ||
+      record?.name ||
+      `${record?.firstName || ''} ${record?.lastName || ''}`.trim()
+    );
+  }
+
+  static _inferNotificationRole(adminUser) {
+    const email = this._normalizeNotificationRole(adminUser?.email);
+    const name = this._normalizeNotificationRole(this._getAdminDisplayName(adminUser));
+
+    if (email === 'prince@876nurses.com' || name.includes('prince')) {
+      return 'scheduling_only';
+    }
+
+    return 'full_access';
+  }
+
+  static _getEffectiveNotificationRole(adminUser) {
+    const explicitRole = this._normalizeNotificationRole(adminUser?.emailNotificationRole);
+    if (
+      explicitRole === 'full_access' ||
+      explicitRole === 'scheduling_only' ||
+      explicitRole === 'financial_only'
+    ) {
+      return explicitRole;
+    }
+
+    return this._inferNotificationRole(adminUser);
+  }
+
+  static _selectAdminRecipientsByCategory(adminUsers = [], category = this.ADMIN_NOTIFICATION_CATEGORIES.ALL) {
+    return (Array.isArray(adminUsers) ? adminUsers : []).filter((adminUser) => {
+      if (!adminUser?.email) return false;
+      if (adminUser?.isActive === false) return false;
+
+      const role = this._getEffectiveNotificationRole(adminUser);
+
+      if (category === this.ADMIN_NOTIFICATION_CATEGORIES.SCHEDULING) {
+        return role === 'full_access' || role === 'scheduling_only';
+      }
+
+      if (category === this.ADMIN_NOTIFICATION_CATEGORIES.FINANCIAL) {
+        return role === 'full_access' || role === 'financial_only';
+      }
+
+      return true;
+    });
+  }
+
+  static async _notifyFinancialAdminsOverduePayment({ invoiceId, invoiceData, paymentMethod }) {
+    try {
+      const adminsSnapshot = await getDocs(collection(db, 'admins'));
+      const admins = adminsSnapshot.docs.map((adminDoc) => ({
+        id: adminDoc.id,
+        ...adminDoc.data(),
+      }));
+
+      const recipients = this._selectAdminRecipientsByCategory(
+        admins,
+        this.ADMIN_NOTIFICATION_CATEGORIES.FINANCIAL
+      );
+
+      if (!recipients.length) return;
+
+      const safeInvoiceId = invoiceData?.invoiceId || invoiceId || '';
+      const amount = Number(invoiceData?.total ?? invoiceData?.amount ?? 0);
+      const amountLabel = Number.isFinite(amount) ? amount.toFixed(2) : '0.00';
+      const clientName = invoiceData?.clientName || invoiceData?.patientName || 'Client';
+      const appInvoiceUrl = `nurses876://invoice/${encodeURIComponent(String(safeInvoiceId))}`;
+
+      const formatDateLabel = (value) => {
+        if (!value) return 'N/A';
+        let date;
+        let asString;
+        if (value instanceof Date) {
+          date = value;
+          asString = value.toISOString();
+        } else if (value && typeof value.toDate === 'function') {
+          date = value.toDate();
+          asString = date.toISOString();
+        } else {
+          asString = String(value);
+          date = new Date(asString);
+        }
+        if (Number.isNaN(date.getTime())) return asString;
+        try {
+          return date.toLocaleDateString('en-US', {
+            year: 'numeric',
+            month: 'short',
+            day: 'numeric',
+          });
+        } catch (_) {
+          return asString;
+        }
+      };
+
+      const dueDateLabel = formatDateLabel(
+        invoiceData?.dueDate || invoiceData?.due || invoiceData?.dueDateLabel
+      );
+      const paymentDateLabel = formatDateLabel(
+        invoiceData?.paidDate || invoiceData?.paidAt || new Date().toISOString()
+      );
+      const paymentMethodLabel = paymentMethod || invoiceData?.paymentMethod || 'N/A';
+
+      const subject = `Payment Confirmation - Overdue Invoice ${safeInvoiceId}`;
+      const buildHtml = (adminName) => `
+        <!DOCTYPE html>
+        <html>
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        </head>
+        <body style="margin:0;padding:0;background-color:#ffffff;font-family:Arial,sans-serif;color:#1f2a44;">
+          <div style="max-width:600px;margin:0 auto;padding:32px 20px;line-height:1.7;">
+            <p style="margin:0 0 14px 0;">Hi ${adminName},</p>
+            <p style="margin:0 0 14px 0;">Payment has been received for an invoice that was previously overdue.</p>
+            <p style="margin:0 0 10px 0;">Client Name: ${clientName}</p>
+            <p style="margin:0 0 10px 0;">Invoice Number: ${safeInvoiceId}</p>
+            <p style="margin:0 0 10px 0;">Amount Due: JMD $${amountLabel}</p>
+            <p style="margin:0 0 10px 0;">Due Date: ${dueDateLabel}</p>
+            <p style="margin:0 0 10px 0;">Payment Date: ${paymentDateLabel}</p>
+            <p style="margin:0 0 14px 0;">Payment Method: ${paymentMethodLabel}</p>
+            <p style="margin:0 0 14px 0;">The client’s account balance has been updated automatically and no further action is required unless additional follow-up is needed.</p>
+            <p style="margin:0 0 16px 0;"><a href="${appInvoiceUrl}" style="color:#2f62d7;text-decoration:underline;font-weight:700;">Click here to view invoice</a></p>
+
+            <p style="margin:18px 0 0 0;color:#9ca3af;font-size:12px;line-height:1.6;text-align:center;">
+              876 Nurses Home Care Services · Kingston, Jamaica<br />
+              Need help? Email <a href="mailto:876nurses@gmail.com" style="color:#6b7280;text-decoration:underline;">876nurses@gmail.com</a>
+            </p>
+          </div>
+        </body>
+        </html>
+      `;
+
+      const buildText = (adminName) => [
+        `Hi ${adminName},`,
+        '',
+        'Payment has been received for an invoice that was previously overdue.',
+        '',
+        `Client Name: ${clientName}`,
+        `Invoice Number: ${safeInvoiceId}`,
+        `Amount Due: JMD $${amountLabel}`,
+        `Due Date: ${dueDateLabel}`,
+        `Payment Date: ${paymentDateLabel}`,
+        `Payment Method: ${paymentMethodLabel}`,
+        '',
+        'The client’s account balance has been updated automatically and no further action is required unless additional follow-up is needed.',
+        '',
+        `Click here to view invoice: ${appInvoiceUrl}`,
+        '',
+        'Need help? Email 876nurses@gmail.com',
+        '876 Nurses Home Care Services · Kingston, Jamaica',
+      ].join('\n');
+
+      await Promise.allSettled(
+        recipients.map((recipient) => {
+          const adminName = this._getAdminDisplayName(recipient) || 'Admin';
+
+          return FirebaseEmailQueueService.enqueueEmail({
+            to: recipient.email,
+            subject,
+            html: buildHtml(adminName),
+            text: buildText(adminName),
+            attachments: [],
+            meta: {
+              type: 'overdue_payment_confirmation_admin',
+              invoiceId: safeInvoiceId,
+              recipientRole: this._getEffectiveNotificationRole(recipient),
+            },
+          });
+        })
+      );
+    } catch (error) {
+      console.warn('Failed to queue overdue payment confirmation for financial admins:', error);
+    }
+  }
+
     static async getAppointmentStorageKeys() {
       try {
         const keys = await AsyncStorage.getAllKeys();
-        return keys.filter(key => key.startsWith('@care_appointments_'));
+        return keys.filter(key => key.startsWith('@876_appointments_'));
       } catch (error) {
         return [];
       }
     }
 
-  static STORAGE_KEY = '@care_invoices';
-  static INVOICE_COUNTER_KEY = '@care_invoice_counter';
-  static SYNC_QUEUE_KEY = '@care_invoice_sync_queue';
-  static RECURRING_SCHEDULES_KEY = '@care_recurring_schedules';
+  static STORAGE_KEY = '@876_invoices';
+  static INVOICE_COUNTER_KEY = '@876_invoice_counter';
+  static SYNC_QUEUE_KEY = '@876_invoice_sync_queue';
+  static RECURRING_SCHEDULES_KEY = '@876_recurring_schedules';
 
   static COUNTERS_COLLECTION = 'counters';
   // Use a dedicated counter for nurse invoices to avoid colliding with legacy/migrated
@@ -44,6 +263,30 @@ class InvoiceService {
 
   static _autoSeedAttempted = false;
   static _firestoreInvoiceCounterBlocked = false;
+
+  static _invoiceLogoDataUriCache = null;
+
+  static async _getInvoiceLogoDataUri() {
+    try {
+      if (this._invoiceLogoDataUriCache) return this._invoiceLogoDataUriCache;
+
+      const asset = Asset.fromModule(require('../assets/Images/Nurses-logo.png'));
+      await asset.downloadAsync();
+
+      const logoUri = asset.localUri || asset.uri;
+      if (!logoUri) return null;
+
+      const base64 = await FileSystem.readAsStringAsync(logoUri, {
+        encoding: FileSystem.EncodingType.Base64,
+      });
+
+      if (!base64) return null;
+      this._invoiceLogoDataUriCache = `data:image/png;base64,${base64}`;
+      return this._invoiceLogoDataUriCache;
+    } catch (e) {
+      return null;
+    }
+  }
 
   static _extractNurseInvoiceSequence(invoiceId) {
     if (typeof invoiceId !== 'string') return null;
@@ -183,6 +426,7 @@ class InvoiceService {
       for (const item of syncQueue) {
         try {
           let success = false;
+          const normalizedInvoiceId = this.normalizeInvoiceId(item?.data?.invoiceId);
           
           switch (item.action) {
             case 'create':
@@ -190,11 +434,11 @@ class InvoiceService {
               success = true;
               break;
             case 'update':
-              await ApiService.put(`/api/invoices/${item.data.invoiceId}`, item.data);
+              await ApiService.put(`/api/invoices/${normalizedInvoiceId}`, item.data);
               success = true;
               break;
             case 'delete':
-              await ApiService.delete(`/api/invoices/${item.data.invoiceId}`);
+              await ApiService.delete(`/api/invoices/${normalizedInvoiceId}`);
               success = true;
               break;
             case 'create_schedule':
@@ -436,7 +680,7 @@ class InvoiceService {
 
   // Company information
   static COMPANY_INFO = {
-    name: 'CARE Nursing Services and More',
+    name: '876Nurses Home Care Services Limited',
     address: '15 Oaklands Ave, Kingston 10, Jamaica, W.I.',
     phone: '876-288-7304',
     email: 'care@nursingcareja.com',
@@ -1001,7 +1245,7 @@ class InvoiceService {
       const updatedSchedules = existingSchedules.filter(s => s.clientId !== clientData.id);
       updatedSchedules.push(scheduleData);
       
-      await AsyncStorage.setItem('@care_recurring_schedules', JSON.stringify(updatedSchedules));
+      await AsyncStorage.setItem('@876_recurring_schedules', JSON.stringify(updatedSchedules));
       
       return scheduleData;
     } catch (error) {
@@ -1034,7 +1278,7 @@ class InvoiceService {
    */
   static async getRecurringSchedules() {
     try {
-      const schedules = await AsyncStorage.getItem('@care_recurring_schedules');
+      const schedules = await AsyncStorage.getItem('@876_recurring_schedules');
       return schedules ? JSON.parse(schedules) : [];
     } catch (error) {
       // Error getting recurring schedules
@@ -1090,7 +1334,7 @@ class InvoiceService {
       }
 
       // Save updated schedules
-      await AsyncStorage.setItem('@care_recurring_schedules', JSON.stringify(schedules));
+      await AsyncStorage.setItem('@876_recurring_schedules', JSON.stringify(schedules));
       
       return dueInvoices.length;
     } catch (error) {
@@ -1127,8 +1371,8 @@ class InvoiceService {
 
       // Simulate email sending
       
-      // Send email using EmailService
-      const emailResult = await EmailService.sendInvoiceEmail({
+      // Queue email via Firebase (Cloud Function mail queue)
+      const emailResult = await FirebaseEmailQueueService.enqueueInvoiceEmail({
         to: schedule.email,
         invoiceData: {
           ...invoice,
@@ -1137,7 +1381,8 @@ class InvoiceService {
           invoiceNumber: invoice.invoiceId,
           date: this.formatDateForInvoice(actualDueDate)
         },
-        pdfUri: invoice.pdfUri
+        pdfUri: invoice.pdfUri,
+        meta: { kind: 'recurring-early' },
       });
       
       return emailResult;
@@ -1248,11 +1493,15 @@ class InvoiceService {
         }]
       };
 
+      invoiceData.logoDataUri = await this._getInvoiceLogoDataUri();
+
       // Generate PDF using InvoiceImageGenerator
       const html = InvoiceImageGenerator.createInvoiceHTML(invoiceData);
       const { uri } = await Print.printToFileAsync({ 
         html,
-        base64: false 
+        base64: false,
+        width: 612,
+        height: 792,
       });
 
       // Save PDF to local storage
@@ -1406,6 +1655,8 @@ class InvoiceService {
         relatedAppointmentId: appointmentData.relatedAppointmentId || appointmentData.appointmentId || appointmentData.id, // For backend compatibility
         shiftRequestId: appointmentData.shiftRequestId || null,
         visitKey: appointmentData.visitKey || null,
+        patientId: appointmentData.patientId || appointmentData.clientId || appointmentData.userId || null,
+        clientId: appointmentData.patientId || appointmentData.clientId || appointmentData.userId || null,
         // Add items array for compatibility with InvoiceImageGenerator
         items: [{
           description: serviceType,
@@ -1423,11 +1674,15 @@ class InvoiceService {
         finalTotal: total
       };
 
+      invoiceData.logoDataUri = await this._getInvoiceLogoDataUri();
+
       // Generate PDF using InvoiceImageGenerator
       const html = InvoiceImageGenerator.createInvoiceHTML(invoiceData);
       const { uri } = await Print.printToFileAsync({ 
         html,
-        base64: false 
+        base64: false,
+        width: 612,
+        height: 792,
       });
 
       // Save PDF to local storage
@@ -1497,14 +1752,14 @@ class InvoiceService {
       // SECONDARY: Cache locally in AsyncStorage for offline access
       try {
         const existingInvoices = await this._getCachedInvoices();
-        const exists = existingInvoices.some(inv => inv.invoiceId === invoice.invoiceId);
+        const exists = existingInvoices.some(inv => this.invoiceIdsMatch(inv.invoiceId, invoice.invoiceId));
         
         let updatedInvoices;
         if (!exists) {
           updatedInvoices = [...existingInvoices, savedInvoice];
         } else {
           updatedInvoices = existingInvoices.map(inv => 
-            inv.invoiceId === invoice.invoiceId ? savedInvoice : inv
+            this.invoiceIdsMatch(inv.invoiceId, invoice.invoiceId) ? savedInvoice : inv
           );
         }
         
@@ -1611,7 +1866,10 @@ class InvoiceService {
     try {
       // Query Firestore for invoice with matching invoiceId
       const invoicesRef = collection(db, 'invoices');
-      const q = query(invoicesRef, where('invoiceId', '==', invoiceId), limit(1));
+      const variants = this.getInvoiceIdVariants(invoiceId);
+      const q = variants.length > 1
+        ? query(invoicesRef, where('invoiceId', 'in', variants), limit(1))
+        : query(invoicesRef, where('invoiceId', '==', invoiceId), limit(1));
       const snapshot = await getDocs(q);
       
       if (!snapshot.empty) {
@@ -1624,7 +1882,7 @@ class InvoiceService {
 
       // Fallback to cache if not found in Firestore
       const cachedInvoices = await this._getCachedInvoices();
-      return cachedInvoices.find(invoice => invoice.invoiceId === invoiceId) || null;
+      return cachedInvoices.find(invoice => this.invoiceIdsMatch(invoice.invoiceId, invoiceId)) || null;
     } catch (error) {
       console.error('Error getting invoice by ID:', error);
       return null;
@@ -1636,6 +1894,7 @@ class InvoiceService {
    */
   static async updateInvoiceStatus(invoiceId, status, paymentMethod = null) {
     try {
+      const isMarkingPaid = String(status || '').trim().toLowerCase() === 'paid';
       const paidDate = status === 'Paid' 
         ? new Date().toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
         : null;
@@ -1650,10 +1909,15 @@ class InvoiceService {
 
       // PRIMARY: Update in Firestore
       const invoicesRef = collection(db, 'invoices');
-      const q = query(invoicesRef, where('invoiceId', '==', invoiceId), limit(1));
+      const variants = this.getInvoiceIdVariants(invoiceId);
+      const q = variants.length > 1
+        ? query(invoicesRef, where('invoiceId', 'in', variants), limit(1))
+        : query(invoicesRef, where('invoiceId', '==', invoiceId), limit(1));
       const snapshot = await getDocs(q);
 
       if (!snapshot.empty) {
+        const existingInvoiceData = snapshot.docs[0].data() || {};
+        const previousStatus = String(existingInvoiceData?.status || '').trim().toLowerCase();
         const docRef = doc(db, 'invoices', snapshot.docs[0].id);
         await setDoc(docRef, updateData, { merge: true });
 
@@ -1661,7 +1925,7 @@ class InvoiceService {
         try {
           const cachedInvoices = await this._getCachedInvoices();
           const updatedInvoices = cachedInvoices.map(inv => 
-            inv.invoiceId === invoiceId ? { ...inv, ...updateData } : inv
+            this.invoiceIdsMatch(inv.invoiceId, invoiceId) ? { ...inv, ...updateData } : inv
           );
           await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(updatedInvoices));
         } catch (cacheError) {
@@ -1670,6 +1934,18 @@ class InvoiceService {
 
         // Update corresponding appointment
         await this.updateAppointmentInvoiceStatus(invoiceId, status, paymentMethod);
+
+        if (isMarkingPaid && previousStatus === 'overdue') {
+          await this._notifyFinancialAdminsOverduePayment({
+            invoiceId,
+            invoiceData: {
+              ...existingInvoiceData,
+              ...updateData,
+              invoiceId: existingInvoiceData?.invoiceId || invoiceId,
+            },
+            paymentMethod,
+          });
+        }
       } else {
         throw new Error(`Invoice ${invoiceId} not found in Firestore`);
       }
@@ -1684,6 +1960,7 @@ class InvoiceService {
    */
   static async updateAppointmentInvoiceStatus(invoiceId, status, paymentMethod = null) {
     try {
+      const variants = this.getInvoiceIdVariants(invoiceId);
       // Get all appointments
       const appointmentKeys = await this.getAppointmentStorageKeys();
       if (appointmentKeys.length === 0) {
@@ -1707,7 +1984,11 @@ class InvoiceService {
         }
 
         const updatedAppointments = appointments.map(appointment => {
-          if (appointment.invoiceId === invoiceId) {
+          const matches = variants.length > 0
+            ? variants.some(v => this.invoiceIdsMatch(appointment?.invoiceId, v))
+            : this.invoiceIdsMatch(appointment?.invoiceId, invoiceId);
+
+          if (matches) {
             updated = true;
             const updates = {
               ...appointment,
@@ -1747,15 +2028,63 @@ class InvoiceService {
    */
   static async shareInvoice(invoice) {
     try {
-      if (await Sharing.isAvailableAsync()) {
-        await Sharing.shareAsync(invoice.pdfUri, {
-          mimeType: 'application/pdf',
-          dialogTitle: `Invoice ${invoice.invoiceId}`,
-          UTI: 'com.adobe.pdf'
-        });
-      } else {
-        // Sharing is not available on this platform
+      if (!invoice || typeof invoice !== 'object') throw new Error('Missing invoice');
+      if (!(await Sharing.isAvailableAsync())) {
+        return;
       }
+
+      const invoiceId = invoice.invoiceId || invoice.invoiceNumber || 'Invoice';
+
+      // Always generate a fresh PDF from the current invoice object so the shared
+      // document matches what the UI is previewing (avoids stale/mismatched pdfUri).
+      let uriToShare = null;
+      try {
+        const items = Array.isArray(invoice.items) && invoice.items.length > 0
+          ? invoice.items
+          : [
+              {
+                description: invoice.service || 'Service',
+                detailedDescription: invoice.service
+                  ? `Professional ${String(invoice.service).toLowerCase()} services provided`
+                  : 'Professional healthcare services',
+                quantity: Number(invoice.hours || 1),
+                price: Number(invoice.rate || invoice.total || 0),
+                total: Number(invoice.total || 0),
+                serviceDates: invoice.serviceDate || invoice.date || '',
+                nurseNames: invoice.nurseName || 'Care Professional',
+              },
+            ];
+
+        const invoiceDataForPdf = {
+          ...invoice,
+          invoiceId: invoice.invoiceId || invoice.invoiceNumber || invoiceId,
+          items,
+        };
+
+        invoiceDataForPdf.logoDataUri = await this._getInvoiceLogoDataUri();
+
+        const html = InvoiceImageGenerator.createInvoiceHTML(invoiceDataForPdf);
+        const { uri } = await Print.printToFileAsync({
+          html,
+          base64: false,
+          width: 612,
+          height: 792,
+        });
+        uriToShare = uri;
+      } catch (pdfError) {
+        // Fall back to any stored pdfUri if PDF regeneration fails.
+        uriToShare = invoice.pdfUri || null;
+      }
+
+      if (!uriToShare) {
+        throw new Error('Invoice PDF is not available to share');
+      }
+
+      await Sharing.shareAsync(uriToShare, {
+        mimeType: 'application/pdf',
+        dialogTitle: `Invoice ${invoiceId}`,
+        UTI: 'com.adobe.pdf',
+      });
     } catch (error) {
       // Error sharing invoice
       throw error;
@@ -1768,7 +2097,7 @@ class InvoiceService {
   static async deleteInvoice(invoiceId) {
     try {
       const invoices = await this.getAllInvoices();
-      const invoice = invoices.find(inv => inv.invoiceId === invoiceId);
+      const invoice = invoices.find(inv => this.invoiceIdsMatch(inv.invoiceId, invoiceId));
       
       if (invoice) {
         // Delete PDF file if it exists and path is valid
@@ -1785,7 +2114,7 @@ class InvoiceService {
         }
         
         // Remove from records
-        const updatedInvoices = invoices.filter(inv => inv.invoiceId !== invoiceId);
+        const updatedInvoices = invoices.filter(inv => !this.invoiceIdsMatch(inv.invoiceId, invoiceId));
         await AsyncStorage.setItem(this.STORAGE_KEY, JSON.stringify(updatedInvoices));
       }
     } catch (error) {
@@ -1898,16 +2227,88 @@ class InvoiceService {
     return { subtotal, tax, total };
   }
 
+  static _normalizeInvoiceStatus(invoice) {
+    const raw = invoice?.status ?? invoice?.paymentStatus ?? '';
+    return String(raw).trim().toLowerCase();
+  }
+
+  static _toNumber(value) {
+    const num = typeof value === 'number' ? value : parseFloat(String(value));
+    return Number.isFinite(num) ? num : null;
+  }
+
+  static _getInvoiceTotal(invoice) {
+    const candidates = [invoice?.finalTotal, invoice?.total, invoice?.subtotal, invoice?.amount, invoice?.totalAmount];
+    for (const candidate of candidates) {
+      const parsed = this._toNumber(candidate);
+      if (parsed !== null) return parsed;
+    }
+    return 0;
+  }
+
+  static _getInvoicePaidAmount(invoice) {
+    const paidCandidates = [invoice?.paidAmount, invoice?.amountPaid, invoice?.paid, invoice?.depositPaid];
+    let paid = null;
+    for (const candidate of paidCandidates) {
+      const parsed = this._toNumber(candidate);
+      if (parsed !== null) {
+        paid = parsed;
+        break;
+      }
+    }
+
+    const payments = Array.isArray(invoice?.payments) ? invoice.payments : [];
+    const paymentsTotal = payments.reduce((sum, payment) => {
+      const amount = this._toNumber(payment?.amount);
+      return sum + (amount ?? 0);
+    }, 0);
+
+    if (paid === null) return paymentsTotal;
+    return Math.max(paid, paymentsTotal);
+  }
+
+  static _getInvoiceOutstandingAmount(invoice) {
+    const explicitOutstanding = this._toNumber(invoice?.outstandingAmount ?? invoice?.balance ?? invoice?.amountDue);
+    if (explicitOutstanding !== null) return explicitOutstanding;
+    const total = this._getInvoiceTotal(invoice);
+    const paid = this._getInvoicePaidAmount(invoice);
+    return Math.max(0, total - (paid ?? 0));
+  }
+
+  static _isInvoicePaid(invoice) {
+    const status = this._normalizeInvoiceStatus(invoice);
+    if (status === 'paid' || status === 'complete' || status === 'completed') return true;
+    if (String(invoice?.paymentStatus ?? '').trim().toLowerCase() === 'paid') return true;
+    if (invoice?.isPaid === true) return true;
+    if (invoice?.paid === true) return true;
+    return this._getInvoiceOutstandingAmount(invoice) <= 0;
+  }
+
+  static _invoiceMatchesUser(invoice, userId) {
+    if (!userId) return true;
+    const invoiceClientId = invoice?.clientId ?? invoice?.patientId ?? invoice?.userId ?? null;
+    if (!invoiceClientId) return false;
+    return String(invoiceClientId) === String(userId);
+  }
+
   // Check for overdue invoices
-  static async getOverdueInvoices() {
+  static async getOverdueInvoices(options = null) {
     try {
+      const opts = options && typeof options === 'object' ? options : {};
+      const userId = opts.userId ?? opts.clientId ?? null;
       const allInvoices = await this.getAllInvoices();
       const today = new Date();
       
       const overdueInvoices = allInvoices.filter(invoice => {
-        if (invoice.status === 'Paid') return false;
-        
-        const dueDate = new Date(invoice.dueDate);
+        if (userId && !this._invoiceMatchesUser(invoice, userId)) return false;
+        if (this._isInvoicePaid(invoice)) return false;
+
+        const outstanding = this._getInvoiceOutstandingAmount(invoice);
+        if (!(outstanding > 0)) return false;
+
+        const dueDate = this.parseDateInput(invoice?.dueDate) || new Date(invoice?.dueDate);
+        if (!(dueDate instanceof Date) || isNaN(dueDate.getTime())) return false;
+
         return dueDate < today;
       });
 
@@ -1919,37 +2320,46 @@ class InvoiceService {
   }
 
   // Send overdue payment notifications
-  static async sendOverdueNotifications() {
+  static async sendOverdueNotifications(options = null) {
     try {
-      const overdueInvoices = await this.getOverdueInvoices();
+      const opts = options && typeof options === 'object' ? options : {};
+      const role = String(opts.role ?? '').trim().toLowerCase();
+      const overdueInvoices = Array.isArray(opts.overdueInvoices)
+        ? opts.overdueInvoices
+        : await this.getOverdueInvoices(opts);
       
       if (overdueInvoices.length === 0) return [];
 
       const notifications = [];
       
       for (const invoice of overdueInvoices) {
-        // Patient notification
-        const patientNotification = {
-          title: 'Payment Overdue',
-          body: `Your payment for invoice ${invoice.invoiceId} is overdue. Please settle your account.`,
-          data: {
-            type: 'overdue_payment',
-            invoiceId: invoice.invoiceId,
-            amount: invoice.total
-          }
-        };
+        const total = this._getInvoiceTotal(invoice);
+        const outstanding = this._getInvoiceOutstandingAmount(invoice);
 
-        // Admin notification
-        const adminNotification = {
-          title: 'Overdue Payment Alert',
-          body: `Invoice ${invoice.invoiceId} for ${invoice.clientName} is overdue ($${invoice.total})`,
-          data: {
-            type: 'overdue_payment_admin',
-            invoiceId: invoice.invoiceId,
-            clientName: invoice.clientName,
-            amount: invoice.total
-          }
-        };
+        const patientNotification = role === 'patient' || !role
+          ? {
+              title: 'Payment Overdue',
+              body: `Your payment for invoice ${invoice.invoiceId} is overdue. Please settle your account.`,
+              data: {
+                type: 'overdue_payment',
+                invoiceId: invoice.invoiceId,
+                amount: outstanding,
+              },
+            }
+          : null;
+
+        const adminNotification = role && role !== 'patient'
+          ? {
+              title: 'Overdue Payment Alert',
+              body: `Invoice ${invoice.invoiceId} for ${invoice.clientName} is overdue ($${total})`,
+              data: {
+                type: 'overdue_payment_admin',
+                invoiceId: invoice.invoiceId,
+                clientName: invoice.clientName,
+                amount: outstanding,
+              },
+            }
+          : null;
 
         notifications.push({ patient: patientNotification, admin: adminNotification, invoice });
       }

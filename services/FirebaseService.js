@@ -35,6 +35,41 @@ const logUsernameLookupWarning = (...args) => {
 };
 
 class FirebaseService {
+  // ==================== HELPERS ====================
+  
+  /**
+   * Recursively sanitize data for Firestore by removing undefined values
+   * Firestore rejects undefined but accepts null
+   */
+  static sanitizeFirestoreData(value) {
+    if (value === undefined) {
+      return undefined;
+    }
+    
+    if (Array.isArray(value)) {
+      return value.map((item) => {
+        const sanitizedItem = FirebaseService.sanitizeFirestoreData(item);
+        // Convert undefined to null in arrays (Firestore-safe)
+        return sanitizedItem === undefined ? null : sanitizedItem;
+      });
+    }
+    
+    if (value && typeof value === 'object' && 
+        !(value instanceof Date) && !(value instanceof Timestamp)) {
+      const sanitized = {};
+      Object.keys(value).forEach((key) => {
+        const sanitizedValue = FirebaseService.sanitizeFirestoreData(value[key]);
+        // Only add key if the sanitized value is not undefined
+        if (sanitizedValue !== undefined) {
+          sanitized[key] = sanitizedValue;
+        }
+      });
+      return sanitized;
+    }
+    
+    return value;
+  }
+  
   // ==================== USER OPERATIONS ====================
   
   /**
@@ -43,11 +78,17 @@ class FirebaseService {
   static async createUser(userId, userData) {
     try {
       const userRef = doc(db, USERS_COLLECTION, userId);
+      
+      // Sanitize userData to remove undefined values
+      const sanitizedUserData = FirebaseService.sanitizeFirestoreData(userData || {}) || {};
+      
       const userWithTimestamp = {
-        ...userData,
+        ...sanitizedUserData,
+        country: sanitizedUserData.country || 'Jamaica', // Default country
         createdAt: Timestamp.now(),
         updatedAt: Timestamp.now(),
       };
+      
       await setDoc(userRef, userWithTimestamp);
       return { success: true, user: userWithTimestamp };
     } catch (error) {
@@ -861,9 +902,9 @@ class FirebaseService {
         orderBy('createdAt', 'desc')
       );
       const querySnapshot = await getDocs(q);
-      const payslips = querySnapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data(),
+      const payslips = querySnapshot.docs.map((docSnap) => ({
+        ...docSnap.data(),
+        id: docSnap.id,
       }));
       return { success: true, payslips };
     } catch (error) {

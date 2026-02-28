@@ -13,7 +13,7 @@ export const getDeviceId = async () => {
 
   try {
     // Try to get existing device ID from storage
-    const storedDeviceId = await AsyncStorage.getItem('@care_device_id');
+    const storedDeviceId = await AsyncStorage.getItem('@876_device_id');
     
     if (storedDeviceId) {
       cachedDeviceId = storedDeviceId;
@@ -32,7 +32,7 @@ export const getDeviceId = async () => {
       .substring(0, 50);
 
     // Store for future use
-    await AsyncStorage.setItem('@care_device_id', newDeviceId);
+    await AsyncStorage.setItem('@876_device_id', newDeviceId);
     cachedDeviceId = newDeviceId;
     
     console.log('📱 Generated new device ID:', newDeviceId);
@@ -55,7 +55,7 @@ export const getDeviceStorageKey = async (baseKey) => {
 // Clear device ID (useful for testing)
 export const clearDeviceId = async () => {
   try {
-    await AsyncStorage.removeItem('@care_device_id');
+    await AsyncStorage.removeItem('@876_device_id');
     cachedDeviceId = null;
     console.log('🗑️ Device ID cleared');
   } catch (error) {

@@ -22,19 +22,119 @@ export const NotificationProvider = ({ children }) => {
   const [pushToken, setPushToken] = useState(null);
   const [pushPermissionStatus, setPushPermissionStatus] = useState('undetermined');
 
-  const STORAGE_KEY = '@care_notifications';
+  const STORAGE_KEY = '@876_notifications';
+
+  const READ_LEDGER_KEY = '@876_notifications_read_ledger';
+
+  const getUserStorageKey = (userId) => `${STORAGE_KEY}_${userId}`;
+  const getUserReadLedgerKey = (userId) => `${READ_LEDGER_KEY}_${userId}`;
+
+  const toTimestampMillis = (value) => {
+    if (!value) return 0;
+
+    if (value instanceof Date) {
+      const ms = value.getTime();
+      return Number.isFinite(ms) ? ms : 0;
+    }
+
+    // Firestore Timestamp
+    if (typeof value === 'object') {
+      if (typeof value.toDate === 'function') {
+        const d = value.toDate();
+        return d instanceof Date && Number.isFinite(d.getTime()) ? d.getTime() : 0;
+      }
+
+      const seconds =
+        typeof value.seconds === 'number'
+          ? value.seconds
+          : typeof value._seconds === 'number'
+            ? value._seconds
+            : null;
+      if (typeof seconds === 'number' && Number.isFinite(seconds)) {
+        return Math.round(seconds * 1000);
+      }
+    }
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      // treat < 1e12 as seconds, else millis
+      return value < 1e12 ? Math.round(value * 1000) : Math.round(value);
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return 0;
+      const asNumber = Number(trimmed);
+      if (Number.isFinite(asNumber)) {
+        return asNumber < 1e12 ? Math.round(asNumber * 1000) : Math.round(asNumber);
+      }
+      const d = new Date(trimmed);
+      const ms = d.getTime();
+      return Number.isFinite(ms) ? ms : 0;
+    }
+
+    const d = new Date(value);
+    const ms = d.getTime();
+    return Number.isFinite(ms) ? ms : 0;
+  };
+
+  const sortNotificationsNewestFirst = (list) => {
+    const arr = Array.isArray(list) ? [...list] : [];
+    arr.sort((a, b) => {
+      const aMs = toTimestampMillis(a?.timestamp);
+      const bMs = toTimestampMillis(b?.timestamp);
+      if (bMs !== aMs) return bMs - aMs;
+      // Tie-breaker for stable ordering
+      return String(b?.id || '').localeCompare(String(a?.id || ''));
+    });
+    return arr;
+  };
 
   // Load notifications from storage
   const loadNotifications = async () => {
     if (!user?.id) return;
     
     try {
-      const userKey = `${STORAGE_KEY}_${user.id}`;
+      const userKey = getUserStorageKey(user.id);
       const stored = await AsyncStorage.getItem(userKey);
       if (stored) {
-        const notificationList = JSON.parse(stored);
+        const notificationList = sortNotificationsNewestFirst(JSON.parse(stored));
         setNotifications(notificationList);
         updateUnreadCount(notificationList);
+
+        // Best-effort: hydrate the read ledger from stored notifications
+        try {
+          const ledgerKey = getUserReadLedgerKey(user.id);
+          const nextLedger = {};
+          notificationList.forEach((n) => {
+            if (n?.read || n?.isRead) {
+              if (n.id) nextLedger[`id:${String(n.id)}`] = true;
+              const legacyKey = `${n.title}|${n.message}|${n.data?.type || n.type}`;
+              nextLedger[`legacy:${legacyKey}`] = true;
+
+              const data = n?.data || {};
+              const type = data?.type || n?.type || '';
+              const ids = [
+                data?.notificationId,
+                data?.conversationId,
+                data?.appointmentId,
+                data?.shiftRequestId,
+                data?.shiftId,
+                data?.invoiceId,
+                data?.orderId,
+                data?.requestId,
+                data?.assignmentId,
+                data?.messageId,
+              ]
+                .filter(Boolean)
+                .map((v) => String(v));
+              const richKey = `${type}|${ids.join('|')}|${n?.title || ''}|${n?.message || ''}`;
+              nextLedger[`rich:${richKey}`] = true;
+            }
+          });
+          await AsyncStorage.mergeItem(ledgerKey, JSON.stringify(nextLedger));
+        } catch (e) {
+          // Ignore ledger hydration errors
+        }
       }
     } catch (error) {
       console.error('Failed to load notifications:', error);
@@ -53,20 +153,64 @@ export const NotificationProvider = ({ children }) => {
           // Get current local notifications to preserve read status
           // This prevents "unread" status from server overwriting local "read" status
           // before the server has processed the read update
-          const userKey = `${STORAGE_KEY}_${user.id}`;
+          const userKey = getUserStorageKey(user.id);
           const storedLocal = await AsyncStorage.getItem(userKey);
           const localReadStatus = {};
+
+          const notificationReadKey = (n) => {
+            const data = n?.data || {};
+            const type = data?.type || n?.type || '';
+
+            const ids = [
+              data?.notificationId,
+              data?.conversationId,
+              data?.appointmentId,
+              data?.shiftRequestId,
+              data?.shiftId,
+              data?.invoiceId,
+              data?.orderId,
+              data?.requestId,
+              data?.assignmentId,
+              data?.messageId,
+            ]
+              .filter(Boolean)
+              .map((v) => String(v));
+
+            // Title/message are fallbacks (may be unstable); IDs in data are preferred.
+            return `${type}|${ids.join('|')}|${n?.title || ''}|${n?.message || ''}`;
+          };
+
+          // Merge in the persisted read ledger first (most reliable)
+          try {
+            const ledgerKey = getUserReadLedgerKey(user.id);
+            const ledgerRaw = await AsyncStorage.getItem(ledgerKey);
+            if (ledgerRaw) {
+              const ledger = JSON.parse(ledgerRaw);
+              if (ledger && typeof ledger === 'object') {
+                Object.keys(ledger).forEach((k) => {
+                  if (ledger[k]) localReadStatus[k] = true;
+                });
+              }
+            }
+          } catch (e) {
+            // Ignore ledger read errors
+          }
           
           if (storedLocal) {
             try {
               const localList = JSON.parse(storedLocal);
               if (Array.isArray(localList)) {
                 localList.forEach(n => {
-                  if (n.read) {
-                    if (n.id) localReadStatus[n.id] = true;
-                    // Also map by title/message for the deduplication key logic if IDs don't match
-                    const key = `${n.title}|${n.message}|${n.data?.type || n.type}`;
-                    localReadStatus[key] = true;
+                  if (n?.read || n?.isRead) {
+                    if (n.id) localReadStatus[`id:${String(n.id)}`] = true;
+
+                    // Title/message/type dedupe key (legacy fallback)
+                    const legacyKey = `${n.title}|${n.message}|${n.data?.type || n.type}`;
+                    localReadStatus[`legacy:${legacyKey}`] = true;
+
+                    // More stable key using IDs embedded in data (preferred)
+                    const richKey = notificationReadKey(n);
+                    localReadStatus[`rich:${richKey}`] = true;
                   }
                 });
               }
@@ -76,16 +220,30 @@ export const NotificationProvider = ({ children }) => {
           }
 
           const notificationList = firebaseNotifs.map(notif => {
-            const id = notif.id?.toString() || `notif_${notif._id || Date.now()}`;
-            const key = `${notif.title}|${notif.message}|${notif.data?.type || notif.type}`;
+            const id = notif.id?.toString() || (notif._id ? String(notif._id) : null) || `notif_${Date.now()}`;
+            const legacyKey = `${notif.title}|${notif.message}|${notif.data?.type || notif.type}`;
+            const richKey = notificationReadKey({
+              id,
+              title: notif.title,
+              message: notif.message,
+              type: notif.type,
+              data: notif.data || {},
+            });
             
             // Check if locally read
-            const isLocallyRead = localReadStatus[id] || localReadStatus[key];
+            const isLocallyRead =
+              localReadStatus[`id:${id}`] ||
+              localReadStatus[`rich:${richKey}`] ||
+              localReadStatus[`legacy:${legacyKey}`];
+
+            const isReadFromServer = Boolean(notif.isRead) || Boolean(notif.read);
+            const isRead = Boolean(isLocallyRead || isReadFromServer);
 
             return {
               id: id,
               timestamp: notif.sentAt || notif.createdAt || new Date().toISOString(),
-              read: isLocallyRead || notif.isRead || false,
+              read: isRead,
+              isRead: isRead,
               title: notif.title,
               message: notif.message,
               type: notif.type || 'system',
@@ -109,11 +267,30 @@ export const NotificationProvider = ({ children }) => {
             }
           }
           
-          setNotifications(deduplicatedNotifications);
-          updateUnreadCount(deduplicatedNotifications);
+          const sorted = sortNotificationsNewestFirst(deduplicatedNotifications);
+          setNotifications(sorted);
+          updateUnreadCount(sorted);
           
           // Also save to local storage for offline access
-          await AsyncStorage.setItem(userKey, JSON.stringify(deduplicatedNotifications));
+          await AsyncStorage.setItem(userKey, JSON.stringify(sorted));
+
+          // Update the read ledger based on whatever is now considered read
+          try {
+            const ledgerKey = getUserReadLedgerKey(user.id);
+            const nextLedger = {};
+            sorted.forEach((n) => {
+              if (n?.read || n?.isRead) {
+                if (n.id) nextLedger[`id:${String(n.id)}`] = true;
+                const legacyKey = `${n.title}|${n.message}|${n.data?.type || n.type}`;
+                nextLedger[`legacy:${legacyKey}`] = true;
+                const richKey = notificationReadKey(n);
+                nextLedger[`rich:${richKey}`] = true;
+              }
+            });
+            await AsyncStorage.mergeItem(ledgerKey, JSON.stringify(nextLedger));
+          } catch (e) {
+            // Ignore ledger write errors
+          }
           return;
         }
       } catch (backendError) {
@@ -121,7 +298,7 @@ export const NotificationProvider = ({ children }) => {
       }
       
       // Fallback to local storage
-      const userKey = `${STORAGE_KEY}_${user.id}`;
+      const userKey = getUserStorageKey(user.id);
       const stored = await AsyncStorage.getItem(userKey);
       if (stored) {
         let notificationList = JSON.parse(stored);
@@ -130,6 +307,8 @@ export const NotificationProvider = ({ children }) => {
         notificationList = Array.from(
           new Map(notificationList.map(item => [item.id, item])).values()
         );
+
+        notificationList = sortNotificationsNewestFirst(notificationList);
         
         // Only update if there are new notifications
         if (notificationList.length !== notifications.length || 
@@ -264,7 +443,7 @@ export const NotificationProvider = ({ children }) => {
       return newNotification;
     }
 
-    const updatedNotifications = [newNotification, ...notifications];
+    const updatedNotifications = sortNotificationsNewestFirst([newNotification, ...notifications]);
     setNotifications(updatedNotifications);
     updateUnreadCount(updatedNotifications);
     await saveNotifications(updatedNotifications);
@@ -304,14 +483,47 @@ export const NotificationProvider = ({ children }) => {
     updateUnreadCount(updatedNotifications);
     await saveNotifications(updatedNotifications);
 
-    // Also update on backend
+    // Persist to read ledger so refresh/polling cannot revert it
     try {
-      await ApiService.makeRequest(`/notifications/${notificationId}/read`, {
-        method: 'PUT'
-      });
-      // Notification marked as read on backend
+      if (user?.id) {
+        const ledgerKey = getUserReadLedgerKey(user.id);
+        const n = updatedNotifications.find((x) => x?.id === notificationId);
+        if (n) {
+          const data = n?.data || {};
+          const type = data?.type || n?.type || '';
+          const ids = [
+            data?.notificationId,
+            data?.conversationId,
+            data?.appointmentId,
+            data?.shiftRequestId,
+            data?.shiftId,
+            data?.invoiceId,
+            data?.orderId,
+            data?.requestId,
+            data?.assignmentId,
+            data?.messageId,
+          ]
+            .filter(Boolean)
+            .map((v) => String(v));
+          const richKey = `${type}|${ids.join('|')}|${n?.title || ''}|${n?.message || ''}`;
+          const legacyKey = `${n.title}|${n.message}|${n.data?.type || n.type}`;
+          const patch = {
+            [`id:${String(notificationId)}`]: true,
+            [`legacy:${legacyKey}`]: true,
+            [`rich:${richKey}`]: true,
+          };
+          await AsyncStorage.mergeItem(ledgerKey, JSON.stringify(patch));
+        }
+      }
+    } catch (e) {
+      // Ignore ledger update errors
+    }
+
+    // Also update on backend (Firestore)
+    try {
+      await ApiService.markNotificationRead(notificationId);
     } catch (error) {
-      console.warn('⚠️ Failed to mark notification as read on backend:', error.message);
+      console.warn('⚠️ Failed to mark notification as read in Firestore:', error.message);
     }
   };
 
@@ -327,14 +539,53 @@ export const NotificationProvider = ({ children }) => {
     updateUnreadCount(updatedNotifications);
     await saveNotifications(updatedNotifications);
 
-    // Also update on backend
+    // Persist all read keys into the ledger so refresh/polling cannot revert
     try {
-      await ApiService.makeRequest('/notifications/mark-all-read/true', {
-        method: 'PUT'
-      });
-      // All notifications marked as read on backend
+      if (user?.id) {
+        const ledgerKey = getUserReadLedgerKey(user.id);
+        const patch = {};
+        updatedNotifications.forEach((n) => {
+          if (!n) return;
+          if (n.id) patch[`id:${String(n.id)}`] = true;
+          const legacyKey = `${n.title}|${n.message}|${n.data?.type || n.type}`;
+          patch[`legacy:${legacyKey}`] = true;
+          const data = n?.data || {};
+          const type = data?.type || n?.type || '';
+          const ids = [
+            data?.notificationId,
+            data?.conversationId,
+            data?.appointmentId,
+            data?.shiftRequestId,
+            data?.shiftId,
+            data?.invoiceId,
+            data?.orderId,
+            data?.requestId,
+            data?.assignmentId,
+            data?.messageId,
+          ]
+            .filter(Boolean)
+            .map((v) => String(v));
+          const richKey = `${type}|${ids.join('|')}|${n?.title || ''}|${n?.message || ''}`;
+          patch[`rich:${richKey}`] = true;
+        });
+        await AsyncStorage.mergeItem(ledgerKey, JSON.stringify(patch));
+      }
+    } catch (e) {
+      // Ignore ledger update errors
+    }
+
+    // Also update on backend (Firestore)
+    try {
+      const unreadIds = notifications
+        .filter((n) => !n?.read)
+        .map((n) => n.id)
+        .filter(Boolean);
+
+      if (unreadIds.length > 0) {
+        await Promise.allSettled(unreadIds.map((id) => ApiService.markNotificationRead(id)));
+      }
     } catch (error) {
-      console.warn('⚠️ Failed to mark all notifications as read on backend:', error.message);
+      console.warn('⚠️ Failed to mark all notifications as read in Firestore:', error.message);
     }
   };
 
@@ -619,7 +870,7 @@ export const NotificationProvider = ({ children }) => {
       
       // Also store in global pool for better cross-device sync
       try {
-        const globalNotificationKey = `@care_notifications_global`;
+        const globalNotificationKey = `@876_notifications_global`;
         const globalNotifications = await AsyncStorage.getItem(globalNotificationKey);
         let allNotifications = globalNotifications ? JSON.parse(globalNotifications) : [];
         

@@ -149,7 +149,7 @@ const RecentTransactionsScreen = ({ navigation }) => {
   const [newPaymentModalVisible, setNewPaymentModalVisible] = useState(false);
   const [selectedPayslip, setSelectedPayslip] = useState(null);
   const [companyDetails, setCompanyDetails] = useState({
-    companyName: 'CARE Nursing Services and More',
+    companyName: '876Nurses Home Care Services Limited',
     address: 'Kingston, Jamaica',
     city: 'Kingston, Jamaica',
     phone: '876-288-7304',
@@ -1269,6 +1269,17 @@ const RecentTransactionsScreen = ({ navigation }) => {
   // Save payslip to nurse profile when marked as paid
   const savePayslipToNurseProfile = async (payslip) => {
     try {
+      const buildPayslipIdentity = (p) => {
+        if (!p) return '';
+        const explicit = p.id || p.payslipNumber || p.mongoId;
+        if (explicit) return String(explicit);
+        const staff = p.staffId || p.employeeId || p.nurseCode || p.code || p.staffName || 'unknown';
+        const periodStart = p.periodStart || '';
+        const periodEnd = p.periodEnd || '';
+        const amount = p.netPay ?? '';
+        return `${staff}-${periodStart}-${periodEnd}-${amount}`;
+      };
+
       // Get existing nurse payslips
       const existingPayslipsJson = await AsyncStorage.getItem('nursePayslips');
       const existingPayslips = existingPayslipsJson ? JSON.parse(existingPayslipsJson) : {};
@@ -1288,6 +1299,9 @@ const RecentTransactionsScreen = ({ navigation }) => {
         payslip.code,
         payslip.staffId,
       ].filter(Boolean);
+
+      // Avoid writing to the same bucket multiple times (some IDs overlap).
+      const uniqueKeyCandidates = Array.from(new Set(keyCandidates.map((k) => String(k))));
       
       // Add payslip to nurse's array
       const payslipRecord = {
@@ -1296,12 +1310,25 @@ const RecentTransactionsScreen = ({ navigation }) => {
         paidDate: payslip.paidDate || new Date().toISOString(),
       };
 
+      const identity = buildPayslipIdentity(payslipRecord);
+
       // Save under all candidate keys so NurseProfileScreen can find it regardless of id format.
-      keyCandidates.forEach((key) => {
+      uniqueKeyCandidates.forEach((key) => {
         if (!existingPayslips[key]) {
           existingPayslips[key] = [];
         }
-        existingPayslips[key].push(payslipRecord);
+
+        const list = Array.isArray(existingPayslips[key]) ? existingPayslips[key] : [];
+        const existingIndex = list.findIndex((p) => buildPayslipIdentity(p) === identity);
+        if (existingIndex >= 0) {
+          list[existingIndex] = {
+            ...list[existingIndex],
+            ...payslipRecord,
+          };
+        } else {
+          list.push(payslipRecord);
+        }
+        existingPayslips[key] = list;
       });
       
       // Save back to AsyncStorage

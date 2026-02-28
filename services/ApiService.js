@@ -402,7 +402,16 @@ class ApiService {
         throw new Error('Appointment not found');
       }
     } catch (error) {
-      console.error('Error fetching appointment by ID:', error);
+      const message = error?.message || String(error);
+      // "Appointment not found" is an expected outcome in parts of the admin flow
+      // where we intentionally fall back to shiftRequests.
+      if (String(message).toLowerCase().includes('appointment not found')) {
+        if (__DEV__) {
+          console.log('Appointment not found (will fall back to shift request):', appointmentId);
+        }
+      } else {
+        console.error('Error fetching appointment by ID:', error);
+      }
       throw error;
     }
   }
@@ -1050,17 +1059,35 @@ class ApiService {
       const existingNotesHistory = Array.isArray(shiftDoc?.notesHistory)
         ? [...shiftDoc.notesHistory]
         : [];
+      const isAdminRecurring =
+        shiftDoc?.adminRecurring === true ||
+        String(shiftDoc?.adminRecurring || '').trim().toLowerCase() === 'true';
+      const isPatientRecurring =
+        shiftDoc?.isRecurring === true ||
+        String(shiftDoc?.isRecurring || '').trim().toLowerCase() === 'true' ||
+        (shiftDoc?.recurringSchedule && typeof shiftDoc.recurringSchedule === 'object') ||
+        (shiftDoc?.recurringPattern && typeof shiftDoc.recurringPattern === 'object');
+
+      // Detect recurring series across both admin-created and patient-created formats.
       const isRecurring = Boolean(
-        shiftDoc?.recurringScheduleId ||
+        isAdminRecurring ||
+          isPatientRecurring ||
+          shiftDoc?.recurringScheduleId ||
           shiftDoc?.recurringPeriodStart ||
           shiftDoc?.recurringPeriodEnd ||
           shiftDoc?.recurringDaysOfWeekList ||
           shiftDoc?.recurringDaysOfWeek ||
-          shiftDoc?.nurseSchedule
+          shiftDoc?.nurseSchedule ||
+          (shiftDoc?.startDate && shiftDoc?.endDate && (shiftDoc?.daysOfWeek || shiftDoc?.selectedDays))
       );
 
       const parseDateOnlyKey = (value) => {
         if (!value) return null;
+        if (typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value.trim())) {
+          const d = new Date(`${value.trim()}T00:00:00`);
+          if (isNaN(d.getTime())) return null;
+          return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
+        }
         const d = new Date(value);
         if (isNaN(d.getTime())) return null;
         return d.getFullYear() * 10000 + (d.getMonth() + 1) * 100 + d.getDate();
@@ -1079,7 +1106,9 @@ class ApiService {
 
       let expectedFinalNurseKey = '';
       if (endDateCandidate) {
-        const endDateObj = new Date(endDateCandidate);
+        const endDateObj = (typeof endDateCandidate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(endDateCandidate.trim()))
+          ? new Date(`${endDateCandidate.trim()}T00:00:00`)
+          : new Date(endDateCandidate);
         if (!isNaN(endDateObj.getTime())) {
           const dow = endDateObj.getDay();
           const raw =
@@ -1277,6 +1306,7 @@ class ApiService {
         ...notificationData,
         createdAt: serverTimestamp(),
         read: false,
+        isRead: false,
       });
       
       const newDoc = await getDoc(docRef);
@@ -1295,6 +1325,7 @@ class ApiService {
       const docRef = doc(db, COLLECTIONS.NOTIFICATIONS, notificationId);
       await updateDoc(docRef, {
         read: true,
+        isRead: true,
         readAt: serverTimestamp(),
       });
       return { success: true };
@@ -1990,9 +2021,9 @@ class ApiService {
       }
 
       const snapshot = await getDocs(q);
-      return snapshot.docs.map(doc => ({
-        id: doc.id,
-        ...doc.data()
+      return snapshot.docs.map((docSnap) => ({
+        ...docSnap.data(),
+        id: docSnap.id,
       }));
     } catch (error) {
       console.error('Error fetching payslips:', error);

@@ -27,10 +27,10 @@ import { useNotifications } from '../context/NotificationContext';
 import useWindowDimensions from '../hooks/useWindowDimensions';
 import ApiService from '../services/ApiService';
 
-const PRODUCTS_STORAGE_KEY = '@care_store_products';
-const CART_STORAGE_KEY = '@care_store_cart';
-const ORDERS_STORAGE_KEY = '@care_store_orders';
-const ONBOARDING_COMPLETE_KEY = '@care_store_onboarding_complete';
+const PRODUCTS_STORAGE_KEY = '@876_store_products';
+const CART_STORAGE_KEY = '@876_store_cart';
+const ORDERS_STORAGE_KEY = '@876_store_orders';
+const ONBOARDING_COMPLETE_KEY = '@876_store_onboarding_complete';
 
 // Onboarding steps configuration
 const ONBOARDING_STEPS = [
@@ -420,7 +420,7 @@ export default function CareStoreScreen({ navigation }) {
                   currency: selectedCurrency,
                 };
 
-                const ordersKey = '@care_store_orders';
+                const ordersKey = '@876_store_orders';
                 const existingOrders = await AsyncStorage.getItem(ordersKey);
                 const orders = existingOrders ? JSON.parse(existingOrders) : [];
                 orders.unshift(newOrder);
@@ -489,7 +489,7 @@ export default function CareStoreScreen({ navigation }) {
                   }]
                 };
 
-                const invoicesKey = '@care_invoices';
+                const invoicesKey = '@876_invoices';
                 const existingInvoices = await AsyncStorage.getItem(invoicesKey);
                 const invoices = existingInvoices ? JSON.parse(existingInvoices) : [];
                 invoices.unshift(newInvoice);
@@ -734,7 +734,7 @@ export default function CareStoreScreen({ navigation }) {
                   date: new Date().toISOString()
                 };
                 
-                const ordersKey = '@care_store_orders';
+                const ordersKey = '@876_store_orders';
                 const existingOrders = await AsyncStorage.getItem(ordersKey);
                 const orders = existingOrders ? JSON.parse(existingOrders) : [];
                 orders.unshift(newOrder);
@@ -792,7 +792,7 @@ export default function CareStoreScreen({ navigation }) {
                   createdAt: new Date().toISOString()
                 };
                 
-                const invoicesKey = '@care_invoices';
+                const invoicesKey = '@876_invoices';
                 const existingInvoices = await AsyncStorage.getItem(invoicesKey);
                 const invoices = existingInvoices ? JSON.parse(existingInvoices) : [];
                 invoices.unshift(newInvoice);
@@ -907,7 +907,7 @@ export default function CareStoreScreen({ navigation }) {
         colors={GRADIENTS.header}
         style={[styles.header, { paddingTop: insets.top + 20 }]}
       >
-        <Text style={styles.headerTitle}>CARE Store</Text>
+        <Text style={styles.headerTitle}>876Nurses Store</Text>
         <View style={styles.headerContent}>
           <View style={styles.headerLeftButtons}>
             <TouchableWeb

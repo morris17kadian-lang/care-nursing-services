@@ -9,6 +9,8 @@ const STORAGE_KEYS = {
   servicesCatalogVersion: 'servicesCatalogVersion',
 };
 
+const normalizeTitle = (title) => String(title || '').trim().toLowerCase();
+
 const LEGACY_DEFAULT_SERVICE_TITLES = new Set([
   'Dressings',
   'Medication Administration',
@@ -34,7 +36,20 @@ const LEGACY_DEFAULT_SERVICE_TITLES = new Set([
   'Alternative Post Op Care',
 ]);
 
-const normalizeTitle = (title) => String(title || '').trim().toLowerCase();
+// Services we explicitly remove from the selectable catalog
+const REMOVED_SERVICE_TITLES = new Set(
+  [
+    'Home Care Assistance',
+    'Home Care',
+    'Alternative Post-Op Care',
+    'Alternative Post Op Care',
+    'Alternate Post-Op Care',
+    'Alternate Post Op Care',
+  ].map((t) => normalizeTitle(t))
+);
+
+const filterRemovedServices = (servicesList = []) =>
+  servicesList.filter((s) => !REMOVED_SERVICE_TITLES.has(normalizeTitle(s?.title)));
 
 const getServiceKey = (service) => {
   if (!service) return null;
@@ -47,32 +62,81 @@ const getServiceKey = (service) => {
   return null;
 };
 
-const mergeWithDefaults = (remoteServices = []) => {
+const normalizeServicesCatalog = (incomingServices = []) => {
   const baseServices = Array.isArray(SERVICES) ? [...SERVICES] : [];
-  const remoteMap = new Map();
+  const list = Array.isArray(incomingServices) ? incomingServices : [];
 
-  remoteServices.forEach((service) => {
-    const key = getServiceKey(service);
-    if (key) {
-      remoteMap.set(key, service);
+  const defaultTitleToIndex = new Map(
+    baseServices.map((s, i) => [normalizeTitle(s?.title), i])
+  );
+  const defaultIdToIndex = new Map(
+    baseServices.map((s, i) => [String(s?.id), i])
+  );
+
+  // Build lookups from incoming list
+  const incomingByTitle = new Map();
+  const incomingById = new Map();
+
+  for (const s of list) {
+    if (!s || typeof s !== 'object') continue;
+    if (s.title) {
+      incomingByTitle.set(normalizeTitle(s.title), s);
     }
-  });
-
-  const merged = baseServices.map((def) => {
-    const key = getServiceKey(def);
-    if (key && remoteMap.has(key)) {
-      const remote = remoteMap.get(key);
-      remoteMap.delete(key);
-      return { ...def, ...remote };
+    if (s.id !== undefined && s.id !== null && s.id !== '') {
+      incomingById.set(String(s.id), s);
     }
-    return def;
-  });
-
-  for (const [, service] of remoteMap) {
-    merged.push(service);
   }
 
-  return merged;
+  // 1) Always emit defaults in the default order
+  const normalized = baseServices.map((def) => {
+    const titleKey = normalizeTitle(def?.title);
+    const idKey = String(def?.id);
+    const incomingMatch = incomingByTitle.get(titleKey) || incomingById.get(idKey);
+    if (!incomingMatch) return def;
+
+    // Preserve stable default IDs for default services.
+    return {
+      ...def,
+      ...incomingMatch,
+      id: def.id,
+    };
+  });
+
+  // 2) Append true custom services (not matching any default title/id), sorted stably
+  const seenTitleKeys = new Set(normalized.map((s) => normalizeTitle(s?.title)));
+  const custom = [];
+  for (const s of list) {
+    if (!s || typeof s !== 'object') continue;
+    const t = normalizeTitle(s?.title);
+    const id = s?.id !== undefined && s?.id !== null ? String(s.id) : '';
+    if (t && seenTitleKeys.has(t)) continue;
+    if (id && defaultIdToIndex.has(id)) continue;
+    if (t && defaultTitleToIndex.has(t)) continue;
+    custom.push(s);
+  }
+
+  custom.sort((a, b) => {
+    const at = normalizeTitle(a?.title);
+    const bt = normalizeTitle(b?.title);
+    if (at < bt) return -1;
+    if (at > bt) return 1;
+    const aid = a?.id !== undefined && a?.id !== null ? String(a.id) : '';
+    const bid = b?.id !== undefined && b?.id !== null ? String(b.id) : '';
+    return aid.localeCompare(bid);
+  });
+
+  // 3) Final dedupe by title (keep first occurrence) + remove removed services
+  const deduped = [];
+  const added = new Set();
+  for (const s of [...normalized, ...custom]) {
+    const t = normalizeTitle(s?.title);
+    const key = t || getServiceKey(s) || String(deduped.length);
+    if (added.has(key)) continue;
+    added.add(key);
+    deduped.push(s);
+  }
+
+  return filterRemovedServices(deduped);
 };
 
 const ENABLE_SERVICE_DEBUG_LOGS = false;
@@ -104,12 +168,13 @@ export const ServicesProvider = ({ children }) => {
 
   const saveToLocal = useCallback(async (newServices, { skipLog } = {}) => {
     try {
+      const filtered = normalizeServicesCatalog(newServices);
       if (!skipLog) {
-        console.log('💾 Saving services to AsyncStorage cache:', newServices.length, 'services');
+        console.log('💾 Saving services to AsyncStorage cache:', filtered.length, 'services');
       }
-      await AsyncStorage.setItem(STORAGE_KEYS.customServices, JSON.stringify(newServices));
+      await AsyncStorage.setItem(STORAGE_KEYS.customServices, JSON.stringify(filtered));
       await AsyncStorage.setItem(STORAGE_KEYS.servicesCatalogVersion, SERVICES_CATALOG_VERSION);
-      setServices(newServices);
+      setServices(filtered);
       if (!skipLog) {
         console.log('✅ Services cached locally');
       }
@@ -181,11 +246,11 @@ export const ServicesProvider = ({ children }) => {
 
       let localData = [];
       if (migrated) {
-        localData = migrated;
+        localData = normalizeServicesCatalog(migrated);
       } else if (storedServices) {
-        localData = JSON.parse(storedServices);
+        localData = normalizeServicesCatalog(JSON.parse(storedServices));
       } else {
-        localData = SERVICES;
+        localData = normalizeServicesCatalog(SERVICES);
         await AsyncStorage.setItem(
           STORAGE_KEYS.servicesCatalogVersion,
           SERVICES_CATALOG_VERSION
@@ -202,7 +267,7 @@ export const ServicesProvider = ({ children }) => {
       try {
         const remoteServices = await ApiService.getServices();
         if (remoteServices && remoteServices.length > 0) {
-          const merged = mergeWithDefaults(remoteServices);
+          const merged = normalizeServicesCatalog(remoteServices || []);
           await saveToLocal(merged, { skipLog: skipCacheLog });
           logServiceInfo('✅ Services synced from Firestore:', merged.length);
           return merged;
@@ -242,7 +307,7 @@ export const ServicesProvider = ({ children }) => {
       try {
         unsubscribe = ApiService.subscribeToServices(async (remoteServices) => {
           if (!remoteServices || remoteServices.length === 0) return;
-          const merged = mergeWithDefaults(remoteServices);
+          const merged = normalizeServicesCatalog(remoteServices);
           await saveToLocal(merged, { skipLog: true });
           logServiceInfo('🔄 Services updated from Firestore snapshot:', merged.length);
         });

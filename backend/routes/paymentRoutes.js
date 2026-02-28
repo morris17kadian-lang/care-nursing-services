@@ -1,6 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const { admin, getFirestore } = require('../services/firebaseAdmin');
+const gmailService = require('../services/gmailService');
+const {
+  selectAdminRecipients,
+  NOTIFICATION_CATEGORIES,
+} = require('../services/adminNotificationRecipients');
 
 /**
  * Payment Routes for Fygaro Integration
@@ -17,6 +22,133 @@ const FYGARO_CONFIG = {
 
 const FYGARO_WEBHOOK_UPDATES_ENABLED = process.env.ENABLE_FYGARO_WEBHOOK_UPDATES === 'true';
 const FYGARO_SYNC_ENABLED = process.env.ENABLE_FYGARO_SYNC === 'true';
+
+function formatCurrency(value, currency = 'JMD') {
+  const amount = Number(value) || 0;
+  try {
+    return new Intl.NumberFormat('en-US', {
+      style: 'currency',
+      currency,
+      minimumFractionDigits: 2,
+    }).format(amount);
+  } catch (error) {
+    return `${currency} ${amount.toFixed(2)}`;
+  }
+}
+
+function formatDateLabel(value) {
+  if (!value) return 'N/A';
+  let date;
+  let asString;
+  if (value instanceof Date) {
+    date = value;
+    asString = value.toISOString();
+  } else if (value && typeof value.toDate === 'function') {
+    // Firestore Timestamp
+    date = value.toDate();
+    asString = date.toISOString();
+  } else {
+    asString = String(value);
+    date = new Date(asString);
+  }
+  if (Number.isNaN(date.getTime())) return asString;
+  try {
+    return date.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: 'numeric',
+    });
+  } catch (_) {
+    return asString;
+  }
+}
+
+async function sendOverduePaidAdminConfirmations(db, overdueInvoicesPaid, paymentDetails = {}) {
+  if (!db || !Array.isArray(overdueInvoicesPaid) || overdueInvoicesPaid.length === 0) {
+    return;
+  }
+
+  try {
+    const adminsSnapshot = await db.collection('admins').get();
+    const admins = adminsSnapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
+    const financialAdmins = selectAdminRecipients(admins, NOTIFICATION_CATEGORIES.FINANCIAL);
+
+    if (!financialAdmins.length) return;
+
+    for (const invoice of overdueInvoicesPaid) {
+      const invoiceId = invoice.invoiceId || invoice.id || invoice._docId || '';
+      const amountValue = Number(invoice.total || invoice.amount || paymentDetails.amountPaid || 0);
+      const currency = invoice.currency || paymentDetails.currency || 'JMD';
+      const amountLabel = formatCurrency(amountValue, currency);
+      const clientName = invoice.clientName || invoice.patientName || 'Client';
+      const appInvoiceUrl = `nurses876://invoice/${encodeURIComponent(String(invoiceId))}`;
+      const paymentMethod = paymentDetails.paymentMethod || invoice.paymentMethod || 'Fygaro';
+      const dueDateLabel = formatDateLabel(invoice.dueDate || invoice.due || invoice.dueDateLabel);
+      const paymentDateLabel = formatDateLabel(paymentDetails.paidAt || paymentDetails.paidDate || invoice.paidDate || invoice.paidAt);
+
+      const subject = `Payment Confirmation - Overdue Invoice ${invoiceId}`;
+      const tasks = financialAdmins.map((adminUser) => {
+        const adminName =
+          adminUser?.fullName ||
+          adminUser?.name ||
+          `${adminUser?.firstName || ''} ${adminUser?.lastName || ''}`.trim() ||
+          'Admin';
+
+        const html = `
+          <div style="font-family: Arial, sans-serif; color:#1f2a44; line-height: 1.7; max-width: 600px; margin: 0 auto; padding: 24px 20px;">
+            <p style="margin:0 0 14px 0;">Hi ${adminName},</p>
+            <p style="margin:0 0 14px 0;">Payment has been received for an invoice that was previously overdue.</p>
+            <p style="margin:0 0 10px 0;">Client Name: ${clientName}</p>
+            <p style="margin:0 0 10px 0;">Invoice Number: ${invoiceId}</p>
+            <p style="margin:0 0 10px 0;">Amount Due: ${amountLabel}</p>
+            <p style="margin:0 0 10px 0;">Due Date: ${dueDateLabel}</p>
+            <p style="margin:0 0 10px 0;">Payment Date: ${paymentDateLabel}</p>
+            <p style="margin:0 0 14px 0;">Payment Method: ${paymentMethod}</p>
+            <p style="margin:0 0 14px 0;">The client’s account balance has been updated automatically and no further action is required unless additional follow-up is needed.</p>
+            <p style="margin:0 0 14px 0;"><a href="${appInvoiceUrl}" style="color:#2f62d7;text-decoration:underline;font-weight:700;">Click here to view invoice</a></p>
+
+            <div style="text-align:center;padding:18px 10px 0 10px;color:#9ca3af;font-size:12px;line-height:1.6;">
+              876 Nurses Home Care Services · Kingston, Jamaica<br />
+              Need help? Email <a href="mailto:876nurses@gmail.com" style="color:#6b7280;text-decoration:underline;">876nurses@gmail.com</a>
+            </div>
+          </div>
+        `;
+
+        const text = [
+          `Hi ${adminName},`,
+          '',
+          'Payment has been received for an invoice that was previously overdue.',
+          '',
+          `Client Name: ${clientName}`,
+          `Invoice Number: ${invoiceId}`,
+          `Amount Due: ${amountLabel}`,
+          `Due Date: ${dueDateLabel}`,
+          `Payment Date: ${paymentDateLabel}`,
+          `Payment Method: ${paymentMethod}`,
+          '',
+          'The client’s account balance has been updated automatically and no further action is required unless additional follow-up is needed.',
+          '',
+          `Click here to view invoice: ${appInvoiceUrl}`,
+        ].join('\n');
+
+        return gmailService.sendEmail({
+          from: {
+            name: '876 Nurses',
+            email: process.env.GMAIL_ACCOUNT,
+          },
+          to: adminUser.email,
+          subject,
+          html,
+          text,
+        });
+      });
+
+      await Promise.allSettled(tasks);
+    }
+  } catch (error) {
+    console.error('Failed to send overdue paid admin confirmations:', error.message);
+  }
+}
 
 async function applyCompletedFygaroPayment(db, {
   invoiceId,
@@ -80,6 +212,13 @@ async function applyCompletedFygaroPayment(db, {
 
   const uniquePaths = Array.from(new Set(refsToUpdate.map((ref) => ref.path)));
   const uniqueRefs = uniquePaths.map((path) => db.doc(path));
+  const snapshotsBeforeUpdate = uniqueRefs.length
+    ? await Promise.all(uniqueRefs.map((ref) => ref.get()))
+    : [];
+  const overdueInvoicesPaid = snapshotsBeforeUpdate
+    .filter((snap) => snap.exists)
+    .map((snap) => ({ id: snap.id, ...snap.data() }))
+    .filter((invoice) => String(invoice?.status || '').trim().toLowerCase() === 'overdue');
 
   if (uniqueRefs.length > 0) {
     const batch = db.batch();
@@ -122,6 +261,16 @@ async function applyCompletedFygaroPayment(db, {
     }
   }
 
+  if (overdueInvoicesPaid.length > 0) {
+    await sendOverduePaidAdminConfirmations(db, overdueInvoicesPaid, {
+      amountPaid,
+      currency,
+      paymentMethod,
+      paidAt: paidAtIso,
+      transactionId: transactionId || webhookData?.transactionId,
+    });
+  }
+
   return { updatedInvoices: uniqueRefs.length, updatedAppointments };
 }
 
@@ -135,6 +284,7 @@ router.post('/initialize', async (req, res) => {
       amount,
       currency = 'JMD',
       invoiceId,
+      invoiceFirestoreId,
       appointmentId,
       customerId,
       customerName,
@@ -176,6 +326,7 @@ router.post('/initialize', async (req, res) => {
       },
       metadata: {
         invoiceId,
+        invoiceFirestoreId,
         appointmentId,
         customerId,
         ...metadata,

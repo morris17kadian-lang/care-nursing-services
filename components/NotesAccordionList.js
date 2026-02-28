@@ -76,6 +76,15 @@ const toDateLabel = (value, { fallback = 'No date', showTime = false } = {}) => 
   });
 };
 
+const toTimeLabel = (value, { fallback = '' } = {}) => {
+  const d = coerceToDate(value);
+  if (!d) return fallback;
+  return d.toLocaleTimeString('en-US', {
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+};
+
 /**
  * Reusable accordion list styled like AdminClientsScreen "Medical Notes" cards.
  *
@@ -118,8 +127,12 @@ export default function NotesAccordionList({ items, emptyText = 'No notes yet', 
               activeOpacity={0.7}
             >
               <View style={styles.headerLeft}>
-                <MaterialCommunityIcons name="note-text" size={16} color={COLORS.primary} />
-                <Text style={styles.dateText}>{toDateLabel(item.date, { showTime })}</Text>
+                <View style={styles.headerTopRow}>
+                  <MaterialCommunityIcons name="note-text" size={16} color={COLORS.primary} />
+                  <Text style={styles.dateText} numberOfLines={1} ellipsizeMode="tail">
+                    {toDateLabel(item.date, { showTime: false })}
+                  </Text>
+                </View>
               </View>
               <MaterialCommunityIcons
                 name={expanded ? 'chevron-up' : 'chevron-down'}
@@ -133,6 +146,7 @@ export default function NotesAccordionList({ items, emptyText = 'No notes yet', 
                 <View style={[styles.titleRow, { marginBottom: 8 }]}>
                   <Text style={styles.title}>{item.title}</Text>
                   {item.subtitle ? <Text style={styles.subtitle}>{item.subtitle}</Text> : null}
+                  {showTime ? <Text style={styles.timeText}>{toTimeLabel(item.date)}</Text> : null}
                 </View>
                 <Text style={styles.bodyText}>{item.body || emptyText}</Text>
               </View>
@@ -173,15 +187,25 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.background,
   },
   headerLeft: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
     flex: 1,
+    gap: 6,
+  },
+  headerTopRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
     gap: 10,
   },
   dateText: {
     fontSize: 12,
     fontFamily: 'Poppins_500Medium',
     color: COLORS.text,
+    flexShrink: 1,
+  },
+  timeText: {
+    fontSize: 12,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.success,
+    marginLeft: 6,
   },
   body: {
     paddingVertical: 12,

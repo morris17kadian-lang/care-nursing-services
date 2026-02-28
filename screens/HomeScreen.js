@@ -3,6 +3,9 @@ import {
   View,
   Text,
   ScrollView,
+  KeyboardAvoidingView,
+  Keyboard,
+  TouchableWithoutFeedback,
   StyleSheet,
   Image,
   
@@ -35,13 +38,16 @@ import { useFocusEffect } from '@react-navigation/native';
 
 export default function HomeScreen({ navigation }) {
   const { width } = useWindowDimensions();
-  const { user } = useAuth();
+  const { user, updateUser } = useAuth();
   const { services } = useServices();
   const { getUpcomingAppointments, refreshAppointments } = useAppointments();
   const { shiftRequests } = useShifts(); // Add shift context
   const { unreadCount, clearAllNotifications } = useNotifications();
   const { nurses } = useNurses(); // Get nurses list to resolve nurse names
   const insets = useSafeAreaInsets();
+
+  const REMINDERS_STORAGE_KEY = '@876_home_reminders';
+  const EMERGENCY_CONTACT_STORAGE_KEY = '@876_emergency_contact';
   const [selectedService, setSelectedService] = useState(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [reminderModalVisible, setReminderModalVisible] = useState(false);
@@ -67,6 +73,8 @@ export default function HomeScreen({ navigation }) {
   const arrowAnim = useRef(new Animated.Value(0)).current;
   const servicesScrollAnim = useRef(new Animated.Value(0)).current;
   const scrollViewRef = useRef(null);
+
+  const activeRemindersCount = reminders.filter((r) => !r?.completed).length;
 
   // Refresh appointments when screen comes into focus
   useFocusEffect(
@@ -212,28 +220,54 @@ export default function HomeScreen({ navigation }) {
     navigation.navigate('Book');
   };
 
+  const closeReminderModal = () => {
+    setShowReminderDatePicker(false);
+    setShowReminderTimePicker(false);
+    setReminderModalVisible(false);
+  };
+
   const onReminderDateChange = (event, date) => {
-    if (date) {
-      setSelectedReminderDate(date);
-      const formattedDate = date.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric'
-      });
-      setReminderDate(formattedDate);
-    }
+    if (Platform.OS === 'android' && event?.type === 'dismissed') return;
+    if (!date) return;
+
+    setSelectedReminderDate(date);
+    const formattedDate = date.toLocaleDateString('en-US', {
+      month: 'short',
+      day: 'numeric',
+      year: 'numeric'
+    });
+    setReminderDate(formattedDate);
   };
 
   const onReminderTimeChange = (event, time) => {
-    if (time) {
-      setSelectedReminderTime(time);
-      const formattedTime = time.toLocaleTimeString('en-US', {
-        hour: '2-digit',
-        minute: '2-digit',
-        hour12: true
-      });
-      setReminderTime(formattedTime);
+    if (Platform.OS === 'android' && event?.type === 'dismissed') return;
+    if (!time) return;
+
+    setSelectedReminderTime(time);
+    const formattedTime = time.toLocaleTimeString('en-US', {
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: true
+    });
+    setReminderTime(formattedTime);
+  };
+
+  const buildScheduledReminderDateTime = () => {
+    const dateBase = selectedReminderDate instanceof Date ? new Date(selectedReminderDate) : null;
+    const timeBase = selectedReminderTime instanceof Date ? selectedReminderTime : null;
+
+    if (!dateBase || Number.isNaN(dateBase.getTime()) || !timeBase || Number.isNaN(timeBase.getTime())) {
+      return null;
     }
+
+    dateBase.setHours(timeBase.getHours(), timeBase.getMinutes(), 0, 0);
+    return dateBase;
+  };
+
+  const getStartOfToday = () => {
+    const d = new Date();
+    d.setHours(0, 0, 0, 0);
+    return d;
   };
 
   const handleAddReminder = async () => {
@@ -251,8 +285,12 @@ export default function HomeScreen({ navigation }) {
     }
 
     try {
-      // Parse the date and time to create a scheduled date
-      const scheduledDateTime = new Date(`${reminderDate} ${reminderTime}`);
+      const scheduledDateTime = buildScheduledReminderDateTime();
+
+      if (!scheduledDateTime || Number.isNaN(scheduledDateTime.getTime())) {
+        Alert.alert('Invalid Time', 'Please select a valid future date and time for your reminder');
+        return;
+      }
       
       // Check if the scheduled time is in the future
       if (scheduledDateTime <= new Date()) {
@@ -281,8 +319,12 @@ export default function HomeScreen({ navigation }) {
         notificationId: notificationId, // Store notification ID for future cancellation
         scheduledDateTime: scheduledDateTime.toISOString(),
       };
-      
-      setReminders([...reminders, newReminder]);
+
+      const updated = [...reminders, newReminder];
+      setReminders(updated);
+      if (user?.id) {
+        await AsyncStorage.setItem(`${REMINDERS_STORAGE_KEY}_${user.id}`, JSON.stringify(updated));
+      }
       setReminderText('');
       setReminderDate('');
       setReminderTime('');
@@ -294,6 +336,11 @@ export default function HomeScreen({ navigation }) {
     } catch (error) {
       console.error('Failed to schedule reminder notification:', error);
       Alert.alert('Error', 'Failed to schedule reminder notification. The reminder was saved but you may not receive a notification.');
+
+      const fallbackScheduled = buildScheduledReminderDateTime();
+      const scheduledIso = fallbackScheduled && !Number.isNaN(fallbackScheduled.getTime())
+        ? fallbackScheduled.toISOString()
+        : new Date().toISOString();
       
       // Still save the reminder even if notification fails
       const newReminder = {
@@ -302,10 +349,18 @@ export default function HomeScreen({ navigation }) {
         date: reminderDate,
         time: reminderTime,
         completed: false,
-        scheduledDateTime: new Date(`${reminderDate} ${reminderTime}`).toISOString(),
+        scheduledDateTime: scheduledIso,
       };
-      
-      setReminders([...reminders, newReminder]);
+
+      const updated = [...reminders, newReminder];
+      setReminders(updated);
+      if (user?.id) {
+        try {
+          await AsyncStorage.setItem(`${REMINDERS_STORAGE_KEY}_${user.id}`, JSON.stringify(updated));
+        } catch (e) {
+          // ignore
+        }
+      }
       setReminderText('');
       setReminderDate('');
       setReminderTime('');
@@ -330,29 +385,69 @@ export default function HomeScreen({ navigation }) {
     }
     
     // Remove the reminder from the list
-    setReminders(reminders.filter(r => r.id !== reminderId));
+    const updated = reminders.filter(r => r.id !== reminderId);
+    setReminders(updated);
+    if (user?.id) {
+      AsyncStorage.setItem(`${REMINDERS_STORAGE_KEY}_${user.id}`, JSON.stringify(updated)).catch(() => {});
+    }
   };
 
   const handleToggleReminder = (reminderId) => {
-    setReminders(reminders.map(r => 
+    const updated = reminders.map(r => 
       r.id === reminderId ? { ...r, completed: !r.completed } : r
-    ));
+    );
+    setReminders(updated);
+    if (user?.id) {
+      AsyncStorage.setItem(`${REMINDERS_STORAGE_KEY}_${user.id}`, JSON.stringify(updated)).catch(() => {});
+    }
   };
 
-  const handleAddEmergencyContact = () => {
-    if (emergencyFirstName.trim() && emergencyLastName.trim() && emergencyPhone.trim() && emergencyRelationship.trim()) {
-      setEmergencyContact({
-        firstName: emergencyFirstName,
-        lastName: emergencyLastName,
-        relationship: emergencyRelationship,
-        phone: emergencyPhone,
-      });
-      setEmergencyFirstName('');
-      setEmergencyLastName('');
-      setEmergencyRelationship('');
-      setEmergencyPhone('');
-      setEmergencyModalVisible(false);
+  const handleAddEmergencyContact = async () => {
+    if (!emergencyFirstName.trim() || !emergencyLastName.trim() || !emergencyPhone.trim() || !emergencyRelationship.trim()) {
+      Alert.alert('Missing Information', 'Please complete all emergency contact fields.');
+      return;
     }
+
+    const nextEmergencyContact = {
+      firstName: emergencyFirstName.trim(),
+      lastName: emergencyLastName.trim(),
+      relationship: emergencyRelationship.trim(),
+      phone: emergencyPhone.trim(),
+    };
+
+    // Update local UI immediately
+    setEmergencyContact(nextEmergencyContact);
+
+    // Persist to profile when possible (and keep a local fallback)
+    try {
+      if (user?.id && typeof updateUser === 'function') {
+        const updates = {
+          emergencyContact: `${nextEmergencyContact.firstName} ${nextEmergencyContact.lastName}`,
+          emergencyPhone: nextEmergencyContact.phone,
+          emergencyRelationship: nextEmergencyContact.relationship,
+        };
+        await updateUser(updates);
+      }
+    } catch (e) {
+      // Keep local fallback if profile update fails
+    }
+
+    try {
+      if (user?.id) {
+        await AsyncStorage.setItem(
+          `${EMERGENCY_CONTACT_STORAGE_KEY}_${user.id}`,
+          JSON.stringify(nextEmergencyContact)
+        );
+      }
+    } catch (e) {
+      // Ignore local persistence failures
+    }
+
+    setEmergencyFirstName('');
+    setEmergencyLastName('');
+    setEmergencyRelationship('');
+    setEmergencyPhone('');
+    setEmergencyModalVisible(false);
   };
 
   const handleCallEmergency = () => {
@@ -372,12 +467,19 @@ export default function HomeScreen({ navigation }) {
   // Load overdue invoices and send notifications
   const loadOverdueInvoices = async () => {
     try {
-      const overdueInvoices = await InvoiceService.getOverdueInvoices();
+      const role = String(user?.role ?? '').trim().toLowerCase();
+      const overdueInvoices = await InvoiceService.getOverdueInvoices(
+        role === 'patient' ? { userId: user?.id } : null
+      );
       setOverdueInvoices(overdueInvoices);
 
       // Send notifications for overdue invoices if any exist
       if (overdueInvoices.length > 0) {
-        const notifications = await InvoiceService.sendOverdueNotifications();
+        const notifications = await InvoiceService.sendOverdueNotifications({
+          overdueInvoices,
+          role: user?.role,
+          userId: user?.id,
+        });
         await PushNotificationService.sendBatchOverdueNotifications(notifications);
       }
     } catch (error) {
@@ -388,7 +490,7 @@ export default function HomeScreen({ navigation }) {
   // Load pending store orders
   const loadPendingOrders = async () => {
     try {
-      const ordersJson = await AsyncStorage.getItem('@care_store_orders');
+      const ordersJson = await AsyncStorage.getItem('@876_store_orders');
       if (ordersJson) {
         const allOrders = JSON.parse(ordersJson);
         const userPendingOrders = allOrders.filter(
@@ -451,26 +553,42 @@ export default function HomeScreen({ navigation }) {
   // Auto-scroll services animation with Animated API
   const [isAutoScrolling, setIsAutoScrolling] = useState(true);
   const autoScrollTimeoutRef = useRef(null);
+  const servicesLoopAnimRef = useRef(null);
 
   const startAutoScroll = useCallback(() => {
     if (!services || services.length === 0 || !isAutoScrolling) return;
 
-    const serviceWidth = 100;
+    // Match actual rendered width: 90 + right margin (SPACING.lg)
+    const serviceWidth = 90 + (SPACING?.lg || 0);
     const totalWidth = services.length * serviceWidth;
 
+    // Prevent multiple loops running at once (can cause jitter/glitch)
+    if (servicesLoopAnimRef.current) {
+      servicesLoopAnimRef.current.stop();
+      servicesLoopAnimRef.current = null;
+    }
+
     servicesScrollAnim.setValue(0);
-    Animated.loop(
+    const loopAnim = Animated.loop(
       Animated.timing(servicesScrollAnim, {
         toValue: -totalWidth,
         duration: services.length * 5000,
         useNativeDriver: true,
         isInteraction: false,
-      })
-    ).start();
+      }),
+      { resetBeforeIteration: true }
+    );
+
+    servicesLoopAnimRef.current = loopAnim;
+    loopAnim.start();
   }, [services, servicesScrollAnim, isAutoScrolling]);
 
   const pauseAutoScroll = useCallback(() => {
     setIsAutoScrolling(false);
+    if (servicesLoopAnimRef.current) {
+      servicesLoopAnimRef.current.stop();
+      servicesLoopAnimRef.current = null;
+    }
     servicesScrollAnim.stopAnimation();
     
     // Resume auto-scroll after 3 seconds of no interaction
@@ -488,6 +606,10 @@ export default function HomeScreen({ navigation }) {
     }
     
     return () => {
+      if (servicesLoopAnimRef.current) {
+        servicesLoopAnimRef.current.stop();
+        servicesLoopAnimRef.current = null;
+      }
       servicesScrollAnim.stopAnimation();
       if (autoScrollTimeoutRef.current) {
         clearTimeout(autoScrollTimeoutRef.current);
@@ -519,17 +641,62 @@ export default function HomeScreen({ navigation }) {
 
   // Load emergency contact from user profile
   useEffect(() => {
-    if (user?.emergencyContact && user?.emergencyPhone) {
-      // Parse the name if it's stored as full name
-      const nameParts = user.emergencyContact.split(' ');
-      setEmergencyContact({
-        firstName: nameParts[0] || '',
-        lastName: nameParts.slice(1).join(' ') || '',
-        relationship: 'Emergency Contact',
-        phone: user.emergencyPhone
-      });
-    }
+    const load = async () => {
+      if (!user?.id) return;
+
+      // Prefer profile fields (syncs across devices)
+      if (user?.emergencyContact && user?.emergencyPhone) {
+        const nameParts = String(user.emergencyContact).split(' ');
+        const next = {
+          firstName: nameParts[0] || '',
+          lastName: nameParts.slice(1).join(' ') || '',
+          relationship: user?.emergencyRelationship || 'Emergency Contact',
+          phone: user.emergencyPhone,
+        };
+        setEmergencyContact(next);
+        try {
+          await AsyncStorage.setItem(`${EMERGENCY_CONTACT_STORAGE_KEY}_${user.id}`, JSON.stringify(next));
+        } catch (e) {
+          // ignore
+        }
+        return;
+      }
+
+      // Fallback to local storage if profile fields are missing
+      try {
+        const raw = await AsyncStorage.getItem(`${EMERGENCY_CONTACT_STORAGE_KEY}_${user.id}`);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (parsed && typeof parsed === 'object') {
+            setEmergencyContact(parsed);
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+    };
+
+    load();
   }, [user?.emergencyContact, user?.emergencyPhone]);
+
+  // Load reminders from local storage
+  useEffect(() => {
+    const load = async () => {
+      if (!user?.id) return;
+      try {
+        const raw = await AsyncStorage.getItem(`${REMINDERS_STORAGE_KEY}_${user.id}`);
+        if (raw) {
+          const parsed = JSON.parse(raw);
+          if (Array.isArray(parsed)) {
+            setReminders(parsed);
+          }
+        }
+      } catch (e) {
+        // ignore
+      }
+    };
+    load();
+  }, [user?.id]);
 
   // Clean up expired reminders and their notifications
   useEffect(() => {
@@ -762,10 +929,10 @@ export default function HomeScreen({ navigation }) {
                 >
                   <MaterialCommunityIcons name="bell-ring" size={36} color={COLORS.white} />
                   <Text style={styles.quickAccessTileTitle} numberOfLines={1} adjustsFontSizeToFit>Reminders</Text>
-                  {(reminders.length > 0 || overdueInvoices.length > 0) && (
+                  {(activeRemindersCount > 0 || overdueInvoices.length > 0) && (
                     <View style={styles.tileBadge}>
                       <Text style={styles.tileBadgeText}>
-                        {reminders.length + overdueInvoices.length}
+                        {activeRemindersCount + overdueInvoices.length}
                       </Text>
                     </View>
                   )}
@@ -844,12 +1011,9 @@ export default function HomeScreen({ navigation }) {
                   end={{ x: 0, y: 1 }}
                   style={styles.modalHeader}
                 >
-                  <MaterialCommunityIcons 
-                    name={selectedService.icon || 'medical-bag'} 
-                    size={36} 
-                    color={COLORS.white} 
-                  />
-                  <Text style={styles.modalTitle}>{selectedService.title || 'Service'}</Text>
+                  <Text style={styles.modalTitle} numberOfLines={2}>
+                    {selectedService.title || 'Service'}
+                  </Text>
                 </LinearGradient>
 
                 <View style={styles.modalBody}>
@@ -887,7 +1051,7 @@ export default function HomeScreen({ navigation }) {
                         style={styles.modalBookGradient}
                       >
                         <MaterialCommunityIcons name="plus-circle" size={18} color={COLORS.white} />
-                        <Text style={styles.modalBookButtonText}>Book Appointment</Text>
+                        <Text style={styles.modalBookButtonText}>Book</Text>
                       </LinearGradient>
                     </TouchableWeb>
 
@@ -911,14 +1075,14 @@ export default function HomeScreen({ navigation }) {
         animationType="slide"
         transparent={true}
         visible={reminderModalVisible}
-        onRequestClose={() => setReminderModalVisible(false)}
+        onRequestClose={closeReminderModal}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.reminderModalContent}>
             <View style={styles.modalHeader}>
               <Text style={styles.modalHeaderTitle}>Add Reminder</Text>
               <TouchableWeb
-                onPress={() => setReminderModalVisible(false)}
+                onPress={closeReminderModal}
                 style={styles.closeIconButton}
               >
                 <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
@@ -940,7 +1104,10 @@ export default function HomeScreen({ navigation }) {
               <Text style={styles.inputLabel}>Date</Text>
               <TouchableWeb
                 style={styles.dateTimeButton}
-                onPress={() => setShowReminderDatePicker(!showReminderDatePicker)}
+                onPress={() => {
+                  setShowReminderTimePicker(false);
+                  setShowReminderDatePicker(true);
+                }}
                 activeOpacity={0.7}
               >
                 <MaterialCommunityIcons name="calendar" size={20} color={COLORS.primary} />
@@ -949,29 +1116,13 @@ export default function HomeScreen({ navigation }) {
                 </Text>
               </TouchableWeb>
 
-              {showReminderDatePicker && (
-                <View style={styles.inlinePickerContainer}>
-                  <DateTimePicker
-                    value={selectedReminderDate}
-                    mode="date"
-                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                    onChange={onReminderDateChange}
-                    minimumDate={new Date()}
-                    textColor={COLORS.text}
-                  />
-                  <TouchableWeb
-                    style={styles.inlinePickerDoneButton}
-                    onPress={() => setShowReminderDatePicker(false)}
-                  >
-                    <Text style={styles.inlinePickerDoneText}>Done</Text>
-                  </TouchableWeb>
-                </View>
-              )}
-
               <Text style={styles.inputLabel}>Time</Text>
               <TouchableWeb
                 style={styles.dateTimeButton}
-                onPress={() => setShowReminderTimePicker(!showReminderTimePicker)}
+                onPress={() => {
+                  setShowReminderDatePicker(false);
+                  setShowReminderTimePicker(true);
+                }}
                 activeOpacity={0.7}
               >
                 <MaterialCommunityIcons name="clock-outline" size={20} color={COLORS.primary} />
@@ -979,24 +1130,6 @@ export default function HomeScreen({ navigation }) {
                   {reminderTime || 'Select Time'}
                 </Text>
               </TouchableWeb>
-
-              {showReminderTimePicker && (
-                <View style={styles.inlinePickerContainer}>
-                  <DateTimePicker
-                    value={selectedReminderTime}
-                    mode="time"
-                    display={Platform.OS === 'ios' ? 'spinner' : 'default'}
-                    onChange={onReminderTimeChange}
-                    textColor={COLORS.text}
-                  />
-                  <TouchableWeb
-                    style={styles.inlinePickerDoneButton}
-                    onPress={() => setShowReminderTimePicker(false)}
-                  >
-                    <Text style={styles.inlinePickerDoneText}>Done</Text>
-                  </TouchableWeb>
-                </View>
-              )}
 
               {/* Display overdue invoices in modal */}
               {overdueInvoices.length > 0 && (
@@ -1019,7 +1152,7 @@ export default function HomeScreen({ navigation }) {
                       </View>
                       <TouchableWeb
                         onPress={() => {
-                          setReminderModalVisible(false);
+                          closeReminderModal();
                           // Navigate to invoice or payment screen
                           // navigation.navigate('Invoice', { invoiceId: invoice.invoiceId });
                         }}
@@ -1075,7 +1208,7 @@ export default function HomeScreen({ navigation }) {
             <View style={styles.reminderModalFooter}>
               <TouchableWeb
                 style={styles.modalButton}
-                onPress={() => setReminderModalVisible(false)}
+                onPress={closeReminderModal}
               >
                 <View style={styles.modalButtonBackground}>
                   <Text style={[styles.modalButtonText, { color: COLORS.text }]}>Cancel</Text>
@@ -1096,6 +1229,118 @@ export default function HomeScreen({ navigation }) {
               </TouchableWeb>
             </View>
           </View>
+
+          {showReminderDatePicker && Platform.OS === 'android' && (
+            <DateTimePicker
+              value={selectedReminderDate}
+              mode="date"
+              display="default"
+              onChange={onReminderDateChange}
+              minimumDate={getStartOfToday()}
+            />
+          )}
+
+          {showReminderTimePicker && Platform.OS === 'android' && (
+            <DateTimePicker
+              value={selectedReminderTime}
+              mode="time"
+              display="default"
+              onChange={onReminderTimeChange}
+            />
+          )}
+
+          {showReminderDatePicker && Platform.OS === 'ios' && (
+            <View style={styles.pickerOverlay}>
+              <View style={styles.pickerContainer}>
+                <View style={styles.pickerHeader}>
+                  <Text style={styles.pickerTitle}>Select Date</Text>
+                  <TouchableWeb
+                    onPress={() => setShowReminderDatePicker(false)}
+                    style={styles.pickerCloseButton}
+                  >
+                    <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
+                  </TouchableWeb>
+                </View>
+                <DateTimePicker
+                  value={selectedReminderDate}
+                  mode="date"
+                  display="spinner"
+                  onChange={onReminderDateChange}
+                  minimumDate={getStartOfToday()}
+                  textColor={COLORS.text}
+                  style={{ backgroundColor: COLORS.white }}
+                />
+                <TouchableWeb
+                  style={styles.pickerConfirmButton}
+                  onPress={() => {
+                    const formattedDate = (selectedReminderDate || new Date()).toLocaleDateString('en-US', {
+                      month: 'short',
+                      day: 'numeric',
+                      year: 'numeric'
+                    });
+                    setReminderDate(formattedDate);
+                    setShowReminderDatePicker(false);
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <LinearGradient
+                    colors={GRADIENTS.header}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 0, y: 1 }}
+                    style={styles.pickerConfirmGradient}
+                  >
+                    <Text style={styles.pickerConfirmText}>Done</Text>
+                  </LinearGradient>
+                </TouchableWeb>
+              </View>
+            </View>
+          )}
+
+          {showReminderTimePicker && Platform.OS === 'ios' && (
+            <View style={styles.pickerOverlay}>
+              <View style={styles.pickerContainer}>
+                <View style={styles.pickerHeader}>
+                  <Text style={styles.pickerTitle}>Select Time</Text>
+                  <TouchableWeb
+                    onPress={() => setShowReminderTimePicker(false)}
+                    style={styles.pickerCloseButton}
+                  >
+                    <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
+                  </TouchableWeb>
+                </View>
+                <DateTimePicker
+                  value={selectedReminderTime}
+                  mode="time"
+                  display="spinner"
+                  onChange={onReminderTimeChange}
+                  textColor={COLORS.text}
+                  style={{ backgroundColor: COLORS.white }}
+                />
+                <TouchableWeb
+                  style={styles.pickerConfirmButton}
+                  onPress={() => {
+                    const formattedTime = (selectedReminderTime || new Date()).toLocaleTimeString('en-US', {
+                      hour: '2-digit',
+                      minute: '2-digit',
+                      hour12: true
+                    });
+                    setReminderTime(formattedTime);
+                    setShowReminderTimePicker(false);
+                  }}
+                  activeOpacity={0.85}
+                >
+                  <LinearGradient
+                    colors={GRADIENTS.header}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 0, y: 1 }}
+                    style={styles.pickerConfirmGradient}
+                  >
+                    <Text style={styles.pickerConfirmText}>Done</Text>
+                  </LinearGradient>
+                </TouchableWeb>
+              </View>
+            </View>
+          )}
         </View>
       </Modal>
 
@@ -1106,23 +1351,32 @@ export default function HomeScreen({ navigation }) {
         visible={emergencyModalVisible}
         onRequestClose={() => setEmergencyModalVisible(false)}
       >
-        <View style={styles.modalOverlay}>
-          <View style={styles.reminderModalContent}>
-            <View style={styles.modalHeader}>
-              <Text style={styles.modalHeaderTitle}>Emergency Contact</Text>
-              <TouchableWeb
-                onPress={() => setEmergencyModalVisible(false)}
-                style={styles.closeIconButton}
-              >
-                <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
-              </TouchableWeb>
-            </View>
+        <KeyboardAvoidingView
+          style={{ flex: 1 }}
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={Platform.OS === 'ios' ? insets.top + 24 : 0}
+        >
+          <TouchableWithoutFeedback onPress={Keyboard.dismiss} accessible={false}>
+            <View style={styles.modalOverlay}>
+              <TouchableWithoutFeedback onPress={() => {}} accessible={false}>
+                <View style={styles.reminderModalContent}>
+                  <View style={styles.modalHeader}>
+                    <Text style={styles.modalHeaderTitle}>Emergency Contact</Text>
+                    <TouchableWeb
+                      onPress={() => setEmergencyModalVisible(false)}
+                      style={styles.closeIconButton}
+                    >
+                      <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
+                    </TouchableWeb>
+                  </View>
 
-            <ScrollView 
-              style={styles.reminderModalBody}
-              showsVerticalScrollIndicator={false}
-              keyboardShouldPersistTaps="handled"
-            >
+                  <ScrollView 
+                    style={styles.reminderModalBody}
+                    contentContainerStyle={{ paddingBottom: insets.bottom + 24 }}
+                    showsVerticalScrollIndicator={false}
+                    keyboardShouldPersistTaps="handled"
+                    keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+                  >
               <Text style={styles.inputLabel}>First Name</Text>
               <View style={styles.textInput}>
                 <TextInput
@@ -1192,24 +1446,27 @@ export default function HomeScreen({ navigation }) {
                   </TouchableWeb>
                 </View>
               )}
-            </ScrollView>
+                  </ScrollView>
 
-            <View style={styles.reminderModalFooter}>
-              <TouchableWeb
-                style={[styles.modalButton, { backgroundColor: COLORS.border }]}
-                onPress={() => setEmergencyModalVisible(false)}
-              >
-                <Text style={[styles.modalButtonText, { color: COLORS.text }]}>Cancel</Text>
-              </TouchableWeb>
-              <TouchableWeb
-                style={[styles.modalButton, { backgroundColor: COLORS.error }]}
-                onPress={handleAddEmergencyContact}
-              >
-                <Text style={[styles.modalButtonText, { color: COLORS.white }]}>Save Contact</Text>
-              </TouchableWeb>
+                  <View style={styles.reminderModalFooter}>
+                    <TouchableWeb
+                      style={[styles.modalButton, { backgroundColor: COLORS.border }]}
+                      onPress={() => setEmergencyModalVisible(false)}
+                    >
+                      <Text style={[styles.modalButtonText, { color: COLORS.text }]}>Cancel</Text>
+                    </TouchableWeb>
+                    <TouchableWeb
+                      style={[styles.modalButton, { backgroundColor: COLORS.error }]}
+                      onPress={handleAddEmergencyContact}
+                    >
+                      <Text style={[styles.modalButtonText, { color: COLORS.white }]}>Save Contact</Text>
+                    </TouchableWeb>
+                  </View>
+                </View>
+              </TouchableWithoutFeedback>
             </View>
-          </View>
-        </View>
+          </TouchableWithoutFeedback>
+        </KeyboardAvoidingView>
       </Modal>
     </SafeAreaView>
   );
@@ -1504,6 +1761,8 @@ const styles = StyleSheet.create({
     color: COLORS.white,
     marginTop: SPACING.xs,
     textAlign: 'center',
+    width: '100%',
+    paddingHorizontal: SPACING.md,
   },
   modalCategory: {
     fontSize: 11,
@@ -1560,11 +1819,14 @@ const styles = StyleSheet.create({
     marginHorizontal: SPACING.sm,
   },
   modalButtons: {
-    flexDirection: 'column',
+    flexDirection: 'row',
     gap: SPACING.md,
     marginTop: SPACING.md,
+    alignItems: 'stretch',
   },
   modalCloseButton: {
+    flex: 1,
+    minHeight: 46,
     paddingVertical: SPACING.sm,
     paddingHorizontal: SPACING.lg,
     borderRadius: 12,
@@ -1581,6 +1843,8 @@ const styles = StyleSheet.create({
     letterSpacing: 0.2,
   },
   modalBookButton: {
+    flex: 1,
+    minHeight: 46,
     borderRadius: 12,
     overflow: 'hidden',
     shadowColor: COLORS.accent,
@@ -1593,6 +1857,7 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    minHeight: 46,
     paddingVertical: SPACING.sm,
     paddingHorizontal: SPACING.lg,
     gap: SPACING.sm,
@@ -2088,17 +2353,22 @@ const styles = StyleSheet.create({
   dateTimeButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.white,
     borderRadius: 12,
-    padding: SPACING.md,
-    borderWidth: 1,
+    padding: SPACING.md + 2,
+    borderWidth: 1.5,
     borderColor: COLORS.border,
     marginBottom: SPACING.md,
     gap: SPACING.sm,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.05,
+    shadowRadius: 2,
+    elevation: 1,
   },
   dateTimeButtonText: {
-    fontSize: 14,
-    fontFamily: 'Poppins_400Regular',
+    fontSize: 15,
+    fontFamily: 'Poppins_500Medium',
     color: COLORS.text,
     flex: 1,
   },
@@ -2123,12 +2393,10 @@ const styles = StyleSheet.create({
     color: COLORS.white,
   },
   pickerOverlay: {
-    position: 'absolute',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    ...StyleSheet.absoluteFillObject,
+    zIndex: 9999,
+    elevation: 9999,
+    backgroundColor: 'rgba(0, 0, 0, 0.6)',
     justifyContent: 'center',
     alignItems: 'center',
   },
@@ -2148,9 +2416,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: SPACING.md,
+    padding: SPACING.lg,
     borderBottomWidth: 1,
     borderBottomColor: COLORS.border,
+    backgroundColor: COLORS.background,
   },
   pickerTitle: {
     fontSize: 18,
@@ -2161,24 +2430,38 @@ const styles = StyleSheet.create({
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: COLORS.background,
+    backgroundColor: COLORS.white,
     justifyContent: 'center',
     alignItems: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
+    elevation: 2,
   },
   pickerConfirmButton: {
-    backgroundColor: COLORS.primary,
-    paddingVertical: SPACING.md,
-    marginHorizontal: SPACING.md,
-    marginVertical: SPACING.md,
+    marginHorizontal: SPACING.lg,
+    marginVertical: SPACING.lg,
     borderRadius: 12,
+    overflow: 'hidden',
+    shadowColor: COLORS.primary,
+    shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3,
+    shadowRadius: 8,
+    elevation: 4,
+  },
+  pickerConfirmGradient: {
+    paddingVertical: SPACING.md + 2,
     alignItems: 'center',
+    justifyContent: 'center',
   },
   pickerConfirmText: {
     fontSize: 16,
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.white,
+    letterSpacing: 0.5,
   },
-  // CARE Store Styles
+  // 876Nurses Store Styles
   storeCardGradient: {
     borderRadius: 20,
     padding: 40,

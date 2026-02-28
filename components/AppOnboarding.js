@@ -17,6 +17,12 @@ import { COLORS, GRADIENTS, SPACING } from '../constants';
 const { width, height } = Dimensions.get('window');
 const ONBOARDING_KEY = '@app_onboarding_complete';
 
+const getOnboardingKey = (userId) => {
+  const normalized = (userId || '').toString().trim();
+  // If we don't have a userId, fall back to the legacy per-device key.
+  return normalized ? `${ONBOARDING_KEY}:${normalized}` : ONBOARDING_KEY;
+};
+
 const PATIENT_STEPS = [
   {
     id: 1,
@@ -134,7 +140,7 @@ const ADMIN_STEPS = [
   },
 ];
 
-export default function AppOnboarding({ visible, onComplete, userRole = 'patient' }) {
+export default function AppOnboarding({ visible, onComplete, userRole = 'patient', userId }) {
   const [currentStep, setCurrentStep] = useState(0);
 
   // Select steps based on user role
@@ -173,7 +179,7 @@ export default function AppOnboarding({ visible, onComplete, userRole = 'patient
 
   const handleComplete = async () => {
     try {
-      await AsyncStorage.setItem(ONBOARDING_KEY, 'true');
+      await AsyncStorage.setItem(getOnboardingKey(userId), 'true');
       setCurrentStep(0);
       if (onComplete) onComplete();
     } catch (error) {
@@ -409,7 +415,19 @@ const styles = StyleSheet.create({
 // Export helper to check onboarding status
 export const checkOnboardingStatus = async () => {
   try {
+    // Legacy signature: no userId means per-device behavior.
     const completed = await AsyncStorage.getItem(ONBOARDING_KEY);
+    return completed === 'true';
+  } catch (error) {
+    console.error('Error checking onboarding status:', error);
+    return false;
+  }
+};
+
+// Per-user check (preferred). If userId is provided, we only consider that user's key.
+export const checkOnboardingStatusForUser = async (userId) => {
+  try {
+    const completed = await AsyncStorage.getItem(getOnboardingKey(userId));
     return completed === 'true';
   } catch (error) {
     console.error('Error checking onboarding status:', error);
@@ -421,6 +439,14 @@ export const checkOnboardingStatus = async () => {
 export const resetOnboarding = async () => {
   try {
     await AsyncStorage.removeItem(ONBOARDING_KEY);
+  } catch (error) {
+    console.error('Error resetting onboarding:', error);
+  }
+};
+
+export const resetOnboardingForUser = async (userId) => {
+  try {
+    await AsyncStorage.removeItem(getOnboardingKey(userId));
   } catch (error) {
     console.error('Error resetting onboarding:', error);
   }

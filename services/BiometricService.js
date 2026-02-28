@@ -158,7 +158,7 @@ class BiometricService {
 
       // Authenticate with biometric
       const authenticated = await this.authenticate(
-        'Authenticate to sign in to CARE'
+        'Authenticate to sign in to 876Nurses'
       );
 
       if (authenticated) {

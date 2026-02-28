@@ -18,8 +18,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNotifications } from '../context/NotificationContext';
 import InvoiceService from '../services/InvoiceService';
 
-const ORDERS_STORAGE_KEY = '@care_store_orders';
-const INVOICES_STORAGE_KEY = '@care_invoices';
+const ORDERS_STORAGE_KEY = '@876_store_orders';
+const INVOICES_STORAGE_KEY = '@876_invoices';
 
 export default function AdminStoreOrdersScreen({ navigation, route, isEmbedded = false }) {
   const insets = useSafeAreaInsets();

@@ -6,16 +6,23 @@ import { Platform } from 'react-native';
 // Check if running in Expo Go (notifications not supported on Android)
 const isExpoGo = Constants.appOwnership === 'expo';
 
-// Configure how notifications are handled when app is in foreground
-// Only set handler if not in Expo Go on Android
-if (!isExpoGo || Platform.OS !== 'android') {
-  Notifications.setNotificationHandler({
-    handleNotification: async () => ({
-      shouldShowAlert: false, // Don't show system alert - only in-app
-      shouldPlaySound: true,  // Still play sound
-      shouldSetBadge: true,   // Still update badge
-    }),
-  });
+// Configure how notifications are handled when app is in foreground.
+// We default to showing system alerts so nurses still see reminders while the app is open.
+// Wrap in try/catch because expo-notifications isn't fully supported in Expo Go on newer SDKs.
+try {
+  if (!isExpoGo || Platform.OS !== 'android') {
+    Notifications.setNotificationHandler({
+      handleNotification: async () => ({
+        shouldShowAlert: true,
+        shouldPlaySound: true,
+        shouldSetBadge: true,
+      }),
+    });
+  }
+} catch (error) {
+  // Avoid crashing at import-time if the native module isn't available.
+  // eslint-disable-next-line no-console
+  console.warn('⚠️ Notifications handler setup failed:', error);
 }
 
 class PushNotificationService {
@@ -23,6 +30,16 @@ class PushNotificationService {
     this.expoPushToken = null;
     this.notificationListener = null;
     this.responseListener = null;
+    this._warnedExpoGo = false;
+  }
+
+  warnIfExpoGoOnce() {
+    if (!isExpoGo || this._warnedExpoGo) return;
+    this._warnedExpoGo = true;
+    // eslint-disable-next-line no-console
+    console.warn(
+      '⚠️ Running in Expo Go: notifications may not work. Use an EAS dev build / standalone build for reliable notifications.',
+    );
   }
 
   // Initialize push notifications
@@ -141,6 +158,7 @@ class PushNotificationService {
   // Send local notification (immediate)
   async sendLocalNotification(title, body, data = {}) {
     try {
+      this.warnIfExpoGoOnce();
       // Sending local notification
       
       const result = await Notifications.scheduleNotificationAsync({
@@ -164,6 +182,7 @@ class PushNotificationService {
   // Schedule notification for later
   async scheduleNotification(title, body, scheduledTime, data = {}) {
     try {
+      this.warnIfExpoGoOnce();
       const triggerDate = scheduledTime instanceof Date
         ? scheduledTime
         : new Date(scheduledTime);
@@ -306,8 +325,12 @@ class PushNotificationService {
   async sendBatchOverdueNotifications(notifications) {
     try {
       for (const notification of notifications) {
-        await this.sendOverduePaymentNotification(notification.patient);
-        await this.sendOverduePaymentNotification(notification.admin);
+        if (notification?.patient) {
+          await this.sendOverduePaymentNotification(notification.patient);
+        }
+        if (notification?.admin) {
+          await this.sendOverduePaymentNotification(notification.admin);
+        }
         
         // Small delay between notifications
         await new Promise(resolve => setTimeout(resolve, 100));

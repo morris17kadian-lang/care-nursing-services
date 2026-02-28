@@ -50,8 +50,14 @@ rl.question('Paste the authorization code here: ', async (code) => {
     console.log(tokens.refresh_token);
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
     console.log('Add this to your .env file as:\n');
-    console.log(`GMAIL_REFRESH_TOKEN=REDACTED
-    console.log('⚠️  Keep this token secure! It gives access to send emails.\n');
+    if (tokens.refresh_token) {
+      console.log(`GMAIL_REFRESH_TOKEN=${tokens.refresh_token}`);
+    } else {
+      console.log('⚠️ No refresh token received.');
+      console.log('If you previously authorized this app, revoke access in your Google Account and re-run this script.');
+    }
+
+    console.log('\n⚠️  Keep this token secure! It gives access to send emails.\n');
   } catch (error) {
     console.error('❌ Error getting tokens:', error.message);
   }

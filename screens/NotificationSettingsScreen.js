@@ -109,7 +109,7 @@ export default function NotificationSettingsScreen({ navigation }) {
     if (value && pushPermissionStatus !== 'granted') {
       Alert.alert(
         'Enable Push Notifications',
-        'Allow CARE to send you important notifications about appointments, messages, and health reminders.',
+        'Allow 876Nurses to send you important notifications about appointments, messages, and health reminders.',
         [
           {
             text: 'Cancel',

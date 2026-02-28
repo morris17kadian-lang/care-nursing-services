@@ -48,7 +48,7 @@ const PaymentSettingsScreen = ({ navigation }) => {
 
   // Company details for invoices
   const [companyDetails, setCompanyDetails] = useState({
-    companyName: 'CARE Nursing Services and More',
+    companyName: '876Nurses Home Care Services Limited',
     fullName: 'NURSING SERVICES AND MORE',
     address: 'Kingston, Jamaica',
     phone: '876-288-7304',
@@ -171,7 +171,7 @@ const PaymentSettingsScreen = ({ navigation }) => {
         <Switch
           value={value}
           onValueChange={onValueChange}
-          trackColor={{ false: COLORS.border, true: COLORS.accent }}
+          trackColor={{ false: COLORS.border, true: GRADIENTS.header?.[0] || COLORS.primary }}
           thumbColor={value ? COLORS.white : COLORS.textMuted}
         />
       ) : (
@@ -496,7 +496,7 @@ const PaymentSettingsScreen = ({ navigation }) => {
                         <View style={[styles.inputGroup, { flex: 1, marginBottom: 0 }]}>
                           <Text style={styles.inputLabel}>Currency</Text>
                           <TouchableOpacity 
-                            style={styles.textInput}
+                            style={[styles.textInput, styles.textInputDropdown]}
                             onPress={() => {
                               setPaymentInfo({ 
                                 ...paymentInfo, 
@@ -856,6 +856,11 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: COLORS.text,
     backgroundColor: COLORS.white,
+  },
+  textInputDropdown: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
   },
   dropdownButton: {
     flexDirection: 'row',

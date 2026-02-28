@@ -29,6 +29,7 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
   const [clientDetailsModalVisible, setClientDetailsModalVisible] = useState(false);
   const [fullInvoiceModalVisible, setFullInvoiceModalVisible] = useState(false);
   const [selectedClient, setSelectedClient] = useState(null);
+  const [recentInvoicesExpanded, setRecentInvoicesExpanded] = useState(false);
   const [clientToDelete, setClientToDelete] = useState(null);
   const [currentInvoiceData, setCurrentInvoiceData] = useState(null);
   const [clients, setClients] = useState([]);
@@ -69,6 +70,12 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
     cashAccepted: true,
     posAvailable: false
   });
+
+  useEffect(() => {
+    if (clientDetailsModalVisible) {
+      setRecentInvoicesExpanded(false);
+    }
+  }, [clientDetailsModalVisible, selectedClient?.id]);
 
   const sanitizeContactValue = (value) => {
     if (!value && value !== 0) return '';
@@ -240,7 +247,7 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
   useFocusEffect(
     React.useCallback(() => {
       buildClientsFromAppointments();
-    }, [allAppointments])
+    }, [allAppointments, firebaseUsers])
   );
 
   // Handle reopening client details modal when returning from invoice
@@ -314,257 +321,197 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
   };
 
   const buildClientsFromAppointments = async () => {
-    // Build clients from the same completed set used on the Admin Dashboard
-    // (both completed appointments AND completed shift requests)
-    const completedAppointments = (getAppointmentsByStatus('completed') || []).filter(
-      (apt) => !apt.isShiftRequest
-    );
-
-    // Include completed shift requests (recurring and non-recurring)
-    const hasClockedOut = (shift) => {
-      const clockByNurse = shift?.clockByNurse;
-      if (!clockByNurse || typeof clockByNurse !== 'object') return false;
-      const entries = Object.values(clockByNurse);
-      return entries.some(entry => {
-        if (!entry || typeof entry !== 'object') return false;
-        const inTime = entry.lastClockInTime || entry.clockInTime || entry.startedAt;
-        const outTime = entry.lastClockOutTime || entry.clockOutTime || entry.completedAt;
-        if (!inTime || !outTime) return false;
-        const inMs = Date.parse(inTime);
-        const outMs = Date.parse(outTime);
-        return outMs > inMs;
-      });
-    };
-    
-    const completedShifts = (shiftRequests || []).filter(request => 
-      request.status === 'completed' || (request.isRecurring && hasClockedOut(request))
-    );
-
-    // Combine both sources like the admin dashboard does
-    const allCompletedItems = [...completedAppointments, ...completedShifts];
-
-    // Debug logs removed
-    
-    // Get all invoices
+    // IMPORTANT: User Management should not be derived from appointments.
+    // Build the client list from actual user records (patients/users), then attach
+    // appointment counts and invoice history as enrichment.
     const allInvoices = await InvoiceService.getAllInvoices();
-    // Debug logs removed
-      
-      // Group by patientId (or clientId for shifts)
-      const clientsMap = new Map();
-      
-      allCompletedItems.forEach(apt => {
-        // Normalize patient/client fields for shifts
-        const patientId = apt.patientId || apt.clientId;
-        const patientName = apt.patientName || apt.clientName;
-        const patientEmail = apt.patientEmail || apt.clientEmail || apt.email || '';
-        const patientPhone = apt.patientPhone || apt.clientPhone || apt.phone || '';
-        const appointmentEmail = sanitizeContactValue(patientEmail);
-        const appointmentPhone = sanitizeContactValue(patientPhone);
+    const invoices = Array.isArray(allInvoices) ? allInvoices : [];
 
-        const photoFromAppointment = resolvePatientPhoto(apt);
+    const allApts = Array.isArray(allAppointments) ? allAppointments : [];
 
-        if (!clientsMap.has(patientId)) {
-          clientsMap.set(patientId, {
-            id: patientId,
-            name: patientName,
-            email: appointmentEmail,
-            phone: appointmentPhone,
-            photoUrl: photoFromAppointment,
-            address: apt.address || '6 Reece Road, Kingston 10',
-            serviceType: apt.service || 'General Care',
-            paymentMethod: 'Insurance',
-            isSubscriber: false,
-            hasRecurringAppointments: apt.isRecurring || false,
-            appointments: {
-              upcoming: 0,
-              completed: 0
-            },
-            totalPaid: 'J$0',
-            medicalNotes: [],
-            invoiceHistory: [],
-            completedAppointments: [] // Add this for invoice linking
-          });
-        }
-        
-        const client = clientsMap.get(patientId);
-        client.appointments.completed += 1;
+    const getUserId = (profile, index) => {
+      const candidates = [
+        profile?.id,
+        profile?.uid,
+        profile?.userId,
+        profile?._id?.$oid,
+        profile?._id,
+      ].filter(Boolean);
+      if (candidates.length > 0) return String(candidates[0]);
+      const email = sanitizeContactValue(profile?.email || profile?.contactEmail || '');
+      if (email) return email.toLowerCase();
+      return `user-${index}`;
+    };
 
-        // Keep contact info synced - prefer latest appointment data if available
-        // Sort appointments by date to ensure we get the latest info
-        const aptDate = new Date(apt.date);
-        if (!client.latestAptDate || aptDate > client.latestAptDate) {
-          client.latestAptDate = aptDate;
-          const email = sanitizeContactValue(patientEmail);
-          if (email) {
-            client.email = email;
-          }
-          const phone = sanitizeContactValue(patientPhone);
-          if (phone) {
-            client.phone = phone;
-          }
-          const latestPhoto = resolvePatientPhoto(apt);
-          if (latestPhoto) {
-            client.photoUrl = latestPhoto;
-          }
-          const address = apt.address || apt.clientAddress;
-          if (address && address !== 'No address provided' && address !== 'N/A') {
-            client.address = address;
-          }
-        }
+    const getUserName = (profile) => {
+      const fullName = `${profile?.firstName || ''} ${profile?.lastName || ''}`.trim();
+      return (
+        profile?.name ||
+        profile?.fullName ||
+        profile?.username ||
+        profile?.displayName ||
+        (fullName || '')
+      );
+    };
 
-        const offlineProfile = resolveProfileForAppointment(apt, offlineUserLookups);
-        if (offlineProfile) {
-          const sanitizedClientEmail = sanitizeContactValue(client.email);
-          const offlineEmail = sanitizeContactValue(
-            offlineProfile.email || offlineProfile.contactEmail || offlineProfile.primaryEmail || ''
-          );
-          if (!sanitizedClientEmail && offlineEmail) {
-            client.email = offlineEmail;
-            client.contactSource = 'offline';
-          }
+    const isClientUser = (profile) => {
+      const role = String(profile?.role || profile?.type || profile?.userType || '').toLowerCase();
+      if (role === 'patient' || role === 'user' || role === 'client') return true;
+      // If role is missing, keep it out by default to avoid mixing in nurses/admins.
+      return false;
+    };
 
-          const sanitizedClientPhone = sanitizeContactValue(client.phone);
-          const offlinePhone = [
-            offlineProfile.phone,
-            offlineProfile.contactPhone,
-            offlineProfile.primaryPhone,
-            offlineProfile.phoneNumber,
-            offlineProfile.mobile
-          ].map(value => sanitizeContactValue(value)).find(Boolean);
-          if (!sanitizedClientPhone && offlinePhone) {
-            client.phone = offlinePhone;
-            client.contactSource = client.contactSource || 'offline';
-          }
+    // Merge offline + Firebase users, preferring Firebase values when IDs match.
+    const mergedById = new Map();
+    const offlineList = Array.isArray(offlineUserProfiles) ? offlineUserProfiles : [];
+    offlineList.forEach((u, idx) => {
+      if (!u || !isClientUser(u)) return;
+      const id = getUserId(u, idx);
+      mergedById.set(id, { ...u });
+    });
+    (Array.isArray(firebaseUsers) ? firebaseUsers : []).forEach((u, idx) => {
+      if (!u || !isClientUser(u)) return;
+      const id = getUserId(u, idx);
+      const existing = mergedById.get(id);
+      mergedById.set(id, existing ? { ...existing, ...u } : { ...u });
+    });
 
-          if (!client.photoUrl) {
-            const offlinePhoto = sanitizeMediaValue(
-              offlineProfile.profilePhoto ||
-              offlineProfile.profileImage ||
-              offlineProfile.photoUrl ||
-              offlineProfile.imageUrl ||
-              offlineProfile.photo ||
-              offlineProfile.photoURL ||
-              offlineProfile.avatar ||
-              offlineProfile.profilePicture
-            );
-            if (offlinePhoto) {
-              client.photoUrl = offlinePhoto;
-            }
-          }
-        }
-        
-        // Store the completed appointment
-        client.completedAppointments.push(apt);
-        
-        // Add medical notes from completed appointment
-        // Extract nurse name from multiple possible sources
-        let nurseName = apt.nurseName 
-          || apt.assignedNurseName 
-          || apt.nurse?.name
-          || apt.nurse?.fullName
-          || apt.assignedNurse?.name 
-          || apt.assignedNurse?.fullName
-          || getNurseName(apt.assignedNurse)
-          || getNurseName(apt.nurse);
+    const clientsMap = new Map();
 
-        // If nurseName is still missing but we have a nurseId, try NurseContext
-        const nurseIdCandidate = apt.nurseId || apt.assignedNurse?._id || apt.assignedNurse?.id;
-        if ((!nurseName || nurseName === 'Unassigned' || nurseName === 'Assigned Nurse' || nurseName === 'Staff Member') && nurseIdCandidate && Array.isArray(nursesFromContext)) {
-          const matchedNurse = nursesFromContext.find(n =>
-            String(n.id ?? n._id) === String(nurseIdCandidate)
-          );
-          if (matchedNurse?.name) {
-            nurseName = matchedNurse.name;
-          }
-        }
-        
-        // Only use fallback if we truly have no name
-        if (!nurseName || nurseName === 'Unassigned' || nurseName === 'Assigned Nurse' || nurseName === 'Staff Member') {
-          // Avoid showing "Staff Member"; prefer a nurse-specific fallback
-          if (nurseIdCandidate) {
-            nurseName = 'Assigned Nurse';
-          } else {
-            nurseName = 'Care Professional';
-          }
-        }
-        
-        // Only add medical notes if there are actual nurse notes (not patient booking notes).
-        // For shift requests, nurse notes often live in `notes`.
-        const isShiftLike = Boolean(apt.isShiftRequest || apt.isShift || apt.adminRecurring || apt.recurringPattern || apt.isRecurring);
-        const actualNurseNotes =
-          apt.completionNotes ||
-          apt.nurseNotes ||
-          (isShiftLike ? apt.notes : null);
-        if (actualNurseNotes && actualNurseNotes.trim()) {
-          client.medicalNotes.push({
-            id: apt.id,
-            date: apt.completionDate || apt.completedAt || apt.date,
-            appointmentType: apt.service || 'General Care',
-            notes: actualNurseNotes,
-            nurseName: nurseName,
-            nurseId: apt.nurseId || apt.assignedNurse?._id || apt.assignedNurse?.id
-          });
-        }
-        
-        // Find and link invoice for this appointment
-        const appointmentInvoice = allInvoices.find(inv => {
-          const relatedId = inv.relatedAppointmentId ?? inv.appointmentId;
-          if (relatedId === undefined || relatedId === null) return false;
-          return String(relatedId) === String(apt.id);
-        });
-        if (appointmentInvoice) {
-          // Found invoice for appointment
-          client.invoiceHistory.push({
-            id: appointmentInvoice.invoiceId,
-            date: appointmentInvoice.createdAt,
-            amount: appointmentInvoice.total,
-            status: appointmentInvoice.status || 'Pending',
-            paidDate: appointmentInvoice.paidDate || null,
-            paymentMethod: appointmentInvoice.paymentMethod || null,
-            invoiceRecord: appointmentInvoice
-          });
-        } else {
-          // No invoice found for appointment
-        }
+    Array.from(mergedById.entries()).forEach(([id, profile], index) => {
+      const name = String(getUserName(profile) || '').trim();
+      if (!name || name.toLowerCase().includes('unknown')) return;
+
+      const email = sanitizeContactValue(profile?.email || profile?.contactEmail || '');
+      const phone = [
+        profile?.phone,
+        profile?.contactNumber,
+        profile?.mobile,
+        profile?.phoneNumber,
+      ].map(sanitizeContactValue).find(Boolean) || '';
+
+      const addressObj = profile?.address;
+      const address =
+        (typeof addressObj === 'string' ? addressObj : '') ||
+        profile?.location ||
+        profile?.clientAddress ||
+        profile?.patientAddress ||
+        '';
+
+      const photoUrl = sanitizeMediaValue(
+        profile?.profilePhoto ||
+          profile?.profileImage ||
+          profile?.photoUrl ||
+          profile?.imageUrl ||
+          profile?.photoURL ||
+          profile?.avatar ||
+          profile?.profilePicture ||
+          ''
+      );
+
+      clientsMap.set(id, {
+        id,
+        name,
+        email,
+        phone,
+        photoUrl,
+        profilePhoto: photoUrl,
+        profileImage: photoUrl,
+        address: String(address || 'Address on file'),
+        serviceType: 'General Care',
+        paymentMethod: 'Insurance',
+        isSubscriber: false,
+        hasRecurringAppointments: false,
+        appointments: { upcoming: 0, completed: 0 },
+        totalPaid: 'J$0',
+        medicalNotes: [],
+        invoiceHistory: [],
+        completedAppointments: [],
       });
-      
-      // Second pass: Add any remaining invoices that match by client name but weren't linked to specific appointments
-      clientsMap.forEach((client) => {
-        const clientInvoices = allInvoices.filter(inv => {
-          // Check if invoice belongs to this client by name
-          const invoiceClientName = (inv.clientName || inv.patientName || '').toLowerCase();
-          const clientName = (client.name || '').toLowerCase();
-          if (invoiceClientName !== clientName) return false;
-          
-          // Check if this invoice is already in the client's history
-          const alreadyAdded = client.invoiceHistory.some(existing => 
-            String(existing.id) === String(inv.invoiceId || inv.id)
-          );
-          return !alreadyAdded;
-        });
-        
-        clientInvoices.forEach(inv => {
-          client.invoiceHistory.push({
-            id: inv.invoiceId || inv.id,
-            date: inv.createdAt || inv.issueDate,
-            amount: inv.total,
-            status: inv.status || 'Pending',
-            paidDate: inv.paidDate || null,
-            paymentMethod: inv.paymentMethod || null,
-            invoiceRecord: inv
-          });
+    });
+
+    // Enrich with appointment counts (not used to decide inclusion)
+    clientsMap.forEach((client) => {
+      const clientKey = String(client.id);
+      const related = allApts.filter((apt) => {
+        const aptClientId =
+          apt?.patientId ||
+          apt?.clientId ||
+          apt?.userId ||
+          apt?.patient?.id ||
+          apt?.client?.id ||
+          null;
+        return aptClientId !== null && String(aptClientId) === clientKey;
+      });
+      client.appointments.completed = related.filter((a) => String(a?.status).toLowerCase() === 'completed').length;
+      client.appointments.upcoming = related.filter((a) => {
+        const s = String(a?.status || '').toLowerCase();
+        return s && s !== 'completed' && s !== 'cancelled' && s !== 'canceled' && s !== 'declined';
+      }).length;
+    });
+
+    // Attach invoices for each client by id/email/name match
+    const extractInvoiceSequence = (invoiceIdValue) => {
+      if (!invoiceIdValue || typeof invoiceIdValue !== 'string') return null;
+      const match = invoiceIdValue.match(/(\d{1,})\s*$/);
+      if (!match) return null;
+      const num = Number(match[1]);
+      return Number.isFinite(num) ? num : null;
+    };
+
+    clientsMap.forEach((client) => {
+      const idKey = String(client.id);
+      const emailKey = sanitizeContactValue(client.email).toLowerCase();
+      const nameKey = String(client.name || '').trim().toLowerCase();
+
+      const matched = invoices.filter((inv) => {
+        const invId = inv?.clientId || inv?.patientId || inv?.userId;
+        if (invId !== undefined && invId !== null && String(invId) === idKey) return true;
+
+        const invEmail = sanitizeContactValue(inv?.clientEmail || inv?.patientEmail || inv?.email || '').toLowerCase();
+        if (emailKey && invEmail && invEmail === emailKey) return true;
+
+        const invName = String(inv?.clientName || inv?.patientName || '').trim().toLowerCase();
+        if (nameKey && invName && invName === nameKey) return true;
+
+        return false;
+      });
+
+      if (matched.some((inv) => Boolean(inv?.isRecurring || inv?.recurringBilling))) {
+        client.hasRecurringAppointments = true;
+      }
+
+      matched.forEach((inv) => {
+        const invoiceId = inv?.invoiceId || inv?.id;
+        if (!invoiceId) return;
+        const alreadyAdded = client.invoiceHistory.some((existing) => String(existing.id) === String(invoiceId));
+        if (alreadyAdded) return;
+        client.invoiceHistory.push({
+          id: invoiceId,
+          date: inv?.createdAt || inv?.issueDate,
+          amount: inv?.total,
+          status: inv?.status || 'Pending',
+          paidDate: inv?.paidDate || null,
+          paymentMethod: inv?.paymentMethod || null,
+          invoiceRecord: inv,
         });
       });
+
+      client.invoiceHistory.sort((a, b) => {
+        const aSeq = extractInvoiceSequence(a?.id);
+        const bSeq = extractInvoiceSequence(b?.id);
+        if (aSeq !== null && bSeq !== null && aSeq !== bSeq) return bSeq - aSeq;
+        if (aSeq !== null && bSeq === null) return -1;
+        if (aSeq === null && bSeq !== null) return 1;
+        return String(b?.id || '').localeCompare(String(a?.id || ''));
+      });
+    });
       
-      const clientsList = Array.from(clientsMap.values())
-        .filter(client => {
-          const name = client.name ? client.name.toLowerCase() : '';
-          const isFiltered = name.includes('unknown patient') || name.includes('unknown client');
-          if (isFiltered) {
-            // Filtered noisy client names
-          }
-          return !isFiltered;
-        });
+      const clientsList = Array.from(clientsMap.values()).filter(client => {
+        const name = client.name ? client.name.toLowerCase() : '';
+        const isFiltered = name.includes('unknown patient') || name.includes('unknown client');
+        return !isFiltered;
+      });
       
       clientsList.forEach(client => {
         client.email = sanitizeContactValue(client.email);
@@ -1264,17 +1211,31 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
                     <View style={styles.invoiceSection}>
                       <View style={styles.invoiceHeaderRow}>
                         <Text style={styles.invoiceLabel}>Recent Invoices</Text>
-                        <TouchableWeb 
-                          onPress={() => navigation.navigate('InvoiceManagement', { searchQuery: selectedClient.name })}
-                        >
-                          <Text style={styles.viewAllText}>View All</Text>
-                        </TouchableWeb>
+                        {selectedClient?.invoiceHistory && selectedClient.invoiceHistory.length > 3 ? (
+                          <TouchableWeb
+                            onPress={() => setRecentInvoicesExpanded((prev) => !prev)}
+                            style={styles.invoiceDropdownToggle}
+                            activeOpacity={0.7}
+                          >
+                            <Text style={styles.viewAllText}>
+                              {recentInvoicesExpanded ? 'Hide' : 'Show All'}
+                            </Text>
+                            <MaterialCommunityIcons
+                              name={recentInvoicesExpanded ? 'chevron-up' : 'chevron-down'}
+                              size={18}
+                              color={COLORS.primary}
+                            />
+                          </TouchableWeb>
+                        ) : null}
                       </View>
                       
                       {/* Invoice History */}
                       <View style={styles.invoiceHistorySection}>
                         {selectedClient.invoiceHistory && selectedClient.invoiceHistory.length > 0 ? (
-                          selectedClient.invoiceHistory.slice(0, 3).map((invoice, index) => {
+                          (selectedClient.invoiceHistory.length > 3
+                            ? (recentInvoicesExpanded ? selectedClient.invoiceHistory : selectedClient.invoiceHistory.slice(0, 3))
+                            : selectedClient.invoiceHistory.slice(0, 3)
+                          ).map((invoice, index) => {
                             const statusStyles = getInvoiceStatusStyles(invoice.status);
                             return (
                               <View key={invoice.id || `invoice-${index}`} style={styles.invoiceItemContainer}>
@@ -1418,7 +1379,9 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
                         });
                         const legacyNotes = (apt?.notes && String(apt.notes).trim()) || '';
                         const hasNurseNotes = Boolean(
-                          apt?.nurseNotes && String(apt.nurseNotes).trim().length
+                          (apt?.nurseNotes && String(apt.nurseNotes).trim().length) ||
+                          (apt?.completionNotes && String(apt.completionNotes).trim().length) ||
+                          (apt?.lastCompletionNotes && String(apt.lastCompletionNotes).trim().length)
                         );
                         const text = raw === null || raw === undefined
                           ? (!hasNurseNotes ? legacyNotes : '')
@@ -1435,7 +1398,36 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
                         };
                       }).filter(Boolean);
 
-                      const allNoteItems = [...nurseNoteItems, ...patientNoteItems].sort((a, b) => {
+                      // De-duplicate any patient notes that are effectively the same as a nurse note
+                      const dedupedPatientNotes = patientNoteItems.filter((pItem) => {
+                        const pBody = (pItem.body || '').trim();
+                        if (!pBody) return true;
+
+                        return !nurseNoteItems.some((nItem) => {
+                          const nBody = (nItem.body || '').trim();
+                          if (!nBody) return false;
+                          if (nBody !== pBody) return false;
+
+                          const sameDate =
+                            nItem.date && pItem.date && String(nItem.date) === String(pItem.date);
+
+                          const normalizeIdRoot = (id) => {
+                            if (!id) return '';
+                            return String(id)
+                              .replace(/^nurse-note-/, '')
+                              .replace(/^patient-note-/, '')
+                              .trim();
+                          };
+
+                          const sameRoot =
+                            normalizeIdRoot(nItem.id) &&
+                            normalizeIdRoot(nItem.id) === normalizeIdRoot(pItem.id);
+
+                          return sameDate || sameRoot;
+                        });
+                      });
+
+                      const allNoteItems = [...nurseNoteItems, ...dedupedPatientNotes].sort((a, b) => {
                         const aTime = a?.date ? Date.parse(a.date) : 0;
                         const bTime = b?.date ? Date.parse(b.date) : 0;
                         if (!Number.isFinite(aTime) && !Number.isFinite(bTime)) return 0;
@@ -2279,6 +2271,11 @@ const styles = StyleSheet.create({
     fontSize: 12,
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.primary,
+  },
+  invoiceDropdownToggle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
   },
   invoiceHistoryLeft: {
     flexDirection: 'row',

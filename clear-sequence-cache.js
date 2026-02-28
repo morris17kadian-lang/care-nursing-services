@@ -13,8 +13,8 @@ export const clearAllSequenceCache = async () => {
       'nurse_sequence',
       'admin_sequence',
       'staff_sequences',
-      '@care_sequences',
-      '@care_counters'
+      '@876_sequences',
+      '@876_counters'
     ];
     
     // Try to get all keys and filter

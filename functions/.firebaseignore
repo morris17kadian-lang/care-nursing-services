@@ -1,0 +1,10 @@
+# Never upload local env files or secrets in the functions source
+.env*
+*.pem
+*service-account*.json
+*service-key*.json
+firebase-service-key.json
+
+# Node
+node_modules/
+*.log

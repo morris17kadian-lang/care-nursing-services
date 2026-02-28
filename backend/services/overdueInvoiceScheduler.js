@@ -1,11 +1,14 @@
 const cron = require('node-cron');
 const { admin, getFirestore } = require('./firebaseAdmin');
 const gmailService = require('./gmailService');
+const {
+  selectAdminRecipients,
+  NOTIFICATION_CATEGORIES,
+} = require('./adminNotificationRecipients');
 
 const COLLECTION_INVOICES = 'invoices';
 const COLLECTION_ADMINS = 'admins';
 const COLLECTION_NOTIFICATIONS = 'notifications';
-const TARGET_ADMIN_NAME = 'Sandrene Brown Rhooms';
 
 function formatCurrency(value, currency = 'JMD') {
   const amount = Number(value) || 0;
@@ -50,21 +53,28 @@ function parseDate(value) {
   return null;
 }
 
-function normalizeName(value) {
-  return String(value || '').trim().toLowerCase();
+function formatDateForEmail(value) {
+  const parsed = parseDate(value);
+  if (!parsed) return String(value || 'N/A');
+
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      year: 'numeric',
+      month: 'short',
+      day: '2-digit',
+    }).format(parsed);
+  } catch (error) {
+    return parsed.toISOString().slice(0, 10);
+  }
 }
 
-function getDisplayName(record) {
-  return (
-    record?.fullName ||
-    record?.name ||
-    `${record?.firstName || ''} ${record?.lastName || ''}`.trim()
-  );
-}
+function calculateDaysOverdue(invoice, now) {
+  const dueDate = parseDate(invoice?.dueDate || invoice?.due_date);
+  if (!dueDate) return 1;
 
-function isTargetAdmin(adminUser) {
-  const name = normalizeName(getDisplayName(adminUser));
-  return name === normalizeName(TARGET_ADMIN_NAME);
+  const diffMs = now.getTime() - dueDate.getTime();
+  const days = Math.floor(diffMs / (1000 * 60 * 60 * 24));
+  return days > 0 ? days : 1;
 }
 
 function shouldNotify(invoice, now) {
@@ -241,13 +251,18 @@ async function runOverdueJob(db) {
   }
 
   const admins = await fetchAdmins(db);
+  const financialAdmins = selectAdminRecipients(admins, NOTIFICATION_CATEGORIES.FINANCIAL);
 
   for (const invoice of overdueInvoices) {
     try {
       const invoiceId = invoice.invoiceId || invoice.id;
+      const invoicePreviewUrl = `nurses876://invoice/${encodeURIComponent(String(invoiceId || ''))}`;
+      const invoiceManagementUrl = `nurses876://invoice-management/${encodeURIComponent(String(invoiceId || ''))}`;
       const amount = Number(invoice.total || invoice.amount || 0);
       const currency = invoice.currency || invoice.currencyCode || 'JMD';
       const amountLabel = formatCurrency(amount, currency);
+      const dueDateLabel = formatDateForEmail(invoice.dueDate || invoice.due_date);
+      const daysOverdue = calculateDaysOverdue(invoice, now);
       const patientId = invoice.patientId || invoice.clientId || invoice.userId;
       const clientName = invoice.clientName || invoice.patientName || 'Unknown Client';
       const clientEmail = invoice.clientEmail || invoice.patientEmail;
@@ -288,21 +303,22 @@ async function runOverdueJob(db) {
           to: resolvedClientEmail,
           subject: `Overdue Invoice ${invoiceId}`,
           html: `
-            <div style="font-family: Arial, sans-serif; line-height: 1.6;">
-              <h2 style="color: #d32f2f;">Payment Overdue</h2>
-              <p>Hi ${resolvedClientName},</p>
-              <p>Your invoice <strong>${invoiceId}</strong> for <strong>${amountLabel}</strong> is now overdue.</p>
-              <p>Please settle your balance at your earliest convenience.</p>
-              <p>Thank you,<br/>876 Nurses</p>
+            <div style="font-family: Arial, sans-serif; color:#1f2a44; line-height: 1.7; max-width: 600px; margin: 0 auto; padding: 24px 20px;">
+              <p style="margin:0 0 14px 0;">Hi ${resolvedClientName},</p>
+              <p style="margin:0 0 14px 0;">Your invoice <strong>${invoiceId}</strong> for <strong>${amountLabel}</strong> is now overdue.</p>
+              <p style="margin:0 0 14px 0;">Please settle your balance at your earliest convenience.</p>
+              <p style="margin:0 0 14px 0;"><a href="${invoicePreviewUrl}" style="color:#2f62d7;text-decoration:underline;font-weight:700;">Click here to view invoice</a></p>
+
+              <div style="text-align:center;padding:18px 10px 0 10px;color:#9ca3af;font-size:12px;line-height:1.6;">
+                876 Nurses Home Care Services · Kingston, Jamaica<br />
+                Need help? Email <a href="mailto:876nurses@gmail.com" style="color:#6b7280;text-decoration:underline;">876nurses@gmail.com</a>
+              </div>
             </div>
           `,
         });
       }
 
-      for (const adminUser of admins) {
-        if (!isTargetAdmin(adminUser)) {
-          continue;
-        }
+      for (const adminUser of financialAdmins) {
         await createNotification(db, {
           userId: adminUser.id,
           title: 'Overdue Payment Alert',
@@ -337,11 +353,20 @@ async function runOverdueJob(db) {
           to: adminUser.email,
           subject: `Overdue Invoice Alert: ${invoiceId}`,
           html: `
-            <div style="font-family: Arial, sans-serif; line-height: 1.6;">
-              <h2 style="color: #d32f2f;">Overdue Invoice Alert</h2>
-              <p>Invoice <strong>${invoiceId}</strong> for <strong>${clientName}</strong> is overdue.</p>
-              <p>Amount: <strong>${amountLabel}</strong></p>
-              <p>Please follow up with the client.</p>
+            <div style="font-family: Arial, sans-serif; color:#1f2a44; line-height: 1.7; max-width: 600px; margin: 0 auto; padding: 24px 20px;">
+              <p style="margin:0 0 14px 0;">Hi ${adminUser.fullName || adminUser.name || 'Team'},</p>
+              <p style="margin:0 0 14px 0;">An invoice has become overdue and requires administrative attention.</p>
+              <p style="margin:0 0 10px 0;">Client Name: ${clientName}</p>
+              <p style="margin:0 0 10px 0;">Invoice Number: ${invoiceId}</p>
+              <p style="margin:0 0 10px 0;">Amount Due: ${amountLabel}</p>
+              <p style="margin:0 0 10px 0;">Due Date: ${dueDateLabel}</p>
+              <p style="margin:0 0 14px 0;">This invoice is currently ${daysOverdue} day(s) past the due date. Please review the client’s account and take the necessary follow-up action in accordance with the organization’s billing policy.</p>
+              <p style="margin:0 0 14px 0;"><a href="${invoiceManagementUrl}" style="color:#2f62d7;text-decoration:underline;font-weight:700;">Click here to view on Invoice Management</a></p>
+
+              <div style="text-align:center;padding:18px 10px 0 10px;color:#9ca3af;font-size:12px;line-height:1.6;">
+                876 Nurses Home Care Services · Kingston, Jamaica<br />
+                Need help? Email <a href="mailto:876nurses@gmail.com" style="color:#6b7280;text-decoration:underline;">876nurses@gmail.com</a>
+              </div>
             </div>
           `,
         });

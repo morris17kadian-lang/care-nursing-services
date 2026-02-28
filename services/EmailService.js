@@ -1,4 +1,5 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import FirebaseEmailQueueService from './FirebaseEmailQueueService';
 
 /**
  * Email Service for sending emails via Gmail API or SMTP
@@ -9,10 +10,14 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
  * - System notifications
  */
 class EmailService {
-  static GMAIL_CONFIG_KEY = '@care_gmail_config';
+  static GMAIL_CONFIG_KEY = '@876_gmail_config';
   
   // Default email configuration
   static defaultConfig = {
+    // provider:
+    // - 'firebase' (recommended): enqueue emails into Firestore `/mail` for Cloud Functions to send
+    // - 'backend': call a separate backend server (Express) via HTTP
+    provider: 'firebase',
     fromEmail: '876nurses@gmail.com',
     fromName: '876 Nurses Home Care Services',
     replyTo: '876nurses@gmail.com',
@@ -58,16 +63,37 @@ class EmailService {
   static async send(emailData) {
     try {
       const config = await this.getConfig();
+
+      const provider = config.provider || 'backend';
       
       if (!config.enabled) {
         console.log('Email service is disabled');
         return { success: false, error: 'Email service is not enabled' };
       }
 
-      const { to, subject, html, text, attachments = [] } = emailData;
+      const { to, subject, html, text, attachments = [], meta } = emailData || {};
 
       if (!to || !subject || (!html && !text)) {
         return { success: false, error: 'Missing required email fields' };
+      }
+
+      // Provider A: Firebase mail-queue (Firestore -> Cloud Function)
+      if (provider === 'firebase') {
+        const result = await FirebaseEmailQueueService.enqueueEmail({
+          to,
+          subject,
+          html,
+          text,
+          attachments,
+          meta: meta && typeof meta === 'object' ? meta : {},
+        });
+
+        return {
+          success: true,
+          provider: 'firebase',
+          queued: true,
+          id: result?.id || null,
+        };
       }
 
       // Prepare email payload for backend
@@ -81,7 +107,8 @@ class EmailService {
         subject,
         html: html || text,
         text: text || html,
-        attachments
+        attachments,
+        meta: meta && typeof meta === 'object' ? meta : undefined
       };
 
       // Get backend URL from config or use default
@@ -102,7 +129,7 @@ class EmailService {
       });
 
       // Call backend API
-      const response = await fetch(`${backendUrl}/api/send-email`, {
+      const response = await fetch(`${backendUrl}/api/email/send-email`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -128,37 +155,63 @@ class EmailService {
   }
 
   /**
-   * Send invoice email with PDF attachment
+   * Send invoice email
    */
   static async sendInvoiceEmail({ to, invoiceData, pdfUri }) {
     try {
+      const config = await this.getConfig();
+      const provider = config.provider || 'backend';
+
+      if (!config.enabled) {
+        console.log('Email service is disabled');
+        return { success: false, error: 'Email service is not enabled' };
+      }
+
+      if (provider === 'firebase') {
+        const queued = await FirebaseEmailQueueService.enqueueInvoiceEmail({
+          to,
+          invoiceData,
+          pdfUri,
+        });
+
+        return {
+          success: true,
+          provider: 'firebase',
+          queued: true,
+          id: queued?.id || null,
+        };
+      }
+
       const subject = `Invoice ${invoiceData.invoiceNumber} - 876 Nurses Home Care Services`;
+      const invoiceIdForLink =
+        invoiceData?.invoiceId ||
+        invoiceData?.id ||
+        invoiceData?.firestoreId ||
+        invoiceData?.invoiceNumber ||
+        '';
+      const appInvoiceUrl =
+        invoiceData?.appInvoiceUrl ||
+        invoiceData?.deepLink ||
+        `nurses876://invoice/${encodeURIComponent(String(invoiceIdForLink))}`;
       
       const html = `
         <!DOCTYPE html>
         <html>
         <head>
           <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
-            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
-            .invoice-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; }
-            .detail-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #eee; }
-            .amount { font-size: 24px; color: #667eea; font-weight: bold; }
-            .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
-            .button { display: inline-block; padding: 12px 30px; background: #667eea; color: white; text-decoration: none; border-radius: 5px; margin: 20px 0; }
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #1f2a44; margin:0; padding:0; background:#ffffff; }
+            .container { max-width: 600px; margin: 0 auto; padding: 32px 20px; }
+            .invoice-details { background: #f8faff; padding: 16px; border: 1px solid rgba(47,98,215,0.2); border-radius: 12px; margin: 16px 0; }
+            .detail-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #e5e7eb; }
+            .detail-row:last-child { border-bottom: none; }
+            .amount { color: #2f62d7; font-weight: 800; }
+            .footer { text-align: center; padding: 18px 10px 0 10px; color: #9ca3af; font-size: 12px; }
           </style>
         </head>
         <body>
           <div class="container">
-            <div class="header">
-              <h1>Invoice from 876 Nurses</h1>
-              <p>Professional Home Care Services</p>
-            </div>
-            <div class="content">
-              <p>Dear ${invoiceData.clientName},</p>
-              <p>Thank you for choosing 876 Nurses Home Care Services. Please find your invoice details below:</p>
+              <p style="margin:0 0 24px 0;font-size:15px;line-height:1.7;">Hi ${invoiceData.clientName || 'Client'},</p>
+              <p style="margin:0 0 16px 0;font-size:15px;line-height:1.7;">Your invoice <strong>${invoiceData.invoiceNumber}</strong> from 876 Nurses Home Care Services is ready.</p>
               
               <div class="invoice-details">
                 <div class="detail-row">
@@ -189,27 +242,18 @@ class EmailService {
                 ` : ''}
               </div>
 
-              ${invoiceData.paymentStatus !== 'paid' ? `
-                <p style="text-align: center;">
-                  <a href="#" class="button">Pay Invoice</a>
-                </p>
-              ` : `
+              ${invoiceData.paymentStatus === 'paid' ? `
                 <p style="text-align: center; color: #10B981; font-weight: bold;">✓ PAID</p>
-              `}
+              ` : ''}
 
-              <p>The detailed invoice is attached to this email as a PDF document.</p>
-              
-              <p>If you have any questions about this invoice, please don't hesitate to contact us.</p>
-              
-              <p>Best regards,<br>
-              876 Nurses Home Care Services Team</p>
-            </div>
-            <div class="footer">
-              <p>876 Nurses Home Care Services Limited</p>
-              <p>60 Knutsford Blvd, Kingston 5, Jamaica</p>
-              <p>Phone: (876) 618-9876 | Email: 876nurses@gmail.com</p>
-              <p><a href="https://www.876nurses.com">www.876nurses.com</a></p>
-            </div>
+              <p style="margin:16px 0 0 0;font-size:15px;line-height:1.7;">
+                <a href="${appInvoiceUrl}" style="color:#2f62d7;text-decoration:underline;font-weight:700;">Click here to view invoice</a>
+              </p>
+
+              <div class="footer">
+                876 Nurses Home Care Services · Kingston, Jamaica<br />
+                Need help? Email <a href="mailto:876nurses@gmail.com" style="color:#6b7280;text-decoration:underline;">876nurses@gmail.com</a>
+              </div>
           </div>
         </body>
         </html>
@@ -219,11 +263,8 @@ class EmailService {
         to,
         subject,
         html,
-        attachments: pdfUri ? [{
-          filename: `${invoiceData.invoiceNumber}.pdf`,
-          path: pdfUri,
-          contentType: 'application/pdf'
-        }] : []
+        text: `Invoice ${invoiceData.invoiceNumber} from 876 Nurses Home Care Services\n\nHi ${invoiceData.clientName || 'Client'},\n\nService: ${invoiceData.service || invoiceData.services?.join(', ') || 'Professional Care'}\nAmount: JMD $${(invoiceData.amount || invoiceData.total || 0).toFixed(2)}\n\nClick here to view invoice: ${appInvoiceUrl}\n\nNeed help? Email 876nurses@gmail.com`,
+        attachments: []
       });
     } catch (error) {
       console.error('Error sending invoice email:', error);
@@ -237,73 +278,50 @@ class EmailService {
   static async sendPaymentConfirmation({ to, paymentData, invoiceData }) {
     try {
       const subject = `Payment Confirmation - Invoice ${invoiceData.invoiceNumber}`;
+      const invoiceIdForLink =
+        invoiceData?.invoiceId ||
+        invoiceData?.id ||
+        invoiceData?.firestoreId ||
+        invoiceData?.invoiceNumber ||
+        '';
+      const appInvoiceUrl =
+        invoiceData?.appInvoiceUrl ||
+        invoiceData?.deepLink ||
+        `nurses876://invoice/${encodeURIComponent(String(invoiceIdForLink))}`;
       
       const html = `
         <!DOCTYPE html>
         <html>
         <head>
           <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #10B981 0%, #059669 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
-            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
-            .success-icon { font-size: 48px; margin-bottom: 10px; }
-            .payment-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; }
-            .detail-row { display: flex; justify-content: space-between; padding: 10px 0; border-bottom: 1px solid #eee; }
-            .amount { font-size: 24px; color: #10B981; font-weight: bold; }
-            .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #1f2a44; margin:0; padding:0; background:#ffffff; }
+            .container { max-width: 600px; margin: 0 auto; padding: 32px 20px; }
+            .footer { text-align: center; padding: 18px 10px 0 10px; color: #9ca3af; font-size: 12px; }
           </style>
         </head>
         <body>
           <div class="container">
-            <div class="header">
-              <div class="success-icon">✓</div>
-              <h1>Payment Successful!</h1>
-              <p>Your payment has been processed</p>
-            </div>
-            <div class="content">
-              <p>Dear ${invoiceData.clientName},</p>
-              <p>We have successfully received your payment. Thank you for your prompt payment!</p>
-              
-              <div class="payment-details">
-                <div class="detail-row">
-                  <span>Payment Amount:</span>
-                  <span class="amount">JMD $${(paymentData.amount || 0).toFixed(2)}</span>
-                </div>
-                <div class="detail-row">
-                  <span>Transaction ID:</span>
-                  <strong>${paymentData.transactionId}</strong>
-                </div>
-                <div class="detail-row">
-                  <span>Payment Date:</span>
-                  <strong>${new Date().toLocaleDateString()}</strong>
-                </div>
-                <div class="detail-row">
-                  <span>Payment Method:</span>
-                  <strong>${paymentData.method || 'Fygaro'}</strong>
-                </div>
-                <div class="detail-row">
-                  <span>Invoice Number:</span>
-                  <strong>${invoiceData.invoiceNumber}</strong>
-                </div>
-              </div>
+              <p style="margin:0 0 10px 0;font-size:22px;font-weight:700;line-height:1.4;">Payment Successful!</p>
+              <p style="margin:0 0 12px 0;font-size:15px;line-height:1.7;">We have received your payment of JMD $${(paymentData.amount || 0).toFixed(2)} for Invoice ${invoiceData.invoiceNumber}.</p>
+              <p style="margin:0 0 16px 0;font-size:15px;line-height:1.7;">Thank you for choosing 876 Nurses Home Care Services.</p>
 
-              <p>This is your official payment confirmation. Please keep this email for your records.</p>
-              
-              <p>Best regards,<br>
-              876 Nurses Home Care Services Team</p>
-            </div>
-            <div class="footer">
-              <p>876 Nurses Home Care Services Limited</p>
-              <p>60 Knutsford Blvd, Kingston 5, Jamaica</p>
-              <p>Phone: (876) 618-9876 | Email: 876nurses@gmail.com</p>
-            </div>
+              <p style="margin:0 0 16px 0;"><a href="${appInvoiceUrl}" style="color:#2f62d7;text-decoration:underline;font-weight:700;">Click here to view invoice</a></p>
+
+              <div class="footer">
+                876 Nurses Home Care Services · Kingston, Jamaica<br />
+                Need help? Email <a href="mailto:876nurses@gmail.com" style="color:#6b7280;text-decoration:underline;">876nurses@gmail.com</a>
+              </div>
           </div>
         </body>
         </html>
       `;
 
-      return await this.send({ to, subject, html });
+      return await this.send({
+        to,
+        subject,
+        html,
+        text: `Payment Successful!\n\nWe have received your payment of JMD $${(paymentData.amount || 0).toFixed(2)} for Invoice ${invoiceData.invoiceNumber}.\nThank you for choosing 876 Nurses Home Care Services.\n\nClick here to view invoice: ${appInvoiceUrl}\n\nNeed help? Email 876nurses@gmail.com`
+      });
     } catch (error) {
       console.error('Error sending payment confirmation:', error);
       return { success: false, error: error.message };
@@ -322,62 +340,39 @@ class EmailService {
         <html>
         <head>
           <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
-            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
-            .appointment-details { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; }
-            .detail-row { padding: 10px 0; border-bottom: 1px solid #eee; }
-            .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #1f2a44; margin:0; padding:0; background:#ffffff; }
+            .container { max-width: 600px; margin: 0 auto; padding: 32px 20px; }
+            .footer { text-align: center; padding: 18px 10px 0 10px; color: #9ca3af; font-size: 12px; }
           </style>
         </head>
         <body>
           <div class="container">
-            <div class="header">
-              <h1>🗓️ Appointment Reminder</h1>
-              <p>Don't forget your upcoming appointment</p>
-            </div>
-            <div class="content">
-              <p>Dear ${appointmentData.patientName},</p>
-              <p>This is a friendly reminder about your upcoming appointment with 876 Nurses Home Care Services.</p>
-              
-              <div class="appointment-details">
-                <div class="detail-row">
-                  <strong>Date:</strong> ${appointmentData.date}
-                </div>
-                <div class="detail-row">
-                  <strong>Time:</strong> ${appointmentData.time}
-                </div>
-                <div class="detail-row">
-                  <strong>Service:</strong> ${appointmentData.service}
-                </div>
-                <div class="detail-row">
-                  <strong>Location:</strong> ${appointmentData.address}
-                </div>
-                ${appointmentData.notes ? `
-                  <div class="detail-row">
-                    <strong>Notes:</strong> ${appointmentData.notes}
-                  </div>
-                ` : ''}
-              </div>
+              <p style="margin:0 0 24px 0;font-size:15px;line-height:1.7;">Hi ${appointmentData.patientName || 'Client'},</p>
+              <p style="margin:0 0 16px 0;font-size:15px;line-height:1.7;">This is a reminder for your upcoming appointment with 876 Nurses Home Care Services.</p>
 
-              <p>If you need to reschedule or cancel this appointment, please contact us as soon as possible.</p>
-              
-              <p>We look forward to providing you with excellent care!</p>
-              
-              <p>Best regards,<br>
-              876 Nurses Home Care Services Team</p>
-            </div>
-            <div class="footer">
-              <p>876 Nurses Home Care Services Limited</p>
-              <p>Phone: (876) 618-9876 | Email: 876nurses@gmail.com</p>
-            </div>
+              <p style="margin:0 0 8px 0;"><strong>Date:</strong> ${appointmentData.date}</p>
+              <p style="margin:0 0 8px 0;"><strong>Time:</strong> ${appointmentData.time}</p>
+              <p style="margin:0 0 8px 0;"><strong>Service:</strong> ${appointmentData.service}</p>
+              <p style="margin:0 0 8px 0;"><strong>Location:</strong> ${appointmentData.address}</p>
+              ${appointmentData.notes ? `<p style="margin:0 0 8px 0;"><strong>Notes:</strong> ${appointmentData.notes}</p>` : ''}
+
+              <p style="margin:16px 0 0 0;font-size:15px;line-height:1.7;">If you need to reschedule, please contact us as soon as possible.</p>
+
+              <div class="footer">
+                876 Nurses Home Care Services · Kingston, Jamaica<br />
+                Need help? Email <a href="mailto:876nurses@gmail.com" style="color:#6b7280;text-decoration:underline;">876nurses@gmail.com</a>
+              </div>
           </div>
         </body>
         </html>
       `;
 
-      return await this.send({ to, subject, html });
+      return await this.send({
+        to,
+        subject,
+        html,
+        text: `Appointment Reminder\n\nPatient: ${appointmentData.patientName || 'Client'}\nDate: ${appointmentData.date}\nTime: ${appointmentData.time}\nService: ${appointmentData.service}\nLocation: ${appointmentData.address}\n\nNeed help? Email 876nurses@gmail.com`
+      });
     } catch (error) {
       console.error('Error sending appointment reminder:', error);
       return { success: false, error: error.message };
@@ -425,58 +420,34 @@ class EmailService {
         <html>
         <head>
           <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
-            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
-            .reset-box { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; text-align: center; }
-            .button { display: inline-block; padding: 15px 40px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; border-radius: 5px; margin: 20px 0; font-weight: bold; }
-            .security-notice { background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
-            .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #1f2a44; margin:0; padding:0; background:#ffffff; }
+            .container { max-width: 600px; margin: 0 auto; padding: 32px 20px; }
+            .footer { text-align: center; padding: 18px 10px 0 10px; color: #9ca3af; font-size: 12px; }
           </style>
         </head>
         <body>
           <div class="container">
-            <div class="header">
-              <h1>🔐 Password Reset Request</h1>
-              <p>876 Nurses Home Care Services</p>
-            </div>
-            <div class="content">
-              <p>Hello${userName ? ' ' + userName : ''},</p>
-              <p>We received a request to reset your password for your 876 Nurses account.</p>
-              
-              <div class="reset-box">
-                <p>Click the button below to reset your password:</p>
-                <a href="${resetLink}" class="button">Reset Password</a>
-                <p style="margin-top: 20px; font-size: 12px; color: #666;">
-                  This link will expire in 1 hour for security reasons.
-                </p>
-              </div>
+            <p style="margin:0 0 12px 0;">Hello${userName ? ' ' + userName : ''},</p>
+            <p style="margin:0 0 12px 0;">We received a request to reset your password for your 876 Nurses account.</p>
+            <p style="margin:0 0 12px 0;"><a href="${resetLink}" style="color:#2f62d7;text-decoration:underline;font-weight:700;">Click here to reset your password</a></p>
+            <p style="margin:0 0 12px 0;">This link will expire in 1 hour for security reasons.</p>
+            <p style="margin:0 0 12px 0;">If you didn't request this reset, please ignore this email.</p>
 
-              <div class="security-notice">
-                <strong>⚠️ Security Notice</strong>
-                <p>If you didn't request this password reset, please ignore this email. Your password will remain unchanged.</p>
-                <p>For security reasons, we never ask for your password via email.</p>
-              </div>
-              
-              <p>If the button doesn't work, copy and paste this link into your browser:</p>
-              <p style="word-break: break-all; color: #667eea;">${resetLink}</p>
-              
-              <p>Best regards,<br>
-              876 Nurses Home Care Services Team</p>
-            </div>
             <div class="footer">
-              <p>876 Nurses Home Care Services Limited</p>
-              <p>60 Knutsford Blvd, Kingston 5, Jamaica</p>
-              <p>Phone: (876) 618-9876 | Email: 876nurses@gmail.com</p>
-              <p>This is an automated message, please do not reply to this email.</p>
+              876 Nurses Home Care Services · Kingston, Jamaica<br />
+              Need help? Email <a href="mailto:876nurses@gmail.com" style="color:#6b7280;text-decoration:underline;">876nurses@gmail.com</a>
             </div>
           </div>
         </body>
         </html>
       `;
 
-      return await this.send({ to, subject, html });
+      return await this.send({
+        to,
+        subject,
+        html,
+        text: `Password Reset Request\n\nHello${userName ? ' ' + userName : ''},\n\nReset your password: ${resetLink}\nThis link expires in 1 hour.\n\nNeed help? Email 876nurses@gmail.com`
+      });
     } catch (error) {
       console.error('Error sending password reset email:', error);
       return { success: false, error: error.message };
@@ -495,52 +466,34 @@ class EmailService {
         <html>
         <head>
           <style>
-            body { font-family: Arial, sans-serif; line-height: 1.6; color: #333; }
-            .container { max-width: 600px; margin: 0 auto; padding: 20px; }
-            .header { background: linear-gradient(135deg, #10B981 0%, #059669 100%); color: white; padding: 30px; text-align: center; border-radius: 8px 8px 0 0; }
-            .content { background: #f9f9f9; padding: 30px; border-radius: 0 0 8px 8px; }
-            .success-icon { font-size: 48px; margin-bottom: 10px; }
-            .info-box { background: white; padding: 20px; border-radius: 8px; margin: 20px 0; }
-            .security-notice { background: #fff3cd; border-left: 4px solid #ffc107; padding: 15px; margin: 20px 0; }
-            .footer { text-align: center; padding: 20px; color: #666; font-size: 12px; }
+            body { font-family: Arial, sans-serif; line-height: 1.6; color: #1f2a44; margin:0; padding:0; background:#ffffff; }
+            .container { max-width: 600px; margin: 0 auto; padding: 32px 20px; }
+            .footer { text-align: center; padding: 18px 10px 0 10px; color: #9ca3af; font-size: 12px; }
           </style>
         </head>
         <body>
           <div class="container">
-            <div class="header">
-              <div class="success-icon">✓</div>
-              <h1>Password Changed</h1>
-              <p>Your password has been updated</p>
-            </div>
-            <div class="content">
-              <p>Hello${userName ? ' ' + userName : ''},</p>
-              <p>This email confirms that your password for your 876 Nurses account has been successfully changed.</p>
-              
-              <div class="info-box">
-                <p><strong>Changed:</strong> ${new Date().toLocaleString()}</p>
-                <p><strong>Account:</strong> ${to}</p>
-              </div>
+            <p style="margin:0 0 12px 0;">Hello${userName ? ' ' + userName : ''},</p>
+            <p style="margin:0 0 12px 0;">Your password has been changed successfully.</p>
+            <p style="margin:0 0 12px 0;"><strong>Changed:</strong> ${new Date().toLocaleString()}</p>
+            <p style="margin:0 0 12px 0;"><strong>Account:</strong> ${to}</p>
+            <p style="margin:0 0 12px 0;">If you did not make this change, contact us immediately.</p>
 
-              <div class="security-notice">
-                <strong>⚠️ Didn't make this change?</strong>
-                <p>If you didn't change your password, please contact us immediately at (876) 618-9876 or 876nurses@gmail.com.</p>
-                <p>Your account security is our priority.</p>
-              </div>
-              
-              <p>Best regards,<br>
-              876 Nurses Home Care Services Team</p>
-            </div>
             <div class="footer">
-              <p>876 Nurses Home Care Services Limited</p>
-              <p>60 Knutsford Blvd, Kingston 5, Jamaica</p>
-              <p>Phone: (876) 618-9876 | Email: 876nurses@gmail.com</p>
+              876 Nurses Home Care Services · Kingston, Jamaica<br />
+              Need help? Email <a href="mailto:876nurses@gmail.com" style="color:#6b7280;text-decoration:underline;">876nurses@gmail.com</a>
             </div>
           </div>
         </body>
         </html>
       `;
 
-      return await this.send({ to, subject, html });
+      return await this.send({
+        to,
+        subject,
+        html,
+        text: `Password Changed Successfully\n\nHello${userName ? ' ' + userName : ''},\n\nYour password has been changed for account ${to}.\nIf you did not make this change, contact us immediately at 876nurses@gmail.com.`
+      });
     } catch (error) {
       console.error('Error sending password changed email:', error);
       return { success: false, error: error.message };
@@ -552,26 +505,24 @@ class EmailService {
    */
   static async sendWelcomeEmail({ email, name }) {
     try {
-      const config = await this.getConfig();
-      const backendUrl = config.backendUrl || 'http://localhost:3000';
-      const apiKey = config.apiKey || 'your-secure-api-key-here';
+      // Note: In Firebase mode, a welcome email is already sent automatically
+      // via the `sendWelcomeEmailOnAuthCreate` Cloud Function when a new Auth user is created.
+      // This method can still be used for manual/administrative welcome emails.
+      const firstName = (name || '').trim().split(' ')[0] || 'there';
+      const subject = 'Welcome to 876 Nurses';
+      const html = `
+        <h2>Welcome to 876 Nurses</h2>
+        <p>Hi ${firstName},</p>
+        <p>Welcome to 876 Nurses Home Care Services.</p>
+        <p>Regards,<br/>876 Nurses</p>
+      `;
 
-      if (!config.enabled) {
-        console.log('Email service is disabled');
-        return { success: false, error: 'Email service is not enabled' };
-      }
-
-      const response = await fetch(`${backendUrl}/api/send-welcome-email`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'x-api-key': apiKey
-        },
-        body: JSON.stringify({ email, name })
+      return await this.send({
+        to: email,
+        subject,
+        html,
+        meta: { type: 'welcome' }
       });
-
-      const result = await response.json();
-      return result;
     } catch (error) {
       console.error('Error sending welcome email:', error);
       return { success: false, error: error.message };

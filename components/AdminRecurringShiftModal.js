@@ -21,7 +21,6 @@ import { LinearGradient } from 'expo-linear-gradient';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { COLORS, SPACING, SERVICES, GRADIENTS } from '../constants';
 import ApiService from '../services/ApiService';
-import EmailService from '../services/EmailService';
 import { useNotifications } from '../context/NotificationContext';
 import NurseDetailsModal from './NurseDetailsModal';
 
@@ -426,46 +425,6 @@ export default function AdminRecurringShiftModal({
         );
       }
 
-      if (clientSnapshot?.email) {
-        notificationTasks.push((async () => {
-          try {
-            const backupHtml = backupDetails.length
-              ? `<ul style="padding-left:16px;margin:8px 0;">${backupDetails
-                  .map(backup => `<li>Priority ${backup.priority}: ${backup.fullName}</li>`)
-                  .join('')}</ul>`
-              : '<p style="margin:8px 0;">No emergency backup nurses are assigned for this schedule.</p>';
-
-            const backupPlainText = backupDetails.length
-              ? `Emergency backup coverage: ${backupDetails
-                  .map(backup => `Priority ${backup.priority} - ${backup.fullName}`)
-                  .join(', ')}.`
-              : 'No emergency backup nurses are assigned for this schedule.';
-
-            const html = `
-              <div style="font-family: Arial, sans-serif; color: #111; line-height: 1.5;">
-                <p>Hi ${clientName},</p>
-                <p>Your <strong>${serviceTitle}</strong> visits are scheduled on <strong>${formattedDays}</strong> from <strong>${formattedStart}</strong> to <strong>${formattedEnd}</strong>.</p>
-                <p><strong>${primaryNurseName}</strong> is your primary nurse for this assignment (${assignmentDescriptor}).</p>
-                <p style="margin:8px 0;">${backupPlainText}</p>
-                ${backupHtml}
-                <p style="margin-top:16px;">Thank you,<br/>876 Nurses Care Team</p>
-              </div>
-            `;
-
-            const text = `Hi ${clientName},\n\nYour ${serviceTitle} visits are scheduled on ${formattedDays} from ${formattedStart} to ${formattedEnd}. ${primaryNurseName} is your primary nurse (${assignmentDescriptor}).\n${backupPlainText}\n\nThank you,\n876 Nurses Care Team`;
-
-            await EmailService.send({
-              to: clientSnapshot.email,
-              subject: 'Your recurring care schedule is confirmed',
-              html,
-              text,
-            });
-          } catch (error) {
-            console.error('Failed to email recurring schedule summary:', error);
-          }
-        })());
-      }
-
       if (assignmentTypeKey !== 'split-schedule' && backupDetails.length && typeof sendNotificationToUser === 'function') {
         backupDetails.forEach(backup => {
           if (!backup.nurseId) return;
@@ -636,8 +595,8 @@ export default function AdminRecurringShiftModal({
         nurseCode,
         staffCode: nurseCode,
         clientId: selectedClient?._id || selectedClient?.id || null,
-        clientName: selectedClient ? (selectedClient.name || `${selectedClient.firstName} ${selectedClient.lastName}`) : null,
-        patientName: selectedClient ? (selectedClient.name || `${selectedClient.firstName} ${selectedClient.lastName}`) : null,
+        clientName: selectedClient ? (selectedClient.name || selectedClient.fullName || `${selectedClient.firstName} ${selectedClient.lastName}`.trim()) : null,
+        patientName: selectedClient ? (selectedClient.name || selectedClient.fullName || `${selectedClient.firstName} ${selectedClient.lastName}`.trim()) : null,
         clientEmail: selectedClient?.email || null,
         clientPhone: selectedClient?.phone || null,
         clientAddress: selectedClient?.address || null,

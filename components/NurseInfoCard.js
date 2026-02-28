@@ -113,6 +113,16 @@ export default function NurseInfoCard({
             <Text style={styles.nurseName} numberOfLines={1}>
               {nurseName}
             </Text>
+            {!hideSpecialty && (
+              <Text style={styles.nurseSpecialty} numberOfLines={1}>
+                {specialty}
+              </Text>
+            )}
+            {!hideCode && nurseCode && nurseCode !== 'N/A' && (
+              <Text style={styles.nurseCode} numberOfLines={1}>
+                {nurseCode}
+              </Text>
+            )}
           </View>
           
           {isCoverage && primaryNurseName && (

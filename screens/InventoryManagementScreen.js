@@ -19,7 +19,7 @@ import TouchableWeb from '../components/TouchableWeb';
 import { COLORS, GRADIENTS, SPACING } from '../constants';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
-const PRODUCTS_STORAGE_KEY = '@care_store_products';
+const PRODUCTS_STORAGE_KEY = '@876_store_products';
 
 const ICON_OPTIONS = [
   'thermometer',

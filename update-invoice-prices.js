@@ -78,7 +78,7 @@ async function updateInvoicePrices() {
   try {
     console.log('🔄 Starting invoice price update...\n');
     
-    const STORAGE_KEY = '@care_invoices';
+    const STORAGE_KEY = '@876_invoices';
     const invoicesStr = await AsyncStorage.getItem(STORAGE_KEY);
     
     if (!invoicesStr) {

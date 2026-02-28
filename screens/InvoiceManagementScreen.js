@@ -559,7 +559,7 @@ export default function InvoiceManagementScreen({ navigation }) {
       // If this is a store invoice, sync with order status
       const invoice = invoices.find(inv => inv.invoiceId === invoiceId);
       if (invoice && invoice.service === 'Store Purchase' && invoice.relatedOrderId) {
-        const ordersData = await AsyncStorage.getItem('@care_store_orders');
+        const ordersData = await AsyncStorage.getItem('@876_store_orders');
         if (ordersData) {
           const orders = JSON.parse(ordersData);
           const updatedOrders = orders.map(order => {
@@ -575,7 +575,7 @@ export default function InvoiceManagementScreen({ navigation }) {
             }
             return order;
           });
-          await AsyncStorage.setItem('@care_store_orders', JSON.stringify(updatedOrders));
+          await AsyncStorage.setItem('@876_store_orders', JSON.stringify(updatedOrders));
         }
       }
       
@@ -719,28 +719,21 @@ export default function InvoiceManagementScreen({ navigation }) {
               {selectedInvoice ? `Invoice Preview - ${selectedInvoice.invoiceId}` : 'Invoice Preview'}
             </Text>
             <TouchableWeb
-              onPress={async () => {
-                try {
-                  if (selectedInvoice) {
-                    await InvoiceService.shareInvoice(selectedInvoice);
-                  } else {
-                    const sampleInvoice = await InvoiceService.createSampleInvoice();
-                    await InvoiceService.shareInvoice(sampleInvoice);
-                  }
-                } catch (error) {
-                  // Error sharing invoice
-                }
+              onPress={() => {
+                // PDF share feature temporarily disabled
               }}
-              style={styles.shareIconButton}
-              activeOpacity={0.7}
+              style={styles.shareIconButtonDisabled}
+              activeOpacity={1}
+              disabled
             >
-              <MaterialCommunityIcons name="file-pdf-box" size={18} color={COLORS.white} />
+              <MaterialCommunityIcons name="file-pdf-box" size={18} color="#999" />
             </TouchableWeb>
           </View>
           
           {selectedInvoice ? (
             <>
-              <View style={styles.invoicePreviewCard}>
+              <View style={styles.invoicePreviewBackdrop}>
+                <View style={styles.invoicePreviewCard}>
                 {/* PDF Header */}
                 <View style={styles.pdfHeader}>
                   <View style={styles.pdfHeaderTop}>
@@ -935,6 +928,7 @@ export default function InvoiceManagementScreen({ navigation }) {
                       )}
                     </View>
                   </View>
+                </View>
                 </View>
               </View>
             </>
@@ -1397,6 +1391,15 @@ const styles = StyleSheet.create({
     shadowRadius: 2,
     elevation: 2,
   },
+  shareIconButtonDisabled: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#ccc',
+    alignItems: 'center',
+    justifyContent: 'center',
+    opacity: 0.5,
+  },
   previewShareButton: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1411,18 +1414,28 @@ const styles = StyleSheet.create({
     color: COLORS.primary,
     fontWeight: '500',
   },
+  invoicePreviewBackdrop: {
+    backgroundColor: '#F3F4F6',
+    padding: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
   invoicePreviewCard: {
     backgroundColor: COLORS.white,
-    borderRadius: 12,
+    borderRadius: 0,
     overflow: 'hidden',
     borderWidth: 1,
     borderColor: COLORS.border,
     shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 8,
-    elevation: 5,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
     marginBottom: SPACING.sm,
+    width: '100%',
+    maxWidth: 520,
+    aspectRatio: 8.5 / 11, // US Letter
+    alignSelf: 'center',
   },
   paidStampContainer: {
     marginTop: 12,
@@ -1609,7 +1622,7 @@ const styles = StyleSheet.create({
   },
   pdfBlueLine: {
     height: 2,
-    backgroundColor: '#00B8D4',
+    backgroundColor: '#2196F3',
     marginHorizontal: SPACING.md,
     marginVertical: SPACING.xs,
   },

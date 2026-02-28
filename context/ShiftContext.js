@@ -4,7 +4,7 @@ import { useAuth } from './AuthContext';
 import { useNotifications } from './NotificationContext';
 import ApiService from '../services/ApiService';
 import InvoiceService from '../services/InvoiceService';
-import EmailService from '../services/EmailService';
+import FirebaseEmailQueueService from '../services/FirebaseEmailQueueService';
 
 const ShiftContext = createContext();
 
@@ -16,7 +16,7 @@ export function ShiftProvider({ children }) {
   const [lastPendingCount, setLastPendingCount] = useState(0); // Track pending count changes
   const [isOnline, setIsOnline] = useState(true); // Track API availability
   const lastOfflineLogRef = useRef(0); // Track timestamp of last offline log
-  const STORAGE_KEY = '@care_shift_requests_global'; // Global key for all users
+  const STORAGE_KEY = '@876_shift_requests_global'; // Global key for all users
   const OFFLINE_LOG_THROTTLE = 120000; // Only log offline message once every 2 minutes
 
   const normalizeTimestamp = (value) => {
@@ -982,6 +982,10 @@ export function ShiftProvider({ children }) {
       });
       
       if (response.success) {
+        console.log('💰 [Feb13] API response success:', {
+          keepBooked: response.keepBooked,
+          status: response.status,
+        });
         setIsOnline(true);
         const resolvedStartTime = response.startTime || requestedStartTime;
         const resolvedLocation = response.clockInLocation || clockInLocation;
@@ -1061,6 +1065,14 @@ export function ShiftProvider({ children }) {
 
   // Function to complete a shift (when nurse clocks out)
   const completeShift = async (shiftId, endTime, hoursWorked, notes, nurseId, metadata = {}) => {
+    console.log('💰 [Feb13] ===== CLOCK OUT STARTED =====', {
+      shiftId,
+      endTime,
+      hoursWorked,
+      nurseId,
+      keepBooked: metadata.keepBooked,
+    });
+    
     const requestedEndTime = endTime || new Date().toISOString();
     const clockOutLocation = metadata.clockOutLocation || null;
     const keepBooked = Boolean(metadata.keepBooked);
@@ -1140,6 +1152,10 @@ export function ShiftProvider({ children }) {
       });
       
       if (response.success) {
+        console.log('💰 [Feb13] Clock-out API response received, processing...', {
+          keepBooked: response.keepBooked,
+          status: response.status,
+        });
         setIsOnline(true);
         const resolvedEndTime = response.endTime || requestedEndTime;
         const resolvedLocation = response.clockOutLocation || clockOutLocation;
@@ -1275,7 +1291,15 @@ export function ShiftProvider({ children }) {
         // - For split schedules: generate per-visit invoice once ALL nurses have clocked out,
         //   even if the schedule is kept booked for future occurrences.
         try {
+          console.log('💰 [Feb13] Starting invoice check for shift:', shiftId);
           const latest = await ApiService.getShiftRequestById(shiftId);
+          console.log('💰 [Feb13] Shift:', {
+            service: latest?.service,
+            date: latest?.date,
+            recurringScheduleId: latest?.recurringScheduleId,
+            nurseSchedule: latest?.nurseSchedule,
+            visitInvoiceKeys: latest?.visitInvoiceKeys,
+          });
           const alreadySent = Boolean(latest?.finalInvoiceSentAt);
           const alreadyGenerated = Boolean(latest?.finalInvoiceGeneratedAt || latest?.finalInvoiceId);
 
@@ -1313,11 +1337,21 @@ export function ShiftProvider({ children }) {
             );
           })();
 
-          const shouldAttemptVisitInvoice = Boolean(isSplitSchedule || isRecurringShift);
+          // Only attempt per-visit invoices for TRUE split schedules (multiple nurses work same day)
+          // Recurring shifts without split get one final invoice at the end of the period
+          const shouldAttemptVisitInvoice = Boolean(isSplitSchedule);
+          
+          console.log('💰 [Feb13] Invoice conditions:', {
+            isSplitSchedule,
+            isRecurringShift,
+            shouldAttemptVisitInvoice,
+            effectiveKeepBooked,
+            isFinalCompletion,
+          });
 
           // For non-recurring, non-split shifts, skip invoice work when kept booked and not final.
-          // Recurring shifts keep booked between occurrences, but still need per-visit invoices.
-          if (!shouldAttemptVisitInvoice && effectiveKeepBooked && !isFinalCompletion) {
+          if (!shouldAttemptVisitInvoice && !isRecurringShift && effectiveKeepBooked && !isFinalCompletion) {
+            console.log('💰 [Feb13] SKIPPED - not recurring/split and kept booked');
             // no-op
             return {
               endTime: resolvedEndTime,
@@ -1354,9 +1388,16 @@ export function ShiftProvider({ children }) {
           const allSplitNursesClockedOut = (() => {
             if (!isSplitSchedule) return true;
             const clockMap = (latest || shiftSnapshot || {})?.clockByNurse;
+            console.log('💰 [Feb13] clockByNurse map:', JSON.stringify(clockMap, null, 2));
             if (!clockMap || typeof clockMap !== 'object') return false;
             const entries = Object.values(clockMap).filter((v) => v && typeof v === 'object');
+            console.log('💰 [Feb13] clockByNurse entries:', entries.length);
             if (entries.length < 2) return false;
+
+            const hasClockIn = (entry) => {
+              const inTime = entry.lastClockInTime || entry.actualStartTime || entry.clockInTime || entry.startedAt;
+              return !!inTime && normalizeClockMs(inTime) !== null;
+            };
 
             const isClockedOutEntry = (entry) => {
               const inTime = entry.lastClockInTime || entry.actualStartTime || entry.clockInTime || entry.startedAt;
@@ -1369,8 +1410,37 @@ export function ShiftProvider({ children }) {
               return true;
             };
 
-            return entries.every((entry) => isClockedOutEntry(entry));
+            // Only check nurses who actually clocked in (backup coverage: original nurse may never clock in)
+            const nursesWhoWorked = entries.filter(hasClockIn);
+            console.log('💰 [Feb13] Nurses who clocked in:', nursesWhoWorked.length);
+            
+            // If no nurses clocked in, can't generate invoice yet
+            if (nursesWhoWorked.length === 0) return false;
+            
+            const result = nursesWhoWorked.every((entry) => isClockedOutEntry(entry));
+            entries.forEach((entry, idx) => {
+              console.log(`💰 [Feb13] Entry ${idx}:`, {
+                hasClockIn: hasClockIn(entry),
+                clockedOut: isClockedOutEntry(entry),
+                hasClockOut: !!entry.lastClockOutTime || !!entry.actualEndTime || !!entry.clockOutTime || !!entry.completedAt
+              });
+            });
+            console.log('💰 [Feb13] allSplitNursesClockedOut result:', result);
+            return { allClockedOut: result, nursesWhoWorked: nursesWhoWorked.length };
           })();
+          
+          // True split schedule = multiple nurses actually worked on this occurrence
+          // Recurring with backup = only one nurse worked (others didn't clock in)
+          const splitResult = typeof allSplitNursesClockedOut === 'object' ? allSplitNursesClockedOut : { allClockedOut: allSplitNursesClockedOut, nursesWhoWorked: isSplitSchedule ? 2 : 1 };
+          const isTrueSplitSchedule = isSplitSchedule && splitResult.nursesWhoWorked > 1;
+          const allNursesClockedOut = splitResult.allClockedOut;
+          
+          console.log('💰 [Feb13] Split schedule analysis:', {
+            isSplitSchedule,
+            isTrueSplitSchedule,
+            nursesWhoWorked: splitResult.nursesWhoWorked,
+            allNursesClockedOut
+          });
 
             const occurrenceDateKey =
               dayKey ||
@@ -1388,6 +1458,24 @@ export function ShiftProvider({ children }) {
               ? latest.visitInvoiceKeys.map((v) => String(v))
               : [];
             const visitAlreadyGenerated = existingVisitKeys.includes(visitInvoiceKey);
+            
+            console.log('💰 [Feb13] Visit invoice key info:', {
+              dayKey,
+              occurrenceDateKey,
+              visitInvoiceKey,
+              existingVisitKeys,
+              visitAlreadyGenerated,
+              allNursesClockedOut,
+            });
+            
+            console.log('💰 [Feb13] Visit invoice key:', {
+              dayKey,
+              occurrenceDateKey,
+              visitInvoiceKey,
+              existingVisitKeys,
+              visitAlreadyGenerated,
+              allNursesClockedOut,
+            });
             const clientEmail =
               latest?.clientEmail ||
               latest?.patientEmail ||
@@ -1433,7 +1521,7 @@ export function ShiftProvider({ children }) {
                 });
 
                 if (clientEmail) {
-                  const emailRes = await EmailService.sendInvoiceEmail({
+                  const emailRes = await FirebaseEmailQueueService.enqueueInvoiceEmail({
                     to: clientEmail,
                     invoiceData: {
                       ...invoiceRes.invoice,
@@ -1442,6 +1530,7 @@ export function ShiftProvider({ children }) {
                       clientName,
                     },
                     pdfUri: invoiceRes.invoice.pdfUri,
+                    meta: { shiftRequestId: shiftId, kind: 'final' },
                   });
 
                   if (emailRes?.success) {
@@ -1453,10 +1542,18 @@ export function ShiftProvider({ children }) {
               }
             }
 
-            // Per-visit invoice (recurring + split schedules):
-            // - Split schedules: generate once ALL nurses have clocked out for the visit.
-            // - Recurring (single-nurse): generate on each visit clock-out even though the shift stays booked.
-            if (shouldAttemptVisitInvoice && allSplitNursesClockedOut && !visitAlreadyGenerated) {
+            // Per-visit invoice (TRUE split schedules only):
+            // - Generate once ALL nurses (who actually worked) have clocked out for the visit.
+            // - Recurring shifts without split get final invoice at period end only.
+            console.log('💰 [Feb13] Creating per-visit invoice?', {
+              isTrueSplitSchedule,
+              allNursesClockedOut,
+              visitAlreadyGenerated,
+              willCreate: isTrueSplitSchedule && allNursesClockedOut && !visitAlreadyGenerated,
+            });
+            
+            if (isTrueSplitSchedule && allNursesClockedOut && !visitAlreadyGenerated) {
+              console.log('💰 [Feb13] CREATING invoice for:', visitInvoiceKey);
               const invoiceRes = await InvoiceService.createInvoice({
                 ...(latest || shiftSnapshot || {}),
                 id: visitInvoiceKey,
@@ -1473,13 +1570,19 @@ export function ShiftProvider({ children }) {
               });
 
               if (invoiceRes?.success && invoiceRes?.invoice) {
+                console.log('💰 [Feb13] Invoice created:', invoiceRes.invoice.invoiceId);
                 await ApiService.updateShiftRequest(shiftId, {
                   visitInvoiceKeys: [...existingVisitKeys, visitInvoiceKey],
                   lastVisitInvoiceId: invoiceRes.invoice.invoiceId,
                   lastVisitInvoiceGeneratedAt: new Date().toISOString(),
                   lastVisitInvoiceKey: visitInvoiceKey,
                 });
+                console.log('💰 [Feb13] Shift updated with invoice key');
+              } else {
+                console.log('💰 [Feb13] Invoice creation FAILED:', invoiceRes?.error);
               }
+            } else {
+              console.log('💰 [Feb13] Invoice creation SKIPPED');
             }
         } catch (invoiceError) {
           console.warn('Final invoice trigger failed:', invoiceError?.message || invoiceError);
@@ -1821,7 +1924,7 @@ export function ShiftProvider({ children }) {
       const updatedSchedules = existingSchedules.filter(s => s.clientId !== clientData.id);
       updatedSchedules.push(scheduleData);
       
-      await AsyncStorage.setItem('@care_fortnightly_schedules', JSON.stringify(updatedSchedules));
+      await AsyncStorage.setItem('@876_fortnightly_schedules', JSON.stringify(updatedSchedules));
       
       // console.log('📅 Fortnightly billing schedule set up for:', clientData.name);
       return scheduleData;
@@ -1845,7 +1948,7 @@ export function ShiftProvider({ children }) {
   // Get fortnightly billing schedules
   const getFortnightlySchedules = async () => {
     try {
-      const schedules = await AsyncStorage.getItem('@care_fortnightly_schedules');
+      const schedules = await AsyncStorage.getItem('@876_fortnightly_schedules');
       return schedules ? JSON.parse(schedules) : [];
     } catch (error) {
       console.error('Error getting fortnightly schedules:', error);

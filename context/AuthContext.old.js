@@ -273,12 +273,12 @@ export const AuthProvider = ({ children }) => {
       
       // Clear appointments data to prevent data leakage between accounts
       if (user?.id) {
-        await AsyncStorage.removeItem(`@care_appointments_${user.id}`);
-        await AsyncStorage.removeItem(`@care_nurses_${user.id}`);
+        await AsyncStorage.removeItem(`@876_appointments_${user.id}`);
+        await AsyncStorage.removeItem(`@876_nurses_${user.id}`);
       }
       // Also clear any leftover guest cache in case logout happened mid-flow
-      await AsyncStorage.removeItem('@care_appointments_guest');
-      await AsyncStorage.removeItem('@care_nurses_guest');
+      await AsyncStorage.removeItem('@876_appointments_guest');
+      await AsyncStorage.removeItem('@876_nurses_guest');
       
       setUser(null);
       // Set a flag to trigger splash screen on logout

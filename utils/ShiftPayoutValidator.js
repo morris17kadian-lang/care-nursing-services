@@ -7,7 +7,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import InvoiceService from '../services/InvoiceService';
 
 class ShiftPayoutValidator {
-  static VALIDATION_LOG_KEY = '@care_shift_validation_log';
+  static VALIDATION_LOG_KEY = '@876_shift_validation_log';
   
   /**
    * Validate shift calculations for accuracy

@@ -10,7 +10,11 @@ import {
   Dimensions,
   Modal,
   Alert,
+  RefreshControl,
+  ActivityIndicator,
+  InteractionManager,
 } from 'react-native';
+import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -31,7 +35,7 @@ const DASHBOARD_GRADIENTS = {
   info: ['#667eea', '#764ba2'],
   dark: ['#2c3e50', '#3498db'],
   // Different green shades for different periods
-  greenDaily: ['#00E676', '#00C853'], // Bright emerald green for daily
+  greenDaily: ['#10B981', '#059669'], // Softer green (Paid-style) for daily
   greenWeekly: ['#4CAF50', '#388E3C'], // Standard green for weekly  
   greenMonthly: ['#2E7D32', '#1B5E20'], // Forest green for monthly
   greenYearly: ['#1B5E20', '#0F2027'] // Deep forest to dark green for yearly
@@ -75,6 +79,8 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
   const [modalVisible, setModalVisible] = useState(false);
   const [selectedCardData, setSelectedCardData] = useState(null);
   const [clientPerformanceData, setClientPerformanceData] = useState(null);
+  const [loadingClientData, setLoadingClientData] = useState(false);
+  const [invoicesCache, setInvoicesCache] = useState(null);
   const [targetsModalVisible, setTargetsModalVisible] = useState(false);
   const [selectedCurrency, setSelectedCurrency] = useState('JMD');
   const [currencyDropdownVisible, setCurrencyDropdownVisible] = useState(false);
@@ -83,6 +89,21 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
   );
   const [backendAnalytics, setBackendAnalytics] = useState(null);
   const [loadingAnalytics, setLoadingAnalytics] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  // Helper: wait until current interactions/animations finish to avoid UI jank
+  const waitForInteractions = () => new Promise(resolve => {
+    InteractionManager.runAfterInteractions(() => resolve());
+  });
+
+  const closeDetailsModal = () => {
+    setModalVisible(false);
+    setSelectedCardData(null);
+  };
+
+  const closeTargetsModal = () => {
+    setTargetsModalVisible(false);
+  };
 
   useEffect(() => {
     // Check if data was cleared
@@ -109,6 +130,12 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
 
   // Fetch analytics data from backend and real app data
   const fetchAnalytics = async () => {
+    // Prevent concurrent fetches
+    if (loadingAnalytics) {
+      console.log('[Analytics] Already loading, skipping fetch');
+      return;
+    }
+    
     try {
       setLoadingAnalytics(true);
       if (dataCleared) {
@@ -123,18 +150,26 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
           method: 'GET'
         });
 
-        if (response && response.success && response.data) {
+        // Check if backend has meaningful data (not just empty array/object)
+        const hasValidBackendData = response && response.success && response.data && 
+          (typeof response.data === 'object') &&
+          (Array.isArray(response.data) ? response.data.length > 0 : 
+           (response.data.totalRevenue !== undefined || response.data.chartData));
+
+        if (hasValidBackendData) {
           setBackendAnalytics(response.data);
           // Cache to local storage
           await AsyncStorage.setItem(`analytics_${selectedPeriod}`, JSON.stringify(response.data));
+          setLoadingAnalytics(false);
           return;
         }
       } catch (backendError) {
-        // Backend analytics unavailable, collecting from app data...
+        // Backend failed, will fall through to local calculation
       }
       
       // Fallback: Calculate from real app data (invoices, appointments, payments)
       const analyticsData = await calculateAnalyticsFromAppData(selectedPeriod);
+      
       if (analyticsData) {
         setBackendAnalytics(analyticsData);
         // Cache to local storage
@@ -147,6 +182,7 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
         }
       }
     } catch (error) {
+      console.error('[Analytics] Error:', error.message);
       // Try cached data as last resort
       try {
         const cached = await AsyncStorage.getItem(`analytics_${selectedPeriod}`);
@@ -154,7 +190,7 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
           setBackendAnalytics(JSON.parse(cached));
         }
       } catch (e) {
-        // No cached data available
+        // Silent fail on cache read
       }
     } finally {
       setLoadingAnalytics(false);
@@ -164,74 +200,251 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
   // Calculate analytics from real app data
   const calculateAnalyticsFromAppData = async (period) => {
     try {
+      // Schedule heavy fetch after interactions to avoid jank
+      await waitForInteractions();
       // Get real data from app
       const allInvoices = await InvoiceService.getAllInvoices();
-      const allKeys = await AsyncStorage.getAllKeys();
-      const appointmentKeys = allKeys.filter(key => {
-        const normalized = key.toLowerCase();
-        return normalized.startsWith('@care_appointments_') || normalized === '@care_appointments';
+      const invoices = allInvoices?.filter(inv => !inv.invoiceId?.includes('SAMPLE')) || [];
+      
+      if (invoices.length === 0) {
+        return null;
+      }
+
+      // Cache invoices for reuse elsewhere (e.g., client performance)
+      setInvoicesCache(invoices);
+
+      const now = new Date();
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      
+      // Parse date strings in format "Feb 15, 2026" or ISO format
+      const parseInvoiceDate = (dateStr) => {
+        if (!dateStr) return null;
+        
+        // Try ISO format first (createdAt timestamps)
+        if (dateStr.includes('T') || dateStr.includes('Z')) {
+          return new Date(dateStr);
+        }
+        
+        // Parse "Feb 15, 2026" format
+        // Replace comma and parse
+        const cleanDate = dateStr.replace(',', '');
+        const parsed = new Date(cleanDate);
+        
+        // If still invalid, try manual parsing
+        if (isNaN(parsed.getTime())) {
+          const parts = dateStr.match(/(\w+)\s+(\d+),?\s+(\d{4})/);
+          if (parts) {
+            const [, month, day, year] = parts;
+            const monthMap = {
+              'Jan': 0, 'Feb': 1, 'Mar': 2, 'Apr': 3, 'May': 4, 'Jun': 5,
+              'Jul': 6, 'Aug': 7, 'Sep': 8, 'Oct': 9, 'Nov': 10, 'Dec': 11
+            };
+            return new Date(parseInt(year), monthMap[month], parseInt(day));
+          }
+          return null;
+        }
+        
+        return parsed;
+      };
+      
+      // Helper to determine if invoice falls in current period
+      const isInCurrentPeriod = (invoiceDate) => {
+        const invDate = parseInvoiceDate(invoiceDate);
+        if (!invDate || isNaN(invDate.getTime())) return false;
+        
+        switch (period) {
+          case 'daily':
+            return invDate >= startOfToday;
+          case 'weekly':
+            const startOfWeek = new Date(startOfToday);
+            startOfWeek.setDate(startOfToday.getDate() - startOfToday.getDay());
+            return invDate >= startOfWeek;
+          case 'monthly':
+            const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+            return invDate >= startOfMonth;
+          case 'yearly':
+            const startOfYear = new Date(now.getFullYear(), 0, 1);
+            return invDate >= startOfYear;
+          default:
+            return true;
+        }
+      };
+
+      const isInPreviousPeriod = (invoiceDate) => {
+        const invDate = parseInvoiceDate(invoiceDate);
+        if (!invDate || isNaN(invDate.getTime())) return false;
+        
+        switch (period) {
+          case 'daily':
+            const yesterday = new Date(startOfToday);
+            yesterday.setDate(yesterday.getDate() - 1);
+            const dayBeforeYesterday = new Date(yesterday);
+            dayBeforeYesterday.setDate(dayBeforeYesterday.getDate() - 1);
+            return invDate >= dayBeforeYesterday && invDate < yesterday;
+          case 'weekly':
+            const startOfLastWeek = new Date(startOfToday);
+            startOfLastWeek.setDate(startOfToday.getDate() - startOfToday.getDay() - 7);
+            const endOfLastWeek = new Date(startOfLastWeek);
+            endOfLastWeek.setDate(startOfLastWeek.getDate() + 7);
+            return invDate >= startOfLastWeek && invDate < endOfLastWeek;
+          case 'monthly':
+            const startOfLastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+            const endOfLastMonth = new Date(now.getFullYear(), now.getMonth(), 0);
+            return invDate >= startOfLastMonth && invDate <= endOfLastMonth;
+          case 'yearly':
+            const startOfLastYear = new Date(now.getFullYear() - 1, 0, 1);
+            const endOfLastYear = new Date(now.getFullYear() - 1, 11, 31);
+            return invDate >= startOfLastYear && invDate <= endOfLastYear;
+          default:
+            return false;
+        }
+      };
+
+      // Filter invoices for current and previous periods
+      // Use service date (when service was performed) or creation date as fallback
+      const getInvoiceDate = (inv) => {
+        // Priority: serviceDate, date, createdAt
+        return inv.serviceDate || inv.date || inv.createdAt;
+      };
+
+      const currentPeriodInvoices = invoices.filter(inv => {
+        const dateStr = getInvoiceDate(inv);
+        return dateStr && isInCurrentPeriod(dateStr);
+      });
+      
+      const previousPeriodInvoices = invoices.filter(inv => {
+        const dateStr = getInvoiceDate(inv);
+        return dateStr && isInPreviousPeriod(dateStr);
       });
 
-      let appointments = [];
-      if (appointmentKeys.length > 0) {
-        const entries = await AsyncStorage.multiGet(appointmentKeys);
-        appointments = entries.flatMap(([key, value]) => {
-          if (!value) {
-            return [];
-          }
-          try {
-            return JSON.parse(value);
-          } catch (error) {
-            return [];
-          }
-        });
+      // Calculate totals
+      const totalRevenue = currentPeriodInvoices.reduce((sum, inv) => 
+        sum + (inv.total || inv.finalTotal || inv.amount || 0), 0
+      );
+      const totalTransactions = currentPeriodInvoices.length;
+      const previousRevenue = previousPeriodInvoices.reduce((sum, inv) => 
+        sum + (inv.total || inv.finalTotal || inv.amount || 0), 0
+      );
+
+      // Calculate growth rate
+      let growthRate = '0%';
+      if (previousRevenue > 0) {
+        const growth = ((totalRevenue - previousRevenue) / previousRevenue * 100).toFixed(1);
+        growthRate = growth > 0 ? `+${growth}%` : `${growth}%`;
+      } else if (totalRevenue > 0) {
+        growthRate = '+100%';
       }
 
-      const invoices = allInvoices?.filter(inv => !inv.invoiceId?.includes('SAMPLE')) || [];
-      const completedAppointments = appointments.filter(apt => apt.status === 'completed');
-      
-      // Calculate totals
-      const totalRevenue = invoices.reduce((sum, inv) => sum + (inv.amount || 0), 0);
-      const totalTransactions = invoices.length;
-      const completedServices = completedAppointments.length;
-      const averageInvoice = totalTransactions > 0 ? Math.round(totalRevenue / totalTransactions) : 0;
-      
-      // Generate chart data based on invoice totals
-      const chartData = Array(7).fill(0).map((_, i) => ({
-        label: period === 'daily' ? ['6AM', '9AM', '12PM', '3PM', '6PM', '9PM', '12AM'][i] : 
-               period === 'weekly' ? ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'][i] :
-               period === 'yearly' ? ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul'][i] : 
-               [`Week ${i+1}`, '', '', '', '', '', ''][i],
-        amount: Math.round(totalRevenue / 7),
-        percentage: 14
-      }));
-      
-      // Growth rate (compare with previous period)
-      const previousAnalytics = await AsyncStorage.getItem(`analytics_${period}_prev`);
-      let growthRate = '0%';
-      if (previousAnalytics) {
-        const prev = JSON.parse(previousAnalytics);
-        const growth = ((totalRevenue - prev.totalRevenue) / (prev.totalRevenue || 1) * 100).toFixed(1);
-        growthRate = growth > 0 ? `+${growth}%` : `${growth}%`;
-      }
+      // Group invoices by time segments for chart data
+      const chartData = (() => {
+        const segments = Array(7).fill(0).map(() => ({ amount: 0, count: 0 }));
+        
+        currentPeriodInvoices.forEach(inv => {
+          const dateStr = getInvoiceDate(inv);
+          if (!dateStr) return;
+          
+          const invDate = parseInvoiceDate(dateStr);
+          if (!invDate || isNaN(invDate.getTime())) return;
+          
+          const amount = inv.total || inv.finalTotal || inv.amount || 0;
+          let segmentIndex = 0;
+
+          switch (period) {
+            case 'daily':
+              // Group by 3-hour blocks: 6AM, 9AM, 12PM, 3PM, 6PM, 9PM, 12AM
+              const hour = invDate.getHours();
+              segmentIndex = Math.min(Math.floor(hour / 3), 6);
+              break;
+            case 'weekly':
+              // Sunday = 0, Monday = 1, etc.
+              segmentIndex = invDate.getDay();
+              break;
+            case 'monthly':
+              // Group by weeks (7 segments for ~4 weeks)
+              const dayOfMonth = invDate.getDate();
+              segmentIndex = Math.min(Math.floor((dayOfMonth - 1) / 4.3), 6);
+              break;
+            case 'yearly':
+              // Group by months (showing first 7 months)
+              segmentIndex = Math.min(invDate.getMonth(), 6);
+              break;
+          }
+
+          segments[segmentIndex].amount += amount;
+          segments[segmentIndex].count += 1;
+        });
+
+        const maxAmount = Math.max(...segments.map(s => s.amount), 1);
+        const labels = {
+          daily: ['6AM', '9AM', '12PM', '3PM', '6PM', '9PM', '12AM'],
+          weekly: ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'],
+          monthly: ['Week 1', 'Week 2', 'Week 3', 'Week 4', 'Week 5', 'Week 6', 'Week 7'],
+          yearly: ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul']
+        };
+
+        return segments.map((seg, i) => ({
+          label: labels[period][i],
+          amount: Math.round(seg.amount),
+          percentage: Math.round((seg.amount / maxAmount) * 100)
+        }));
+      })();
+
+      // Service breakdown from invoice items
+      const serviceBreakdown = {};
+      currentPeriodInvoices.forEach(inv => {
+        const serviceName = inv.service || (inv.items?.[0]?.description) || 'General Service';
+        const amount = inv.total || inv.finalTotal || inv.amount || 0;
+        
+        if (!serviceBreakdown[serviceName]) {
+          serviceBreakdown[serviceName] = { revenue: 0, count: 0 };
+        }
+        serviceBreakdown[serviceName].revenue += amount;
+        serviceBreakdown[serviceName].count += 1;
+      });
+
+      // Payment method breakdown
+      const paymentMethods = {};
+      currentPeriodInvoices.forEach(inv => {
+        if (inv.paymentMethod) {
+          const method = inv.paymentMethod;
+          if (!paymentMethods[method]) {
+            paymentMethods[method] = 0;
+          }
+          paymentMethods[method] += inv.total || inv.finalTotal || inv.amount || 0;
+        }
+      });
       
       return {
         totalRevenue,
         totalTransactions,
-        completedServices,
-        averageInvoice,
+        chartData,
         growthRate,
+        serviceBreakdown,
+        paymentMethods,
         dataSource: 'app'
       };
+      
+      return result;
     } catch (error) {
+      console.error('[Analytics] Calculation error:', error.message);
+      console.error('[Analytics] Error stack:', error.stack);
       return null;
     }
   };
 
-  useEffect(() => {
-    fetchAnalytics();
-    const interval = setInterval(fetchAnalytics, 30000); // Refresh every 30 seconds
-    return () => clearInterval(interval);
+  // Refresh analytics when screen comes into focus or period changes
+  useFocusEffect(
+    React.useCallback(() => {
+      fetchAnalytics();
+    }, [selectedPeriod, dataCleared])
+  );
+
+  // Manual refresh handler
+  const onRefresh = React.useCallback(async () => {
+    setRefreshing(true);
+    await fetchAnalytics();
+    await fetchClientPerformanceData();
+    setRefreshing(false);
   }, [selectedPeriod, dataCleared]);
 
   // Dynamic data based on selected period
@@ -240,16 +453,20 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
     if (backendAnalytics) {
       const total = backendAnalytics.totalRevenue || 0;
       const transactions = backendAnalytics.totalTransactions || 0;
+      
+      // Use real chart data if available
+      const chartData = backendAnalytics.chartData || [
+        { label: period === 'daily' ? '6AM' : period === 'weekly' ? 'Mon' : period === 'yearly' ? 'Jan' : 'Week 1', amount: Math.round(total / 7), percentage: 14 },
+        { label: period === 'daily' ? '9AM' : period === 'weekly' ? 'Tue' : period === 'yearly' ? 'Feb' : 'Week 2', amount: Math.round(total / 7), percentage: 14 },
+        { label: period === 'daily' ? '12PM' : period === 'weekly' ? 'Wed' : period === 'yearly' ? 'Mar' : 'Week 3', amount: Math.round(total / 7), percentage: 14 },
+        { label: period === 'daily' ? '3PM' : period === 'weekly' ? 'Thu' : period === 'yearly' ? 'Apr' : 'Week 4', amount: Math.round(total / 7), percentage: 14 },
+        { label: period === 'daily' ? '6PM' : period === 'weekly' ? 'Fri' : period === 'yearly' ? 'May' : 'Week 5', amount: Math.round(total / 7), percentage: 14 },
+        { label: period === 'daily' ? '9PM' : period === 'weekly' ? 'Sat' : period === 'yearly' ? 'Jun' : '', amount: Math.round(total / 7), percentage: 14 },
+        { label: period === 'daily' ? '12AM' : period === 'weekly' ? 'Sun' : period === 'yearly' ? 'Jul' : '', amount: Math.round(total / 7), percentage: 14 },
+      ];
+      
       return {
-        chartData: [
-          { label: period === 'daily' ? '6AM' : period === 'weekly' ? 'Mon' : period === 'yearly' ? 'Jan' : 'Week 1', amount: Math.round(total / 7), percentage: 14 },
-          { label: period === 'daily' ? '9AM' : period === 'weekly' ? 'Tue' : period === 'yearly' ? 'Feb' : 'Week 2', amount: Math.round(total / 7), percentage: 14 },
-          { label: period === 'daily' ? '12PM' : period === 'weekly' ? 'Wed' : period === 'yearly' ? 'Mar' : 'Week 3', amount: Math.round(total / 7), percentage: 14 },
-          { label: period === 'daily' ? '3PM' : period === 'weekly' ? 'Thu' : period === 'yearly' ? 'Apr' : 'Week 4', amount: Math.round(total / 7), percentage: 14 },
-          { label: period === 'daily' ? '6PM' : period === 'weekly' ? 'Fri' : period === 'yearly' ? 'May' : 'Week 5', amount: Math.round(total / 7), percentage: 14 },
-          { label: period === 'daily' ? '9PM' : period === 'weekly' ? 'Sat' : period === 'yearly' ? 'Jun' : '', amount: Math.round(total / 7), percentage: 14 },
-          { label: period === 'daily' ? '12AM' : period === 'weekly' ? 'Sun' : period === 'yearly' ? 'Jul' : '', amount: Math.round(total / 7), percentage: 14 },
-        ],
+        chartData,
         totalRevenue: total,
         totalTransactions: transactions,
         periodLabel: period === 'daily' ? 'Today' : period === 'weekly' ? 'This Week' : period === 'yearly' ? 'This Year' : 'This Month',
@@ -343,10 +560,17 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
     }
   };
 
-  const currentData = getDataForPeriod(selectedPeriod);
-  const averageTransaction = currentData.totalTransactions > 0
-    ? Math.round(currentData.totalRevenue / currentData.totalTransactions)
-    : 0;
+  const currentData = React.useMemo(
+    () => getDataForPeriod(selectedPeriod),
+    [selectedPeriod, backendAnalytics, dataCleared]
+  );
+
+  const averageTransaction = React.useMemo(() => {
+    const totalRevenue = Number(currentData?.totalRevenue ?? 0);
+    const totalTransactions = Number(currentData?.totalTransactions ?? 0);
+    if (!Number.isFinite(totalRevenue) || !Number.isFinite(totalTransactions) || totalTransactions <= 0) return 0;
+    return Math.round(totalRevenue / totalTransactions);
+  }, [currentData?.totalRevenue, currentData?.totalTransactions]);
 
   // Get gradient based on selected period
   const getWalletGradient = (period) => {
@@ -421,21 +645,33 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
     }
     
     const data = currentData;
+    const totalRevenue = Number(data?.totalRevenue ?? 0);
+    const totalTransactions = Number(data?.totalTransactions ?? 0);
+    const safeTotalRevenue = Number.isFinite(totalRevenue) ? totalRevenue : 0;
+    const safeTotalTransactions = Number.isFinite(totalTransactions) ? totalTransactions : 0;
     const completionRate = Math.min(95 + Math.random() * 5, 100); // 95-100%
     const servicePerformance = Math.min(90 + Math.random() * 8, 98); // 90-98%
     const clientPerformance = Math.min(85 + Math.random() * 10, 95); // 85-95%
     
     return {
-      avgTransaction: Math.round(data.totalRevenue / data.totalTransactions),
-      completed: Math.round(data.totalTransactions * (completionRate / 100)),
+      avgTransaction: safeTotalTransactions > 0 ? Math.round(safeTotalRevenue / safeTotalTransactions) : 0,
+      completed: Math.round(safeTotalTransactions * (completionRate / 100)),
       servicePerformance: servicePerformance.toFixed(1),
       clientPerformance: clientPerformance.toFixed(1),
-      orderPerformance: data.totalTransactions,
+      orderPerformance: safeTotalTransactions,
       completionRate: completionRate.toFixed(1)
     };
   };
 
-  const analyticsData = getAnalyticsForPeriod(selectedPeriod);
+  const analyticsData = React.useMemo(
+    () => getAnalyticsForPeriod(selectedPeriod),
+    [
+      selectedPeriod,
+      dataCleared,
+      currentData?.totalRevenue,
+      currentData?.totalTransactions,
+    ]
+  );
 
   // Currency conversion logic
   const exchangeRates = {
@@ -455,11 +691,16 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
   };
 
   const convertPrice = (priceInJMD) => {
+    const numeric = Number(priceInJMD);
+    const safe = Number.isFinite(numeric) ? numeric : 0;
+
     if (selectedCurrency === 'JMD') {
-      return priceInJMD.toFixed(2);
+      return safe.toFixed(2);
     }
+
     const rate = exchangeRates[selectedCurrency] || 1;
-    return (priceInJMD / rate).toFixed(2);
+    const safeRate = Number.isFinite(rate) && rate !== 0 ? rate : 1;
+    return (safe / safeRate).toFixed(2);
   };
 
   const getCurrencySymbol = () => {
@@ -469,59 +710,112 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
   // Updated formatCurrency function to use selected currency
   const formatCurrencyWithConverter = (amount) => {
     const convertedAmount = convertPrice(amount);
-    return `${getCurrencySymbol()}${parseFloat(convertedAmount).toLocaleString()}`;
+    const numeric = Number(convertedAmount);
+    const safe = Number.isFinite(numeric) ? numeric : 0;
+    return `${getCurrencySymbol()}${safe.toLocaleString()}`;
   };
 
   // Fetch frequent non-recurring clients data from backend
   const fetchClientPerformanceData = async () => {
+    // Prevent concurrent calls
+    if (loadingClientData) {
+      return;
+    }
+    
     try {
+      setLoadingClientData(true);
+      
       if (dataCleared) {
         setClientPerformanceData(null);
+        setLoadingClientData(false);
         return;
       }
       
-      const response = await ApiService.makeRequest(`/analytics/clients/frequent?period=${selectedPeriod}`, {
-        method: 'GET'
-      });
+      try {
+        const response = await ApiService.makeRequest(`/analytics/clients/frequent?period=${selectedPeriod}`, {
+          method: 'GET'
+        });
+        
+        if (response && response.success && response.data && response.data.frequentClients?.length > 0) {
+          const frequentClients = response.data.frequentClients || [];
+          // Transform data to match UI format
+          const formattedClients = frequentClients.slice(0, 5).map(client => ({
+            clientName: client.clientId?.firstName + ' ' + client.clientId?.lastName || 'Unknown Client',
+            appointmentCount: client.count || 0,
+            totalSpent: client.totalAmount || 0,
+            avgRating: 4.5 + Math.random() * 0.5 // Rating based on satisfaction
+          }));
+          
+          setClientPerformanceData({
+            frequentClients: formattedClients,
+            retentionRate: response.data.retentionRate || 0,
+            satisfactionRate: response.data.satisfactionRate || 0
+          });
+          
+          // Cache locally
+          await AsyncStorage.setItem(`clientAnalytics_${selectedPeriod}`, JSON.stringify(response.data));
+          return;
+        }
+      } catch (backendError) {
+        // Backend failed, will fall through to local calculation
+      }
       
-      if (response && response.success && response.data) {
-        const frequentClients = response.data.frequentClients || [];
-        // Transform data to match UI format
-        const formattedClients = frequentClients.slice(0, 5).map(client => ({
-          clientName: client.clientId?.firstName + ' ' + client.clientId?.lastName || 'Unknown Client',
-          appointmentCount: client.count || 0,
-          totalSpent: client.totalAmount || 0,
-          avgRating: 4.5 + Math.random() * 0.5 // Rating based on satisfaction
-        }));
+      // Fallback: Calculate from local invoices
+      // Prefer cached invoices to avoid repeated heavy fetches
+      let invoices = invoicesCache;
+      if (!invoices || invoices.length === 0) {
+        // Schedule after interactions to avoid jank
+        await waitForInteractions();
+        const allInvoices = await InvoiceService.getAllInvoices();
+        invoices = allInvoices?.filter(inv => !inv.invoiceId?.includes('SAMPLE')) || [];
+      }
+      
+      if (invoices.length > 0) {
+        // Group invoices by client
+        const clientMap = {};
+        
+        invoices.forEach(inv => {
+          const clientName = inv.clientName || inv.patientName || 'Unknown Client';
+          const clientId = inv.clientId || inv.patientId || clientName;
+          
+          if (!clientMap[clientId]) {
+            clientMap[clientId] = {
+              clientName: clientName,
+              appointmentCount: 0,
+              totalSpent: 0
+            };
+          }
+          
+          clientMap[clientId].appointmentCount += 1;
+          clientMap[clientId].totalSpent += (inv.total || inv.finalTotal || 0);
+        });
+        
+        // Convert to array and sort by appointment count
+        const frequentClients = Object.values(clientMap)
+          .sort((a, b) => b.appointmentCount - a.appointmentCount)
+          .slice(0, 5)
+          .map(client => ({
+            ...client,
+            avgRating: 4.5 + Math.random() * 0.5
+          }));
         
         setClientPerformanceData({
-          frequentClients: formattedClients,
-          retentionRate: response.data.retentionRate || 0,
-          satisfactionRate: response.data.satisfactionRate || 0
+          frequentClients: frequentClients,
+          retentionRate: 75,
+          satisfactionRate: 90
         });
         
         // Cache locally
-        await AsyncStorage.setItem(`clientAnalytics_${selectedPeriod}`, JSON.stringify(response.data));
-      }
-    } catch (backendError) {
-      // Backend client data unavailable, falling back to cache
-      // Try cached data
-      const cached = await AsyncStorage.getItem(`clientAnalytics_${selectedPeriod}`);
-      if (cached) {
-        const data = JSON.parse(cached);
-        const frequentClients = data.frequentClients || [];
-        const formattedClients = frequentClients.slice(0, 5).map(client => ({
-          clientName: client.clientId?.firstName + ' ' + client.clientId?.lastName || 'Unknown Client',
-          appointmentCount: client.count || 0,
-          totalSpent: client.totalAmount || 0,
-          avgRating: 4.5
+        await AsyncStorage.setItem(`clientAnalytics_${selectedPeriod}`, JSON.stringify({
+          frequentClients,
+          retentionRate: 75,
+          satisfactionRate: 90
         }));
-        setClientPerformanceData({
-          frequentClients: formattedClients,
-          retentionRate: data.retentionRate || 0,
-          satisfactionRate: data.satisfactionRate || 0
-        });
       }
+    } catch (error) {
+      console.error('[Analytics] Client performance error:', error.message);
+    } finally {
+      setLoadingClientData(false);
     }
   };
 
@@ -529,83 +823,151 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
     fetchClientPerformanceData();
   }, [selectedPeriod, dataCleared]);
 
-  const serviceRevenueData = dataCleared ? [] : [
-    {
-      id: 1,
-      name: 'Home Nursing',
-      icon: 'medical-bag',
-      revenue: Math.round(currentData.totalRevenue * 0.36),
-      bookings: 456,
-      percentage: 36,
-      gradient: COLORS.gradient1,
-    },
-    {
-      id: 2,
-      name: 'Physiotherapy',
-      icon: 'arm-flex',
-      revenue: Math.round(currentData.totalRevenue * 0.31),
-      bookings: 352,
-      percentage: 31,
-      gradient: COLORS.gradient2,
-    },
-    {
-      id: 3,
-      name: 'Blood Draws',
-      icon: 'water',
-      revenue: Math.round(currentData.totalRevenue * 0.18),
-      bookings: 298,
-      percentage: 18,
-      gradient: COLORS.gradient3,
-    },
-    {
-      id: 4,
-      name: 'Dressings',
-      icon: 'bandage',
-      revenue: Math.round(currentData.totalRevenue * 0.10),
-      bookings: 245,
-      percentage: 10,
-      gradient: COLORS.gradient4,
-    },
-    {
-      id: 5,
-      name: 'Vital Signs',
-      icon: 'heart-pulse',
-      revenue: Math.round(currentData.totalRevenue * 0.05),
-      bookings: 217,
-      percentage: 5,
-      gradient: ['#ffecd2', '#fcb69f'],
-    },
-  ];
+  const serviceRevenueData = dataCleared ? [] : (() => {
+    // Use real service breakdown if available from analytics
+    if (backendAnalytics?.serviceBreakdown) {
+      const services = Object.entries(backendAnalytics.serviceBreakdown)
+        .map(([name, data]) => ({
+          name,
+          revenue: data.revenue,
+          bookings: data.count,
+          percentage: Math.round((data.revenue / currentData.totalRevenue) * 100)
+        }))
+        .sort((a, b) => b.revenue - a.revenue)
+        .slice(0, 5);
 
-  const paymentMethodData = dataCleared ? [] : [
-    {
-      id: 1,
-      name: 'Credit/Debit Card',
-      icon: 'credit-card',
-      amount: Math.round(currentData.totalRevenue * 0.60),
-      percentage: 60,
-      gradient: COLORS.gradient1,
-    },
-    {
-      id: 2,
-      name: 'Digital Wallet',
-      icon: 'wallet',
-      amount: Math.round(currentData.totalRevenue * 0.30),
-      percentage: 30,
-      gradient: COLORS.gradient2,
-    },
-    {
-      id: 3,
-      name: 'Bank Transfer',
-      icon: 'bank-transfer',
-      amount: Math.round(currentData.totalRevenue * 0.10),
-      percentage: 10,
-      gradient: COLORS.gradient3,
-    },
-  ];
+      // Add gradients
+      const gradients = [
+        COLORS.gradient1,
+        COLORS.gradient2,
+        COLORS.gradient3,
+        COLORS.gradient4,
+        ['#ffecd2', '#fcb69f']
+      ];
+
+      return services.map((service, idx) => ({
+        id: idx + 1,
+        ...service,
+        gradient: gradients[idx] || COLORS.gradient1,
+        icon: 'medical-bag'
+      }));
+    }
+
+    // Fallback to mock data
+    return [
+      {
+        id: 1,
+        name: 'Home Nursing',
+        icon: 'medical-bag',
+        revenue: Math.round(currentData.totalRevenue * 0.36),
+        bookings: 456,
+        percentage: 36,
+        gradient: COLORS.gradient1,
+      },
+      {
+        id: 2,
+        name: 'Physiotherapy',
+        icon: 'arm-flex',
+        revenue: Math.round(currentData.totalRevenue * 0.31),
+        bookings: 352,
+        percentage: 31,
+        gradient: COLORS.gradient2,
+      },
+      {
+        id: 3,
+        name: 'Blood Draws',
+        icon: 'water',
+        revenue: Math.round(currentData.totalRevenue * 0.18),
+        bookings: 298,
+        percentage: 18,
+        gradient: COLORS.gradient3,
+      },
+      {
+        id: 4,
+        name: 'Dressings',
+        icon: 'bandage',
+        revenue: Math.round(currentData.totalRevenue * 0.10),
+        bookings: 245,
+        percentage: 10,
+        gradient: COLORS.gradient4,
+      },
+      {
+        id: 5,
+        name: 'Vital Signs',
+        icon: 'heart-pulse',
+        revenue: Math.round(currentData.totalRevenue * 0.05),
+        bookings: 217,
+        percentage: 5,
+        gradient: ['#ffecd2', '#fcb69f'],
+      },
+    ];
+  })();
+
+  const paymentMethodData = dataCleared ? [] : (() => {
+    // Use real payment method breakdown if available
+    if (backendAnalytics?.paymentMethods) {
+      const methods = Object.entries(backendAnalytics.paymentMethods)
+        .map(([name, amount]) => ({
+          name: name.replace(/([A-Z])/g, ' $1').trim(),
+          amount: Math.round(amount),
+          percentage: Math.round((amount / currentData.totalRevenue) * 100)
+        }))
+        .sort((a, b) => b.amount - a.amount)
+        .slice(0, 3);
+
+      const gradients = [COLORS.gradient1, COLORS.gradient2, COLORS.gradient3];
+      const icons = {
+        'Credit Card': 'credit-card',
+        'Debit Card': 'credit-card',
+        'Card': 'credit-card',
+        'Cash': 'cash',
+        'Bank Transfer': 'bank-transfer',
+        'Digital Wallet': 'wallet',
+        'Mobile Money': 'cellphone',
+        'Check': 'checkbook'
+      };
+
+      return methods.map((method, idx) => ({
+        id: idx + 1,
+        ...method,
+        gradient: gradients[idx] || COLORS.gradient1,
+        icon: icons[method.name] || 'cash'
+      }));
+    }
+
+    // Fallback to mock data
+    return [
+      {
+        id: 1,
+        name: 'Credit/Debit Card',
+        icon: 'credit-card',
+        amount: Math.round(currentData.totalRevenue * 0.60),
+        percentage: 60,
+        gradient: COLORS.gradient1,
+      },
+      {
+        id: 2,
+        name: 'Digital Wallet',
+        icon: 'wallet',
+        amount: Math.round(currentData.totalRevenue * 0.30),
+        percentage: 30,
+        gradient: COLORS.gradient2,
+      },
+      {
+        id: 3,
+        name: 'Bank Transfer',
+        icon: 'bank-transfer',
+        amount: Math.round(currentData.totalRevenue * 0.10),
+        percentage: 10,
+        gradient: COLORS.gradient3,
+      },
+    ];
+  })();
 
   const formatCurrency = (amount) => {
-    return `J$${amount.toLocaleString()}`;
+    const numeric = Number(amount);
+    const safe = Number.isFinite(numeric) ? numeric : 0;
+    return `J$${safe.toLocaleString()}`;
   };
 
   const FilterTabs = () => (
@@ -644,10 +1006,15 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
     <Modal
       animationType="slide"
       transparent={true}
+      presentationStyle="overFullScreen"
+      hardwareAccelerated={true}
       visible={targetsModalVisible}
-      onRequestClose={() => setTargetsModalVisible(false)}
+      onRequestClose={closeTargetsModal}
+      onDismiss={closeTargetsModal}
     >
-      <View style={styles.modalOverlay}>
+      <TouchableWithoutFeedback onPress={closeTargetsModal}>
+        <View style={styles.modalOverlay}>
+          <View pointerEvents="box-none">
         <View style={[styles.modalContent, { height: '80%' }]}>
           <View style={styles.modalHeader}>
             <View style={styles.modalHeaderText}>
@@ -656,13 +1023,19 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
             </View>
             <TouchableOpacity 
               style={styles.modalCloseButton}
-              onPress={() => setTargetsModalVisible(false)}
+              onPress={closeTargetsModal}
             >
-              <Text style={styles.modalCloseText}>Close</Text>
+              <MaterialCommunityIcons name="close" size={18} color="#666" />
             </TouchableOpacity>
           </View>
           
-          <ScrollView style={styles.modalBody}>
+          <ScrollView
+            style={styles.modalBody}
+            keyboardShouldPersistTaps="handled"
+            scrollEventThrottle={16}
+            nestedScrollEnabled={true}
+            contentContainerStyle={{ paddingBottom: 24 }}
+          >
             {(() => {
               const targets = getTargetsForPeriod(selectedPeriod);
               return [
@@ -708,7 +1081,13 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
                 <View style={styles.targetManageValues}>
                   <View style={styles.targetManageValue}>
                     <Text style={styles.targetManageLabel}>Current</Text>
-                    <Text style={[styles.targetManageNumber, { color: target.color }]}>
+                    <Text
+                      style={
+                        typeof target.current === 'string' && target.current.includes('%')
+                          ? [styles.targetManageNumber, styles.modalPercentText]
+                          : [styles.targetManageNumber, { color: target.color }]
+                      }
+                    >
                       {target.current}
                     </Text>
                   </View>
@@ -716,7 +1095,15 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
                   <View style={styles.targetManageValue}>
                     <Text style={styles.targetManageLabel}>Target</Text>
                     <TouchableOpacity style={styles.targetEditButton}>
-                      <Text style={styles.targetManageNumber}>{target.target}</Text>
+                      <Text
+                        style={
+                          typeof target.target === 'string' && target.target.includes('%')
+                            ? [styles.targetManageNumber, styles.modalPercentText]
+                            : styles.targetManageNumber
+                        }
+                      >
+                        {target.target}
+                      </Text>
                     </TouchableOpacity>
                   </View>
                 </View>
@@ -733,7 +1120,7 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
                       ]} 
                     />
                   </View>
-                  <Text style={styles.targetProgressText}>75% to goal</Text>
+                  <Text style={[styles.targetProgressText, styles.modalPercentText]}>75% to goal</Text>
                 </View>
               </View>
             ))}
@@ -742,22 +1129,33 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
           <View style={styles.modalActions}>
             <TouchableOpacity 
               style={styles.modalSecondaryButton}
-              onPress={() => setTargetsModalVisible(false)}
+              onPress={closeTargetsModal}
+              activeOpacity={0.7}
             >
               <Text style={styles.modalSecondaryButtonText}>Cancel</Text>
             </TouchableOpacity>
             <TouchableOpacity 
-              style={[styles.modalButton, styles.modalPrimaryButton]}
+              style={styles.modalPrimaryButtonContainer}
               onPress={() => {
                 // Save targets logic here
-                setTargetsModalVisible(false);
+                closeTargetsModal();
               }}
+              activeOpacity={0.7}
             >
-              <Text style={styles.modalButtonText}>Save Changes</Text>
+              <LinearGradient
+                colors={GRADIENTS.header}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 0, y: 1 }}
+                style={styles.modalPrimaryButtonGradient}
+              >
+                <Text style={styles.modalButtonText}>Save Changes</Text>
+              </LinearGradient>
             </TouchableOpacity>
           </View>
         </View>
-      </View>
+        </View>
+        </View>
+      </TouchableWithoutFeedback>
     </Modal>
   );
 
@@ -766,45 +1164,67 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
     <Modal
       animationType="slide"
       transparent={true}
+      presentationStyle="overFullScreen"
+      hardwareAccelerated={true}
       visible={modalVisible}
-      onRequestClose={() => setModalVisible(false)}
+      onRequestClose={closeDetailsModal}
+      onDismiss={closeDetailsModal}
     >
-      <View style={styles.modalOverlay}>
+      <TouchableWithoutFeedback onPress={closeDetailsModal}>
+        <View style={styles.modalOverlay}>
+          <View pointerEvents="box-none">
         <View style={styles.modalContent}>
           <View style={styles.modalHeader}>
             <View style={styles.modalIconContainer}>
               <View style={styles.modalHeaderText}>
                 <Text style={styles.modalTitle}>{selectedCardData?.title}</Text>
-                <Text style={[styles.modalMainValue, { color: selectedCardData?.color }]}>
+                <Text
+                  style={[
+                    styles.modalMainValue,
+                    typeof selectedCardData?.mainValue === 'string' && selectedCardData.mainValue.includes('%')
+                      ? styles.modalPercentText
+                      : { color: selectedCardData?.color },
+                  ]}
+                >
                   {selectedCardData?.mainValue}
                 </Text>
               </View>
             </View>
             <TouchableOpacity 
               style={styles.modalCloseButton}
-              onPress={() => setModalVisible(false)}
+              onPress={closeDetailsModal}
             >
-              <Text style={styles.modalCloseText}>Close</Text>
+              <MaterialCommunityIcons name="close" size={18} color="#666" />
             </TouchableOpacity>
           </View>
           
-          <ScrollView style={styles.modalBody}>
+          <ScrollView
+            style={styles.modalBody}
+            keyboardShouldPersistTaps="handled"
+            scrollEventThrottle={16}
+            nestedScrollEnabled={true}
+            contentContainerStyle={{ paddingBottom: 24 }}
+          >
             {selectedCardData?.details?.map((detail, index) => (
               <View key={index} style={styles.modalDetailItem}>
                 <Text style={styles.modalDetailLabel}>{detail.label}</Text>
-                <Text style={styles.modalDetailValue}>{detail.value}</Text>
+                <Text
+                  style={
+                    typeof detail.value === 'string' && detail.value.includes('%')
+                      ? [styles.modalDetailValue, styles.modalPercentText]
+                      : styles.modalDetailValue
+                  }
+                >
+                  {detail.value}
+                </Text>
               </View>
             ))}
           </ScrollView>
           
-          <TouchableOpacity 
-            style={[styles.modalButton, { backgroundColor: selectedCardData?.color }]}
-            onPress={() => setModalVisible(false)}
-          >
-            <Text style={styles.modalButtonText}>Close</Text>
-          </TouchableOpacity>
         </View>
-      </View>
+        </View>
+        </View>
+      </TouchableWithoutFeedback>
     </Modal>
   );
 
@@ -821,6 +1241,14 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
           <View>
             <Text style={styles.walletLabel}>Total Balance - {currentData.periodLabel}</Text>
             <Text style={styles.walletAmount}>{formatCurrencyWithConverter(currentData.totalRevenue)}</Text>
+            {loadingAnalytics && (
+              <Text style={[styles.walletLabel, { fontSize: 10, marginTop: 4 }]}>Loading...</Text>
+            )}
+            {backendAnalytics && backendAnalytics.dataSource === 'app' && (
+              <Text style={[styles.walletLabel, { fontSize: 9, marginTop: 2 }]}>
+                From {currentData.totalTransactions} invoice{currentData.totalTransactions !== 1 ? 's' : ''}
+              </Text>
+            )}
           </View>
           <View style={styles.walletIconContainer}>
             <TouchableOpacity 
@@ -855,6 +1283,12 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
 
   // Analytics cards component with click handlers
   const handleCardPress = (cardType) => {
+    // Don't open modal if client data is still loading
+    if (cardType === 'clientPerformance' && loadingClientData) {
+      return;
+    }
+    
+    const ACCENT_BLUE = '#2196F3';
     const cardDetails = {
       avgTransaction: {
         title: 'Average Transaction Details',
@@ -866,7 +1300,7 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
           { label: 'Industry Average', value: formatCurrencyWithConverter(analyticsData.avgTransaction * 0.87) },
         ],
         icon: 'calculator',
-        color: '#1976D2'
+        color: ACCENT_BLUE
       },
       completed: {
         title: 'Completed Services',
@@ -878,7 +1312,7 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
           { label: 'Success Rate', value: `${analyticsData.completionRate}%` },
         ],
         icon: 'check-circle',
-        color: '#4CAF50'
+        color: ACCENT_BLUE
       },
       servicePerformance: {
         title: 'Service Performance Analytics',
@@ -890,7 +1324,7 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
           { label: 'Emergency Services', value: `${(parseFloat(analyticsData.servicePerformance) + 2.9).toFixed(1)}%` },
         ],
         icon: 'medical-bag',
-        color: '#FF9800'
+        color: ACCENT_BLUE
       },
       clientPerformance: {
         title: 'Frequent Non-Recurring Clients',
@@ -924,7 +1358,7 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
           { label: 'Satisfaction Rate', value: '92.3%' },
         ],
         icon: 'account-group',
-        color: '#9C27B0'
+        color: ACCENT_BLUE
       },
       orderPerformance: {
         title: 'Order Performance Overview',
@@ -936,89 +1370,97 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
           { label: 'Avg Transaction', value: formatCurrencyWithConverter(analyticsData.avgTransaction) },
         ],
         icon: 'receipt-text',
-        color: '#00BCD4'
+        color: ACCENT_BLUE
       }
     };
-    
-    setSelectedCardData(cardDetails[cardType]);
+
+    // Ensure no overlapping overlays are left open
+    setCurrencyDropdownVisible(false);
+    setTargetsModalVisible(false);
+
+    setSelectedCardData(cardDetails[cardType] || null);
     setModalVisible(true);
   };
 
   const AnalyticsCards = () => (
-    <View style={styles.analyticsGrid}>
+    <View style={styles.analyticsPillsContainer}>
       <TouchableOpacity 
-        style={styles.analyticsCard3D}
-        onPress={() => handleCardPress('avgTransaction')}
-        activeOpacity={0.8}
-      >
-        <View style={styles.analyticsCardHeader}>
-          <Text style={styles.analyticsValue}>{formatCurrencyWithConverter(analyticsData.avgTransaction)}</Text>
-        </View>
-        <Text style={styles.analyticsLabel}>Avg Transaction</Text>
-        <View style={styles.analyticsProgress}>
-          <View style={[styles.progressBar, { backgroundColor: '#1976D2', width: dataCleared ? '0%' : '70%' }]} />
-        </View>
-        <MaterialCommunityIcons name="chevron-right" size={16} color="#1976D2" style={styles.cardArrow} />
-      </TouchableOpacity>
-
-      <TouchableOpacity 
-        style={styles.analyticsCard3D}
+        style={styles.analyticsPill}
         onPress={() => handleCardPress('completed')}
         activeOpacity={0.8}
       >
-        <View style={styles.analyticsCardHeader}>
-          <Text style={styles.analyticsValue}>{analyticsData.completed}</Text>
+        <View style={styles.analyticsPillContent}>
+          <View style={styles.analyticsPillLeft}>
+            <Text style={styles.analyticsPillLabel}>Completed</Text>
+            <View style={styles.analyticsProgress}>
+              <View style={[styles.progressBar, { width: `${analyticsData.completionRate}%` }]} />
+            </View>
+          </View>
+          <View style={styles.analyticsPillRight}>
+            <MaterialCommunityIcons name="chevron-right" size={20} color="#2196F3" />
+          </View>
         </View>
-        <Text style={styles.analyticsLabel}>Completed</Text>
-        <View style={styles.analyticsProgress}>
-          <View style={[styles.progressBar, { backgroundColor: '#4CAF50', width: `${analyticsData.completionRate}%` }]} />
-        </View>
-        <MaterialCommunityIcons name="chevron-right" size={16} color="#4CAF50" style={styles.cardArrow} />
       </TouchableOpacity>
 
       <TouchableOpacity 
-        style={styles.analyticsCard3D}
+        style={styles.analyticsPill}
         onPress={() => handleCardPress('servicePerformance')}
         activeOpacity={0.8}
       >
-        <View style={styles.analyticsCardHeader}>
-          <Text style={styles.analyticsValue}>{analyticsData.servicePerformance}%</Text>
+        <View style={styles.analyticsPillContent}>
+          <View style={styles.analyticsPillLeft}>
+            <Text style={styles.analyticsPillLabel}>Service Performance</Text>
+            <View style={styles.analyticsProgress}>
+              <View style={[styles.progressBar, { width: `${analyticsData.servicePerformance}%` }]} />
+            </View>
+          </View>
+          <View style={styles.analyticsPillRight}>
+            <MaterialCommunityIcons name="chevron-right" size={20} color="#2196F3" />
+          </View>
         </View>
-        <Text style={styles.analyticsLabel}>Service Performance</Text>
-        <View style={styles.analyticsProgress}>
-          <View style={[styles.progressBar, { backgroundColor: '#FF9800', width: `${analyticsData.servicePerformance}%` }]} />
-        </View>
-        <MaterialCommunityIcons name="chevron-right" size={16} color="#FF9800" style={styles.cardArrow} />
       </TouchableOpacity>
 
       <TouchableOpacity 
-        style={styles.analyticsCard3D}
+        style={[styles.analyticsPill, loadingClientData && { opacity: 0.6 }]}
         onPress={() => handleCardPress('clientPerformance')}
         activeOpacity={0.8}
+        disabled={loadingClientData}
       >
-        <View style={styles.analyticsCardHeader}>
-          <Text style={styles.analyticsValue}>{analyticsData.clientPerformance}%</Text>
+        <View style={styles.analyticsPillContent}>
+          <View style={styles.analyticsPillLeft}>
+            <Text style={styles.analyticsPillLabel}>
+              Client Performance {loadingClientData && '...'}
+            </Text>
+            <View style={styles.analyticsProgress}>
+              <View style={[styles.progressBar, { width: `${analyticsData.clientPerformance}%` }]} />
+            </View>
+          </View>
+          <View style={styles.analyticsPillRight}>
+            {loadingClientData ? (
+              <ActivityIndicator size="small" color="#2196F3" />
+            ) : (
+              <MaterialCommunityIcons name="chevron-right" size={20} color="#2196F3" />
+            )}
+          </View>
         </View>
-        <Text style={styles.analyticsLabel}>Client Performance</Text>
-        <View style={styles.analyticsProgress}>
-          <View style={[styles.progressBar, { backgroundColor: '#9C27B0', width: `${analyticsData.clientPerformance}%` }]} />
-        </View>
-        <MaterialCommunityIcons name="chevron-right" size={16} color="#9C27B0" style={styles.cardArrow} />
       </TouchableOpacity>
 
       <TouchableOpacity 
-        style={[styles.analyticsCard3D, styles.fullWidthCard]}
+        style={styles.analyticsPill}
         onPress={() => handleCardPress('orderPerformance')}
         activeOpacity={0.8}
       >
-        <View style={styles.analyticsCardHeader}>
-          <Text style={styles.analyticsValue}>{analyticsData.orderPerformance}</Text>
+        <View style={styles.analyticsPillContent}>
+          <View style={styles.analyticsPillLeft}>
+            <Text style={styles.analyticsPillLabel}>Order Performance</Text>
+            <View style={styles.analyticsProgress}>
+              <View style={[styles.progressBar, { width: dataCleared ? '0%' : '78%' }]} />
+            </View>
+          </View>
+          <View style={styles.analyticsPillRight}>
+            <MaterialCommunityIcons name="chevron-right" size={20} color="#2196F3" />
+          </View>
         </View>
-        <Text style={styles.analyticsLabel}>Order Performance</Text>
-        <View style={styles.analyticsProgress}>
-          <View style={[styles.progressBar, { backgroundColor: '#00BCD4', width: dataCleared ? '0%' : '78%' }]} />
-        </View>
-        <MaterialCommunityIcons name="chevron-right" size={16} color="#00BCD4" style={styles.cardArrow} />
       </TouchableOpacity>
     </View>
   );
@@ -1120,16 +1562,23 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
         </View>
       </LinearGradient>
 
-      <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
+      <ScrollView 
+        style={styles.content} 
+        showsVerticalScrollIndicator={false}
+        refreshControl={
+          <RefreshControl
+            refreshing={refreshing}
+            onRefresh={onRefresh}
+            tintColor={COLORS.primary}
+            colors={[COLORS.primary]}
+          />
+        }
+      >
         <FilterTabs />
         <WalletHeader />
         
         <View style={styles.sectionHeader}>
           <Text style={styles.sectionTitle}>Analytics Overview</Text>
-          <TouchableOpacity style={styles.viewAllButton}>
-            <Text style={styles.viewAllText}>View All</Text>
-            <MaterialCommunityIcons name="arrow-right" size={16} color="#666" />
-          </TouchableOpacity>
         </View>
         
         <AnalyticsCards />
@@ -1144,9 +1593,17 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
               onPress={() => {
                 setTargetsModalVisible(true);
               }}
+              activeOpacity={0.8}
             >
-              <MaterialCommunityIcons name="cog" size={16} color="#fff" />
-              <Text style={styles.manageButtonText}>Manage</Text>
+              <LinearGradient
+                colors={GRADIENTS.header}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 0, y: 1 }}
+                style={styles.manageButtonGradient}
+              >
+                <MaterialCommunityIcons name="cog" size={16} color={COLORS.white} />
+                <Text style={styles.manageButtonText}>Manage</Text>
+              </LinearGradient>
             </TouchableOpacity>
           </View>
           
@@ -1159,9 +1616,7 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
                   title: 'Revenue Goal', 
                   current: targets.revenue.current, 
                   target: targets.revenue.target, 
-                  icon: 'currency-usd',
-                  gradient: ['rgba(76, 175, 80, 0.15)', 'rgba(69, 160, 73, 0.25)'],
-                  textColor: '#4CAF50'
+                  icon: 'currency-usd'
                 },
                 { 
                   id: 2, 
@@ -1169,8 +1624,6 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
                   current: targets.completion.current, 
                   target: targets.completion.target, 
                   icon: 'check-circle',
-                  gradient: ['rgba(33, 150, 243, 0.15)', 'rgba(25, 118, 210, 0.25)'],
-                  textColor: '#2196F3',
                   isPercentage: true
                 },
                 { 
@@ -1179,8 +1632,6 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
                   current: targets.satisfaction.current, 
                   target: targets.satisfaction.target, 
                   icon: 'star',
-                  gradient: ['rgba(255, 152, 0, 0.15)', 'rgba(245, 124, 0, 0.25)'],
-                  textColor: '#FF9800',
                   maxValue: 5
                 },
                 { 
@@ -1189,8 +1640,6 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
                   current: targets.acquisitions.current, 
                   target: targets.acquisitions.target, 
                   icon: 'account-plus',
-                  gradient: ['rgba(156, 39, 176, 0.15)', 'rgba(123, 31, 162, 0.25)'],
-                  textColor: '#9C27B0'
                 }
               ];
             })().map((target) => {
@@ -1200,34 +1649,13 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
               
               return (
                 <View key={target.id} style={styles.targetPillContainer}>
-                  <LinearGradient
-                    colors={target.gradient}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 0, y: 1 }}
-                    style={styles.targetPill}
-                  >
+                  <View style={styles.targetPill}>
                     <View style={styles.targetPillContent}>
                       <View style={styles.targetPillHeader}>
-                        <MaterialCommunityIcons 
-                          name={target.icon} 
-                          size={18} 
-                          color={target.textColor} 
-                        />
-                        <Text style={[styles.targetPillTitle, { color: target.textColor }]}>
+                        <Text style={styles.targetPillTitle}>
                           {target.title}
                         </Text>
                       </View>
-                      
-                      <Text style={[styles.targetPillValue, { color: target.textColor }]}>
-                        {target.isPercentage 
-                          ? `${target.current}%`
-                          : target.maxValue 
-                            ? target.current.toFixed(1)
-                            : target.current > 1000 
-                              ? formatCurrencyWithConverter(target.current)
-                              : target.current
-                        }
-                      </Text>
                       
                       <Text style={styles.targetPillGoal}>
                         Goal: {target.isPercentage 
@@ -1247,13 +1675,13 @@ const PaymentAnalyticsScreen = ({ navigation }) => {
                             styles.targetPillProgressFill, 
                             { 
                               width: `${Math.min(progress, 100)}%`,
-                              backgroundColor: target.textColor 
+                              backgroundColor: '#2196F3' 
                             }
                           ]} 
                         />
                       </View>
                     </View>
-                  </LinearGradient>
+                  </View>
                 </View>
               );
             })}
@@ -1430,38 +1858,64 @@ const styles = StyleSheet.create({
     color: '#2c3e50',
   },
   viewAllButton: {
+    borderRadius: 16,
+    overflow: 'hidden',
+  },
+  viewAllButtonGradient: {
     flexDirection: 'row',
     alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 16,
   },
   viewAllText: {
     fontSize: 14,
-    color: '#666',
+    color: COLORS.white,
     marginRight: 4,
+    fontWeight: '600',
   },
   // Analytics Grid
-  analyticsGrid: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    justifyContent: 'space-between',
+  analyticsPillsContainer: {
+    gap: 12,
     marginBottom: 24,
   },
-  analyticsCard3D: {
+  analyticsPill: {
     backgroundColor: COLORS.white,
-    borderRadius: 18,
-    padding: 18,
-    width: (screenWidth - 60) / 2,
-    marginBottom: 16,
-    elevation: 8,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 4 },
-    shadowOpacity: 0.15,
-    shadowRadius: 12,
+    borderRadius: 14,
+    paddingVertical: 16,
+    paddingHorizontal: 20,
     borderWidth: 1,
-    borderColor: 'rgba(0,0,0,0.05)',
-    transform: [{ perspective: 1000 }],
+    borderColor: '#E5E7EB',
+    elevation: 2,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.08,
+    shadowRadius: 3,
   },
-  fullWidthCard: {
-    width: screenWidth - 40,
+  analyticsPillContent: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  analyticsPillLeft: {
+    flex: 1,
+    marginRight: 16,
+  },
+  analyticsPillRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  analyticsPillLabel: {
+    fontSize: 14,
+    fontWeight: '500',
+    color: '#111827',
+    marginBottom: 8,
+  },
+  analyticsPillValue: {
+    fontSize: 20,
+    fontWeight: '700',
+    color: '#111827',
   },
   analyticsCardHeader: {
     flexDirection: 'row',
@@ -1469,37 +1923,16 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     marginBottom: 12,
   },
-  analyticsIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  analyticsValue: {
-    fontSize: 24,
-    fontWeight: '700',
-    color: '#2c3e50',
-  },
-  analyticsLabel: {
-    fontSize: 14,
-    color: '#7f8c8d',
-    marginBottom: 8,
-  },
   analyticsProgress: {
     height: 4,
-    backgroundColor: '#ecf0f1',
+    backgroundColor: '#E5E7EB',
     borderRadius: 2,
+    overflow: 'hidden',
   },
   progressBar: {
     height: 4,
     borderRadius: 2,
-  },
-  cardArrow: {
-    position: 'absolute',
-    top: 12,
-    right: 12,
-    opacity: 0.7,
+    backgroundColor: '#2196F3',
   },
   // Chart Section Styles
   chartSection: {
@@ -1638,9 +2071,17 @@ const styles = StyleSheet.create({
     color: '#2c3e50',
     marginBottom: 4,
   },
+  modalSubtitle: {
+    fontSize: 14,
+    color: '#2c3e50',
+  },
   modalMainValue: {
     fontSize: 24,
     fontWeight: '700',
+  },
+  modalPercentText: {
+    color: COLORS.primary,
+    fontWeight: '800',
   },
   modalCloseButton: {
     width: 40,
@@ -1668,7 +2109,7 @@ const styles = StyleSheet.create({
   },
   modalDetailLabel: {
     fontSize: 16,
-    color: '#7f8c8d',
+    color: '#2c3e50',
   },
   modalDetailValue: {
     fontSize: 16,
@@ -1691,17 +2132,21 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   manageButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#667eea',
-    paddingHorizontal: 12,
-    paddingVertical: 8,
     borderRadius: 20,
+    overflow: 'hidden',
     elevation: 2,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.1,
     shadowRadius: 2,
+  },
+  manageButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 12,
+    paddingVertical: 8,
+    borderRadius: 20,
   },
   manageButtonText: {
     color: '#fff',
@@ -1716,14 +2161,17 @@ const styles = StyleSheet.create({
     width: '100%',
   },
   targetPill: {
-    borderRadius: 25,
+    backgroundColor: COLORS.white,
+    borderRadius: 14,
     paddingVertical: 16,
     paddingHorizontal: 20,
+    borderWidth: 1,
+    borderColor: '#E5E7EB',
     elevation: 2,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 4,
+    shadowOpacity: 0.08,
+    shadowRadius: 3,
   },
   targetPillContent: {
     flexDirection: 'row',
@@ -1738,22 +2186,25 @@ const styles = StyleSheet.create({
   targetPillTitle: {
     fontSize: 14,
     fontWeight: '500',
-    marginLeft: 8,
+    marginLeft: 0,
+    color: '#111827',
   },
   targetPillValue: {
     fontSize: 16,
     fontWeight: '700',
     marginRight: 12,
+    color: '#111827',
   },
   targetPillGoal: {
-    fontSize: 11,
-    color: '#7f8c8d',
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#111827',
     marginRight: 12,
   },
   targetPillProgressContainer: {
     width: 60,
     height: 6,
-    backgroundColor: 'rgba(0,0,0,0.1)',
+    backgroundColor: '#E5E7EB',
     borderRadius: 3,
     overflow: 'hidden',
   },
@@ -1763,7 +2214,7 @@ const styles = StyleSheet.create({
     left: 0,
     right: 0,
     bottom: 0,
-    backgroundColor: 'rgba(0,0,0,0.1)',
+    backgroundColor: '#E5E7EB',
     borderRadius: 3,
   },
   targetPillProgressFill: {
@@ -1958,7 +2409,7 @@ const styles = StyleSheet.create({
   sectionTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: COLORS.text,
+    color: '#111827',
     marginBottom: 20,
   },
   modernServiceItem: {
@@ -2222,7 +2673,7 @@ const styles = StyleSheet.create({
   },
   targetManageLabel: {
     fontSize: 12,
-    color: '#666',
+    color: '#2c3e50',
     marginBottom: 4,
     textTransform: 'uppercase',
     fontWeight: '500',
@@ -2257,7 +2708,7 @@ const styles = StyleSheet.create({
   },
   targetProgressText: {
     fontSize: 12,
-    color: '#666',
+    color: '#2c3e50',
     textAlign: 'center',
   },
   currencyPicker: {
@@ -2330,21 +2781,24 @@ const styles = StyleSheet.create({
     paddingVertical: 14,
     borderRadius: 12,
     borderWidth: 1,
-    borderColor: '#e0e0e0',
-    backgroundColor: '#f8f9fa',
+    borderColor: '#E5E7EB',
+    backgroundColor: COLORS.white,
     alignItems: 'center',
     justifyContent: 'center',
   },
-  modalPrimaryButton: {
+  modalPrimaryButtonContainer: {
     width: '48%',
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  modalPrimaryButtonGradient: {
     paddingVertical: 14,
     borderRadius: 12,
-    backgroundColor: '#667eea',
     alignItems: 'center',
     justifyContent: 'center',
   },
   modalSecondaryButtonText: {
-    color: '#666',
+    color: '#2c3e50',
     fontSize: 16,
     fontWeight: '600',
   },

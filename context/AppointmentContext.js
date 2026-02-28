@@ -28,8 +28,8 @@ export const AppointmentProvider = ({ children }) => {
   const [refreshInProgress, setRefreshInProgress] = useState(false); // Prevent concurrent refreshes
   const [lastRefreshTime, setLastRefreshTime] = useState(0); // Track last refresh time
 
-  const getAppointmentsStorageKey = () => `@care_appointments_${user?.id || 'guest'}`;
-  const getNursesStorageKey = () => `@care_nurses_${user?.id || 'guest'}`;
+  const getAppointmentsStorageKey = () => `@876_appointments_${user?.id || 'guest'}`;
+  const getNursesStorageKey = () => `@876_nurses_${user?.id || 'guest'}`;
 
   // No initial nurses - load from backend only
   const initialNurses = [];
@@ -310,6 +310,9 @@ export const AppointmentProvider = ({ children }) => {
               null,
             coverageRequests:
               apt.coverageRequests ||
+              // Some emergency backup flows store requests under backupCoverageRequests;
+              // surface them here so UI logic sees pending coverage consistently.
+              apt.backupCoverageRequests ||
               apt.shift?.coverageRequests ||
               apt.shiftDetails?.coverageRequests ||
               cachedMatch?.coverageRequests ||
@@ -1011,6 +1014,101 @@ export const AppointmentProvider = ({ children }) => {
         await saveAppointments(updatedAppointments);
         
         const appointment = updatedAppointments.find(apt => apt.id === appointmentId);
+
+        // Auto-generate invoice on completion (no user action), for non-recurring non-shift appointments.
+        // This ensures patient Past modals can display invoices without any tap-to-generate behavior.
+        try {
+          if (appointment) {
+            const isShiftLike = Boolean(
+              appointment?.isShiftRequest ||
+                appointment?.isShift ||
+                appointment?.clockByNurse ||
+                appointment?.nurseSchedule ||
+                String(appointment?.assignmentType || '').toLowerCase() === 'split-schedule'
+            );
+
+            const isRecurring = Boolean(
+              appointment?.isRecurring ||
+                appointment?.recurring ||
+                appointment?.recurringScheduleId ||
+                appointment?.recurringSchedule
+            );
+
+            if (!isShiftLike && !isRecurring) {
+              const existingInvoices = await InvoiceService.getAllInvoices();
+              const alreadyHasInvoice = (existingInvoices || []).some((inv) => {
+                const invAppointmentId = String(inv?.appointmentId || inv?.relatedAppointmentId || inv?.appointmentID || '');
+                return invAppointmentId && invAppointmentId === String(appointmentId);
+              });
+
+              if (!alreadyHasInvoice) {
+                const serviceType =
+                  appointment?.service ||
+                  appointment?.serviceType ||
+                  appointment?.appointmentType ||
+                  appointment?.serviceName ||
+                  null;
+
+                const startRaw =
+                  appointment?.actualStartTime ||
+                  appointment?.startedAt ||
+                  appointment?.clockInTime ||
+                  appointment?.startTime ||
+                  null;
+                const endRaw =
+                  appointment?.actualEndTime ||
+                  appointment?.completedAt ||
+                  appointment?.clockOutTime ||
+                  appointment?.endTime ||
+                  completionTimestamp ||
+                  null;
+                const startMs = startRaw ? Date.parse(startRaw) : NaN;
+                const endMs = endRaw ? Date.parse(endRaw) : NaN;
+                const computedHours =
+                  Number.isFinite(startMs) && Number.isFinite(endMs) && endMs > startMs
+                    ? Math.max(0, (endMs - startMs) / (1000 * 60 * 60))
+                    : null;
+
+                const hoursWorked =
+                  appointment?.hoursWorked ||
+                  appointment?.totalHours ||
+                  (computedHours !== null ? Number(computedHours.toFixed(2)) : 1);
+
+                if (serviceType) {
+                  await InvoiceService.updateCompanyInfo();
+                  await InvoiceService.createInvoice({
+                    id: appointmentId,
+                    relatedAppointmentId: appointmentId,
+                    shiftRequestId: appointment?.shiftRequestId || appointment?.shiftId || null,
+                    patientName: appointment?.patientName || appointment?.clientName || 'Client',
+                    patientEmail: appointment?.patientEmail || appointment?.email || appointment?.clientEmail || '',
+                    patientPhone: appointment?.patientPhone || appointment?.phone || appointment?.clientPhone || 'N/A',
+                    address: formatAddress(appointment?.address || appointment?.clientAddress || appointment?.patientAddress) || 'Address on file',
+                    nurseName: getNurseName(appointment) || appointment?.nurseName || 'Assigned Nurse',
+                    service: serviceType,
+                    serviceType,
+                    serviceName: serviceType,
+                    appointmentDate:
+                      appointment?.date ||
+                      appointment?.appointmentDate ||
+                      appointment?.scheduledDate ||
+                      appointment?.startDate ||
+                      completionTimestamp,
+                    hoursWorked,
+                    notes:
+                      appointment?.completionNotes ||
+                      appointment?.nurseNotes ||
+                      appointment?.notes ||
+                      notes ||
+                      'Professional nursing services provided',
+                  });
+                }
+              }
+            }
+          }
+        } catch (invoiceError) {
+          console.warn('⚠️ Invoice auto-generation failed:', invoiceError?.message || invoiceError);
+        }
 
         // Increment the nurse's assigned clients count (safely, without breaking if context unavailable)
         try {

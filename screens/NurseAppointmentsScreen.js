@@ -38,6 +38,7 @@ import { useShifts } from '../context/ShiftContext';
 import { useServices } from '../context/ServicesContext';
 import RecurringShiftsList from '../components/RecurringShiftsList';
 import RecurringShiftDetailsModal from '../components/RecurringShiftDetailsModal';
+import NurseDetailsModal from '../components/NurseDetailsModal';
 import NurseInfoCard from '../components/NurseInfoCard';
 import NotesAccordionList from '../components/NotesAccordionList';
 import useWindowDimensions from '../hooks/useWindowDimensions';
@@ -406,6 +407,21 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
     } = useShifts();
     const { services } = useServices();
   
+  // Centralized helper to update notes for both appointments and shift requests
+  const updateItemNotes = async (itemId, notes, isShiftLike = false) => {
+    const sanitizedNotes = typeof notes === 'string' ? notes : '';
+
+    if (isShiftLike) {
+      await updateShiftRequestDetails(itemId, {
+        notes: sanitizedNotes,
+        nurseNotes: sanitizedNotes,
+      });
+      await updateShiftNotes(itemId, sanitizedNotes);
+    } else {
+      await updateNurseNotes(itemId, sanitizedNotes);
+    }
+  };
+
   const [showOnboarding, setShowOnboarding] = useState(false);
   const [isAvailable, setIsAvailable] = useState(true);
   const [selectedCard, setSelectedCard] = useState(null);
@@ -622,6 +638,14 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
   const getShiftScheduledStartDateTimeForReminders = useCallback((shift) => {
     if (!shift || typeof shift !== 'object') return null;
 
+    // Check if this is a recurring shift
+    const isAdminRecurring = shift?.adminRecurring === true || 
+      String(shift?.adminRecurring || '').trim().toLowerCase() === 'true';
+    const isPatientRecurring = shift?.isRecurring === true || 
+      String(shift?.isRecurring || '').trim().toLowerCase() === 'true' || 
+      (shift?.recurringSchedule && typeof shift?.recurringSchedule === 'object');
+    const isRecurring = isAdminRecurring || isPatientRecurring;
+
     const timeCandidate =
       shift.actualStartTime ||
       shift.startedAt ||
@@ -643,6 +667,138 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
       shift.requestedDate ||
       null;
 
+    // For recurring shifts, find the next occurrence
+    if (isRecurring && timeCandidate) {
+      const daysRaw =
+        shift.daysOfWeek ||
+        shift.recurringDaysOfWeek ||
+        shift.recurringDaysOfWeekList ||
+        shift.selectedDays ||
+        shift.recurringDays ||
+        shift.recurringSchedule?.daysOfWeek ||
+        shift.recurringSchedule?.selectedDays ||
+        shift.schedule?.daysOfWeek ||
+        shift.schedule?.selectedDays ||
+        null;
+
+      const normalizeDaysOfWeekForReminders = (raw) => {
+        const list = Array.isArray(raw) ? raw : (raw != null ? [raw] : []);
+        const map = { sun: 0, mon: 1, tue: 2, wed: 3, thu: 4, fri: 5, sat: 6 };
+        const out = [];
+
+        for (const item of list) {
+          if (item == null) continue;
+
+          if (typeof item === 'number' && Number.isFinite(item)) {
+            const v = ((item % 7) + 7) % 7;
+            out.push(v);
+            continue;
+          }
+
+          if (item instanceof Date && Number.isFinite(item.getTime())) {
+            out.push(item.getDay());
+            continue;
+          }
+
+          if (typeof item === 'object') {
+            try {
+              for (const [key, value] of Object.entries(item)) {
+                if (typeof value === 'boolean') {
+                  if (value) out.push(key);
+                } else {
+                  out.push(value);
+                }
+              }
+            } catch (e) {
+              // ignore
+            }
+            continue;
+          }
+
+          const s = String(item).trim();
+          if (!s) continue;
+          const lower = s.toLowerCase();
+          if (map[lower] != null) {
+            out.push(map[lower]);
+            continue;
+          }
+          const abbrev = lower.slice(0, 3);
+          if (map[abbrev] != null) {
+            out.push(map[abbrev]);
+            continue;
+          }
+          const asNum = Number(lower);
+          if (Number.isFinite(asNum)) {
+            const v = ((asNum % 7) + 7) % 7;
+            out.push(v);
+          }
+        }
+
+        return Array.from(
+          new Set(
+            out
+              .map((v) => {
+                if (typeof v === 'number' && Number.isFinite(v)) return ((v % 7) + 7) % 7;
+                const s = String(v).trim().toLowerCase();
+                if (map[s] != null) return map[s];
+                const abbrev = s.slice(0, 3);
+                if (map[abbrev] != null) return map[abbrev];
+                const asNum = Number(s);
+                return Number.isFinite(asNum) ? ((asNum % 7) + 7) % 7 : null;
+              })
+              .filter((d) => d !== null),
+          ),
+        ).sort((a, b) => a - b);
+      };
+
+      const days = normalizeDaysOfWeekForReminders(daysRaw);
+      if (days.length === 0) return null;
+
+      const periodStart = toDateFromValue(
+        shift.recurringPeriodStart ||
+        shift.recurringStartDate ||
+        shift.startDate ||
+        null
+      );
+      const periodEnd = toDateFromValue(
+        shift.recurringPeriodEnd ||
+        shift.recurringEndDate ||
+        shift.endDate ||
+        null
+      );
+
+      const components = parseTimeComponents(timeCandidate);
+      if (!components) return null;
+      
+      const hours = components.hours;
+      const minutes = components.minutes || 0;
+      const now = new Date();
+
+      // Search up to 14 days to find the next occurrence
+      for (let offset = 0; offset <= 14; offset++) {
+        const candidate = new Date(now);
+        candidate.setDate(candidate.getDate() + offset);
+        candidate.setHours(hours, minutes, 0, 0);
+
+        if (!days.includes(candidate.getDay())) continue;
+        
+        if (periodStart) {
+          const periodStartDate = new Date(periodStart.getFullYear(), periodStart.getMonth(), periodStart.getDate(), 0, 0, 0, 0);
+          if (candidate < periodStartDate) continue;
+        }
+        
+        if (periodEnd) {
+          const periodEndDate = new Date(periodEnd.getFullYear(), periodEnd.getMonth(), periodEnd.getDate(), 23, 59, 59, 999);
+          if (candidate > periodEndDate) continue;
+        }
+
+        return candidate;
+      }
+
+      return null;
+    }
+
+    // Non-recurring shift logic
     if (!timeCandidate) {
       return dateCandidate ? toDateFromValue(dateCandidate) : null;
     }
@@ -1057,6 +1213,26 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
     return uniqueClients;
   }, [appointments, allPatients]);
 
+  // Build fast lookup map for clients to avoid repeated .find scans
+  const clientsById = useMemo(() => {
+    const map = new Map();
+    if (!Array.isArray(clientsList)) return map;
+    clientsList.forEach((client) => {
+      if (!client) return;
+      const idCandidates = [client.id, client.uid, client._id];
+      idCandidates.forEach((raw) => {
+        if (!raw) return;
+        const key = String(raw).trim();
+        if (key) {
+          if (!map.has(key)) {
+            map.set(key, client);
+          }
+        }
+      });
+    });
+    return map;
+  }, [clientsList]);
+
   const sanitizeMediaValue = useCallback((value) => {
     if (!value) return '';
     if (typeof value === 'object') {
@@ -1185,6 +1361,19 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
       }) || null;
     };
 
+    // NEW: Check for accepted coverage requests - if one exists, the "Assigned Nurse" 
+    // for display (especially in Service Info) should be the nurse being covered.
+    const coverageList = Array.isArray(selectedItemDetails.coverageRequests) ? selectedItemDetails.coverageRequests : [];
+    const acceptedCoverage = coverageList.find(cr => normalizeStatus(cr?.status) === 'accepted');
+    
+    if (acceptedCoverage) {
+      const requestingName = acceptedCoverage.requestingNurseName || acceptedCoverage.requestedByNurseName;
+      if (requestingName) return requestingName;
+      
+      const matched = findNurseById(acceptedCoverage.requestingNurseId || acceptedCoverage.requestedByNurseId);
+      if (matched) return getNurseName(matched);
+    }
+
     if (selectedItemDetails.nurseName && selectedItemDetails.nurseName !== 'Unassigned') {
       return selectedItemDetails.nurseName;
     }
@@ -1231,70 +1420,67 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
   const patientBookingNotes = useMemo(() => {
     if (!selectedItemDetails) return '';
 
-    const candidates = [
+    const pickFirstNonEmptyText = (values) => {
+      const found = (values || []).find((val) => {
+        if (val === null || val === undefined) return false;
+        const text = String(val).trim();
+        return Boolean(text);
+      });
+      return found === null || found === undefined ? '' : String(found).trim();
+    };
+
+    const clientIdCandidate =
+      selectedItemDetails.patientId ||
+      selectedItemDetails.clientId ||
+      selectedItemDetails.patient?.id ||
+      selectedItemDetails.client?.id ||
+      selectedItemDetails.patientUid ||
+      selectedItemDetails.clientUid ||
+      null;
+    const matchedClient = (() => {
+      if (!clientIdCandidate) return null;
+      const key = String(clientIdCandidate).trim();
+      if (!key || !(clientsById instanceof Map)) return null;
+      return clientsById.get(key) || null;
+    })();
+
+    const patientBookingNotesText = pickFirstNonEmptyText([
       selectedItemDetails.patientNotes,
+      selectedItemDetails.patientNote,
       selectedItemDetails.bookingNotes,
+      selectedItemDetails.bookingNote,
       selectedItemDetails.clientNotes,
       selectedItemDetails.specialInstructions,
-    ];
+      selectedItemDetails.instructions,
+      selectedItemDetails.patient?.notes,
+      selectedItemDetails.patient?.patientNotes,
+      selectedItemDetails.client?.notes,
+      selectedItemDetails.client?.patientNotes,
+      selectedItemDetails.clientSnapshot?.notes,
+      selectedItemDetails.clientSnapshot?.patientNotes,
+      selectedItemDetails.patientSnapshot?.notes,
+      selectedItemDetails.patientSnapshot?.patientNotes,
+      selectedItemDetails.clientData?.notes,
+      selectedItemDetails.clientData?.patientNotes,
+      selectedItemDetails.patientData?.notes,
+      selectedItemDetails.patientData?.patientNotes,
+      matchedClient?.notes,
+      matchedClient?.patientNotes,
+      matchedClient?.bookingNotes,
+      matchedClient?.specialInstructions,
+    ]);
 
-    const raw = candidates.find((value) => {
-      if (value === null || value === undefined) return false;
-      const text = String(value).trim();
-      return Boolean(text);
-    });
+    // Fallback: some payloads still store patient-entered notes in the generic `notes` field.
+    // Prefer explicit patient note fields first, but don't hide `notes` just because nurseNotes exists.
+    const legacyNotes = (selectedItemDetails.notes && String(selectedItemDetails.notes).trim()) || '';
+    const nurseNotesText = (selectedItemDetails.nurseNotes && String(selectedItemDetails.nurseNotes).trim()) || '';
+    const legacyLooksLikeNurseNotes =
+      Boolean(legacyNotes && nurseNotesText) && legacyNotes === nurseNotesText;
 
-    const legacyNotes = (selectedItemDetails?.notes && String(selectedItemDetails.notes).trim()) || '';
-    const hasNurseNotes = Boolean(
-      selectedItemDetails?.nurseNotes && String(selectedItemDetails.nurseNotes).trim().length
-    );
+    const finalPatientNotes = patientBookingNotesText || (legacyLooksLikeNurseNotes ? '' : legacyNotes);
 
-    if (raw === null || raw === undefined) {
-      if (!hasNurseNotes && legacyNotes) {
-        const legacyNormalized = legacyNotes.toLowerCase();
-        const invalidLegacy = [
-          'n/a',
-          'na',
-          'none',
-          'no notes',
-          'no patient notes',
-          'not provided',
-          'no notes provided',
-          'patient did not provide notes',
-          "patient didn't provide notes",
-          'patient did not have notes',
-          "patient didn't have notes",
-          'undefined',
-          'null',
-        ];
-        return invalidLegacy.includes(legacyNormalized) ? '' : legacyNotes;
-      }
-      return '';
-    }
-
-    const text = String(raw).trim();
-    if (!text) return '';
-
-    const normalized = text.toLowerCase();
-    const invalidNotes = [
-      'n/a',
-      'na',
-      'none',
-      'no notes',
-      'no patient notes',
-      'not provided',
-      'no notes provided',
-      'patient did not provide notes',
-      "patient didn't provide notes",
-      'patient did not have notes',
-      "patient didn't have notes",
-      'undefined',
-      'null',
-    ];
-
-    if (invalidNotes.includes(normalized)) return '';
-    return text;
-  }, [selectedItemDetails]);
+    return finalPatientNotes;
+  }, [selectedItemDetails, clientsById]);
 
   const hasPatientBookingNotes = Boolean(patientBookingNotes);
 
@@ -1870,6 +2056,45 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
     return matcher;
   }, [myNurseIdentifiersUpper]);
 
+  // Shared clock helper functions
+  const getMyClockEntry = React.useCallback((clockByNurse) => {
+    if (!clockByNurse || typeof clockByNurse !== 'object') return null;
+
+    // 1. Try generic ID keys if clockByNurse is keyed by ID
+    const entryValues = Object.values(clockByNurse).filter(val => val && typeof val === 'object');
+    
+    // 2. Look for an entry where nurseId/code matches mine
+    for (const entry of entryValues) {
+      if (!entry) continue;
+      const entryId =
+        entry.nurseId ||
+        entry.id ||
+        entry._id ||
+        entry.uid ||
+        entry.nurseCode ||
+        entry.staffCode ||
+        entry.code;
+      if (entryId && matchesMine(entryId)) return entry;
+    }
+    return null;
+  }, [matchesMine]);
+
+  const hasActiveClockInByMe = React.useCallback((req) => {
+    const entry = getMyClockEntry(req?.clockByNurse);
+    if (!entry || typeof entry !== 'object') return false;
+
+    const inTime = entry.lastClockInTime || entry.clockInTime || entry.startedAt;
+    if (!inTime) return false;
+    const outTime = entry.lastClockOutTime || entry.clockOutTime || entry.completedAt;
+    if (!outTime) return true;
+
+    const inMs = Date.parse(inTime);
+    const outMs = Date.parse(outTime);
+    if (!Number.isFinite(inMs)) return false;
+    if (!Number.isFinite(outMs)) return true;
+    return outMs < inMs;
+  }, [getMyClockEntry]);
+
   const getMyResponseStatusForShiftRequest = React.useCallback(
     (req) => {
       const responses = req?.nurseResponses;
@@ -2011,7 +2236,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
               || statusNormalized === 'active'
               || (statusNormalized === 'approved' && hasPendingCoverageRequestForMe);
 
-            const belongsToMe =
+            const belongsToMeAsPrimary =
               matchesMine(req.nurseId) ||
               matchesMine(req.nurseUid) ||
               matchesMine(req.primaryNurseId) ||
@@ -2029,13 +2254,13 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
               matchesMine(req?.nurse?.uid) ||
               listIncludesMine(req.assignedNurses) ||
               scheduleIncludesMine(req.nurseSchedule) ||
-              listIncludesMine(req.backupNurses) ||
-              listIncludesMine(req.backupNursesNotified) ||
-              listIncludesMine(req.backupNurseList) ||
-              listIncludesMine(req.emergencyBackupNurses) ||
-              listIncludesMine(req?.schedule?.backupNurses) ||
-              listIncludesMine(req?.nurseSchedule?.backupNurses) ||
               listIncludesMine(Object.keys(req?.nurseResponses || {}));
+
+            // Backup nurses should only see a recurring shift request when there is an explicit
+            // pending coverage request targeting them (approve/deny).
+            const belongsToMeAsBackup = hasPendingCoverageRequestForMe;
+
+            const belongsToMe = belongsToMeAsPrimary || belongsToMeAsBackup;
 
             if (!belongsToMe) {
               return false;
@@ -2045,7 +2270,9 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
             const isStillPendingForMe = !myResponseStatus || myResponseStatus === 'pending' || (myResponseStatus !== 'accepted' && myResponseStatus !== 'declined');
 
             // For backup coverage requests, nurseResponses may be empty; use coverageRequests instead.
-            const needsActionForMe = hasPendingCoverageRequestForMe || (!isBackupForThisRequest && isStillPendingForMe);
+            // IMPORTANT: If I'm not the primary assigned nurse, do not surface this request unless
+            // there's a pending coverage request explicitly targeting me.
+            const needsActionForMe = hasPendingCoverageRequestForMe || (belongsToMeAsPrimary && isStillPendingForMe);
 
             // Admin often sets recurring requests to "approved" when assigning a nurse.
             // For the nurse UI, keep it under Pending until THIS nurse accepts/declines.
@@ -2227,6 +2454,20 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
       return outMs > inMs;
     };
 
+    const hasAnyClockOut = (req) => {
+      const clockByNurse = req?.clockByNurse;
+      if (!clockByNurse || typeof clockByNurse !== 'object') return false;
+      return Object.values(clockByNurse).some((entry) => {
+        if (!entry || typeof entry !== 'object') return false;
+        return Boolean(
+          entry.lastClockOutTime ||
+            entry.actualEndTime ||
+            entry.clockOutTime ||
+            entry.completedAt
+        );
+      });
+    };
+
     return shiftRequests
       .filter((req) => {
         if (!req) return false;
@@ -2255,7 +2496,9 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
         // Exclude completed shifts
         const statusNormalized = String(req.status || '').trim().toLowerCase();
         if (statusNormalized === 'completed') return false;
-        if (hasClockedOutByMe(req)) return false;
+
+        // Recurring schedules can have clock-out history per occurrence.
+        // Do not exclude the whole series from Booked just because a clock-out exists.
 
         // Split schedules can be marked globally as "active" when ONE nurse clocks in.
         // For Booked, only exclude it when *I* clocked in (it belongs in Active for me).
@@ -2431,6 +2674,26 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
         // Some recurring requests can have clock-in data while status lags behind.
         if (statusNormalized !== 'active' && !hasClockIn) return false;
 
+        // DEV: Debug filter decision for test shift
+        if (__DEV__ && (req?.id || req?._id) === 'IFUO3HmNuZ5sO74KFQGb') {
+          const myEntry = getMyClockEntry(req?.clockByNurse);
+          console.log('[Active Recurring Filter][DEBUG]', {
+            shiftId: req?.id || req?._id,
+            status: req?.status,
+            isSplitSchedule,
+            hasClockIn,
+            iHaveClockedIn,
+            startedById,
+            startedByMe,
+            myClockEntry: myEntry ? {
+              lastClockInTime: myEntry.lastClockInTime || null,
+              lastClockOutTime: myEntry.lastClockOutTime || null,
+              clockEntriesCount: Array.isArray(myEntry.clockEntries) ? myEntry.clockEntries.length : 0,
+            } : null,
+            willIncludeInActive: true,
+          });
+        }
+
         return true;
       })
       .map((req) => ({
@@ -2499,6 +2762,38 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
       return outMs > inMs;
     };
 
+    const hasAnyClockOut = (req) => {
+      const clockByNurse = req?.clockByNurse;
+      if (!clockByNurse || typeof clockByNurse !== 'object') return false;
+      return Object.values(clockByNurse).some((entry) => {
+        if (!entry || typeof entry !== 'object') return false;
+        return Boolean(
+          entry.lastClockOutTime ||
+            entry.actualEndTime ||
+            entry.clockOutTime ||
+            entry.completedAt
+        );
+      });
+    };
+
+    const hasActiveClockInByMe = (req) => {
+      const entry = getMyClockEntry(req?.clockByNurse);
+      if (!entry || typeof entry !== 'object') return false;
+
+      const inTime = entry.lastClockInTime || entry.clockInTime || entry.startedAt;
+      const outTime = entry.lastClockOutTime || entry.clockOutTime || entry.completedAt;
+
+      if (!inTime) return false;
+      if (!outTime) return true;
+
+      const inMs = Date.parse(inTime);
+      const outMs = Date.parse(outTime);
+      if (!Number.isFinite(inMs)) return false;
+      if (!Number.isFinite(outMs)) return true;
+
+      return inMs > outMs;
+    };
+
     return shiftRequests
       .filter((req) => {
         if (!req) return false;
@@ -2526,9 +2821,74 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
 
         const statusNormalized = String(req.status || '').trim().toLowerCase();
         
-        // Include if status is completed OR if I have clocked out (even if status hasn't updated yet)
+        // A recurring series should only be considered completed when the series is actually finished.
+        // (Clock-out can happen on each occurrence and should not move the whole series to Completed.)
         if (statusNormalized === 'completed') return true;
-        if (hasClockedOutByMe(req)) return true;
+        if (req?.finalCompletedAt) return true;
+
+        const parseDateOnlyLocal = (val) => {
+          if (!val) return null;
+          if (val instanceof Date && Number.isFinite(val.getTime())) return val;
+          const raw = String(val).trim();
+          if (!raw) return null;
+          if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) {
+            const d = new Date(`${raw}T00:00:00`);
+            return Number.isFinite(d.getTime()) ? d : null;
+          }
+          const d = new Date(raw);
+          return Number.isFinite(d.getTime()) ? d : null;
+        };
+
+        const periodEnd = parseDateOnlyLocal(
+          req?.recurringPeriodEnd ||
+          req?.endDate ||
+          req?.recurringEndDate ||
+          req?.appointmentEndDate ||
+          null
+        );
+
+        // If the period ended in the past and we have any clock-out history, treat it as completed for UI.
+        if (periodEnd) {
+          const now = new Date();
+          const startOfLastDay = new Date(periodEnd.getFullYear(), periodEnd.getMonth(), periodEnd.getDate(), 0, 0, 0, 0);
+          const endOfLastDay = new Date(periodEnd.getFullYear(), periodEnd.getMonth(), periodEnd.getDate(), 23, 59, 59, 999);
+          const hasClockOut = hasClockedOutByMe(req) || hasAnyClockOut(req);
+          const hasActiveClockIn = hasActiveClockInByMe(req);
+          const onOrAfterLastDay = now >= startOfLastDay;
+          const periodFullyEnded = now > endOfLastDay;
+          
+          // DEV: Debug completed check for test shift
+          if (__DEV__ && (req?.id || req?._id) === 'IFUO3HmNuZ5sO74KFQGb') {
+            const myEntry = getMyClockEntry(req?.clockByNurse);
+            console.log('[Completed Recurring Filter][DEBUG]', {
+              shiftId: req?.id || req?._id,
+              status: req?.status,
+              periodEnd: periodEnd ? periodEnd.toISOString() : null,
+              startOfLastDay: startOfLastDay.toISOString(),
+              endOfLastDay: endOfLastDay.toISOString(),
+              now: now.toISOString(),
+              onOrAfterLastDay,
+              periodFullyEnded,
+              hasClockOut,
+              hasActiveClockIn,
+              hasClockedOutByMe: hasClockedOutByMe(req),
+              hasAnyClockOut: hasAnyClockOut(req),
+              myClockEntry: myEntry ? {
+                lastClockInTime: myEntry.lastClockInTime || null,
+                lastClockOutTime: myEntry.lastClockOutTime || null,
+                clockEntriesCount: Array.isArray(myEntry.clockEntries) ? myEntry.clockEntries.length : 0,
+                allSessions: myEntry.clockEntries || [],
+              } : null,
+              willIncludeInCompleted: (onOrAfterLastDay && hasClockOut && !hasActiveClockIn) || (periodFullyEnded && hasClockOut),
+            });
+          }
+          
+          // If we're on or after the last day and have clocked out with no active clock-in, mark as completed
+          if (onOrAfterLastDay && hasClockOut && !hasActiveClockIn) return true;
+          
+          // Or if the entire period has ended and we have any clock-out
+          if (periodFullyEnded && hasClockOut) return true;
+        }
 
         return false;
       })
@@ -2554,6 +2914,17 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
     
     const strictMatches = getAppointmentsByNurse(targetNurseId) || [];
 
+    const listIncludesMine = (list) => {
+      if (!Array.isArray(list) || list.length === 0) return false;
+      return list.some((entry) => {
+        if (!entry) return false;
+        if (typeof entry === 'string') return matchesMine(entry);
+        const entryId = entry.nurseId || entry._id || entry.id;
+        const entryCode = entry.staffCode || entry.nurseCode || entry.code || entry.username;
+        return matchesMine(entryId) || matchesMine(entryCode);
+      });
+    };
+
     const flexibleMatches = sourceAppointments.filter((apt) => {
       if (!apt) return false;
       const isMatch = (
@@ -2565,7 +2936,9 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
         matchesMine(apt.nurseCode) ||
         matchesMine(apt.staffCode) ||
         matchesMine(apt.nurse?.id) ||
-        matchesMine(apt.nurse?._id)
+        matchesMine(apt.nurse?._id) ||
+        listIncludesMine(apt.backupNurses) ||
+        listIncludesMine(apt.emergencyBackupNurses)
       );
       return isMatch;
     });
@@ -2599,8 +2972,26 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
   
   const bookedAppointments = React.useMemo(() => 
     nurseAppointments.filter(app => {
-      const normalizedStatus = (app.status || '').toLowerCase();
-      return normalizedStatus === 'confirmed' && !app.isShiftRequest && !app.isRecurring;
+      const normalizedStatus = String(app.status || '').trim().toLowerCase();
+      if (normalizedStatus !== 'confirmed') return false;
+      if (app.isShiftRequest || app.isRecurring) return false;
+      // Exclude appointments with a pending coverage request targeting me
+      const coverageList = Array.isArray(app.coverageRequests) ? app.coverageRequests : [];
+      const hasPendingCoverageForMe = coverageList.some((cr) => {
+        if (!cr) return false;
+        const crStatus = String(cr.status || '').trim().toLowerCase();
+        if (crStatus !== 'pending') return false;
+        const targets = [
+          cr.targetBackupNurseId,
+          cr.targetBackupNurseStaffCode,
+          ...(Array.isArray(cr.backupNursesNotified) ? cr.backupNursesNotified : []),
+        ].filter(Boolean);
+        return targets.some((t) => matchesMine(t));
+      });
+      if (hasPendingCoverageForMe) {
+        return false;
+      }
+      return true;
     }),
     [nurseAppointments]
   );
@@ -2618,6 +3009,36 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
     nurseAppointments.filter(app => app.status === 'completed' && !app.isShiftRequest && !app.isRecurring),
     [nurseAppointments]
   );
+
+  // Appointments with pending coverage targeted at me (non-shift)
+  const pendingCoverageAppointmentsForMe = React.useMemo(() => {
+    return nurseAppointments.filter((app) => {
+      if (!app || app.isShiftRequest || app.isRecurring) return false;
+      const coverageList = Array.isArray(app.coverageRequests) ? app.coverageRequests : [];
+      if (coverageList.length === 0) return false;
+      const matched = coverageList.some((cr) => {
+        if (!cr) return false;
+        const crStatus = String(cr.status || '').trim().toLowerCase();
+        if (crStatus !== 'pending') return false;
+        const targets = [
+          cr.targetBackupNurseId,
+          cr.targetBackupNurseStaffCode,
+          ...(Array.isArray(cr.backupNursesNotified) ? cr.backupNursesNotified : []),
+        ].filter(Boolean);
+        const isMine = targets.some((t) => matchesMine(t));
+        return isMine;
+      });
+      if (!matched) return false;
+      const statusNormalized = String(app.status || '').trim().toLowerCase();
+      return (
+        statusNormalized === 'pending' ||
+        statusNormalized === 'assigned' ||
+        statusNormalized === 'approved' ||
+        statusNormalized === 'confirmed' ||
+        statusNormalized === 'active'
+      );
+    });
+  }, [nurseAppointments, matchesMine]);
 
   // Get shift requests for this nurse
   const actualUserId = user?.id;
@@ -2644,7 +3065,8 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
           cr.targetBackupNurseStaffCode,
           ...(Array.isArray(cr.backupNursesNotified) ? cr.backupNursesNotified : []),
         ].filter(Boolean);
-        return targets.some((t) => matchesMine(t));
+        const matched = targets.some((t) => matchesMine(t));
+        return matched;
       });
     });
   }, [shiftRequests, matchesMine]);
@@ -2668,7 +3090,18 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
   const pendingShiftRequests = React.useMemo(
     () =>
       nurseShiftRequests.filter((request) => {
-        if (!request || request.adminRecurring) return false;
+        if (!request) return false;
+        
+        // Exclude ALL recurring shifts (admin-created or patient-created)
+        const isRecurring = request.adminRecurring ||
+          request.isRecurring === true ||
+          String(request.isRecurring).trim().toLowerCase() === 'true' ||
+          (request.recurringSchedule && typeof request.recurringSchedule === 'object') ||
+          request.daysOfWeek ||
+          request.selectedDays ||
+          request.recurringPattern;
+        if (isRecurring) return false;
+        
         const statusNormalized = String(request.status || '').trim().toLowerCase();
 
         const coverageList = Array.isArray(request.coverageRequests)
@@ -2687,7 +3120,9 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
         });
 
         // Regular pending shift requests where I'm the assigned nurse
-        if (statusNormalized === 'pending') return true;
+        if (statusNormalized === 'pending') {
+          return true;
+        }
 
         // For backup coverage, surface the shift under Pending when there's
         // a pending coverage request targeted at me, even if the shift
@@ -3181,15 +3616,12 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
           const finalNotes = appendTimestampedNotes(existingNotes, shiftNotes);
 
           // Update the notes in the appointment/shift
-          await updateNurseNotes(selectedItemForNotes.id, finalNotes);
           const isShiftItem = Boolean(
             selectedItemForNotes.isShift ||
             selectedItemForNotes.isShiftRequest ||
             selectedItemForNotes.adminRecurring
           );
-          if (isShiftItem) {
-            await updateShiftNotes(selectedItemForNotes.id, finalNotes);
-          }
+          await updateItemNotes(selectedItemForNotes.id, finalNotes, isShiftItem);
           
           // Update local state to reflect the notes (only nurseNotes to avoid duplication)
           setSelectedItemDetails(prev => ({
@@ -3274,6 +3706,47 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
             };
 
             console.log('[Recurring Modal Open] Fresh data loaded:', normalizedShift.id);
+            
+            if (__DEV__) {
+              const clockByNurse = normalizedShift?.clockByNurse;
+              const clockKeys = clockByNurse && typeof clockByNurse === 'object' ? Object.keys(clockByNurse) : [];
+              const myUid = user?.uid || user?.id || nurseId;
+              const myCode = user?.staffCode || user?.nurseCode || user?.code;
+              const myEntry = clockKeys.length > 0 && myUid ? clockByNurse[myUid] : null;
+              
+              console.log('[Modal Open][DEBUG]', {
+                shiftId: normalizedShift.id,
+                status: normalizedShift.status,
+                selectedCard,
+                adminRecurring: normalizedShift.adminRecurring,
+                isRecurring: normalizedShift.isRecurring,
+                currentNurse: {
+                  uid: myUid,
+                  code: myCode,
+                },
+                clockByNurse: {
+                  keyCount: clockKeys.length,
+                  keys: clockKeys,
+                  myEntry: myEntry ? {
+                    lastClockInTime: myEntry.lastClockInTime || null,
+                    lastClockOutTime: myEntry.lastClockOutTime || null,
+                    clockInTime: myEntry.clockInTime || null,
+                    clockOutTime: myEntry.clockOutTime || null,
+                    clockEntriesCount: Array.isArray(myEntry.clockEntries) ? myEntry.clockEntries.length : 0,
+                    allSessions: Array.isArray(myEntry.clockEntries) ? myEntry.clockEntries.map(s => ({
+                      dayKey: s?.dayKey,
+                      clockIn: s?.clockInTime || s?.actualStartTime || s?.startedAt || null,
+                      clockOut: s?.clockOutTime || s?.actualEndTime || s?.completedAt || null,
+                    })) : [],
+                  } : null,
+                },
+                recurringPeriod: {
+                  start: normalizedShift.recurringPeriodStart || normalizedShift.startDate || null,
+                  end: normalizedShift.recurringPeriodEnd || normalizedShift.endDate || null,
+                },
+              });
+            }
+            
             setSelectedRecurringShift(normalizedShift);
             setHideRecurringShiftDetailsFooter(selectedCard === 'completed' || String(normalizedShift?.status || '').toLowerCase() === 'completed');
             setRecurringShiftDetailsModalVisible(true);
@@ -3374,6 +3847,47 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
       };
       
       console.log('[Recurring Modal Open] Using cached data:', normalizedShift.id);
+      
+      if (__DEV__) {
+        const clockByNurse = normalizedShift?.clockByNurse;
+        const clockKeys = clockByNurse && typeof clockByNurse === 'object' ? Object.keys(clockByNurse) : [];
+        const myUid = user?.uid || user?.id || nurseId;
+        const myCode = user?.staffCode || user?.nurseCode || user?.code;
+        const myEntry = clockKeys.length > 0 && myUid ? clockByNurse[myUid] : null;
+        
+        console.log('[Modal Open][DEBUG]', {
+          shiftId: normalizedShift.id,
+          status: normalizedShift.status,
+          selectedCard,
+          adminRecurring: normalizedShift.adminRecurring,
+          isRecurring: normalizedShift.isRecurring,
+          currentNurse: {
+            uid: myUid,
+            code: myCode,
+          },
+          clockByNurse: {
+            keyCount: clockKeys.length,
+            keys: clockKeys,
+            myEntry: myEntry ? {
+              lastClockInTime: myEntry.lastClockInTime || null,
+              lastClockOutTime: myEntry.lastClockOutTime || null,
+              clockInTime: myEntry.clockInTime || null,
+              clockOutTime: myEntry.clockOutTime || null,
+              clockEntriesCount: Array.isArray(myEntry.clockEntries) ? myEntry.clockEntries.length : 0,
+              allSessions: Array.isArray(myEntry.clockEntries) ? myEntry.clockEntries.map(s => ({
+                dayKey: s?.dayKey,
+                clockIn: s?.clockInTime || s?.actualStartTime || s?.startedAt || null,
+                clockOut: s?.clockOutTime || s?.actualEndTime || s?.completedAt || null,
+              })) : [],
+            } : null,
+          },
+          recurringPeriod: {
+            start: normalizedShift.recurringPeriodStart || normalizedShift.startDate || null,
+            end: normalizedShift.recurringPeriodEnd || normalizedShift.endDate || null,
+          },
+        });
+      }
+      
       setSelectedRecurringShift(normalizedShift);
       setHideRecurringShiftDetailsFooter(selectedCard === 'completed' || String(normalizedShift?.status || '').toLowerCase() === 'completed');
       setRecurringShiftDetailsModalVisible(true);
@@ -4133,10 +4647,11 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
           throw new Error('Unable to load appointment');
         }
 
-        const existingRequestsRaw = latest.backupCoverageRequests || latest.coverageRequests;
-        const backupCoverageRequests = Array.isArray(existingRequestsRaw) ? [...existingRequestsRaw] : [];
+        // Prefer unified storage under coverageRequests; include backupCoverageRequests for backward compatibility
+        const existingRequestsRaw = latest.coverageRequests || latest.backupCoverageRequests;
+        const coverageRequests = Array.isArray(existingRequestsRaw) ? [...existingRequestsRaw] : [];
 
-        const alreadyPending = backupCoverageRequests.some((req) => {
+        const alreadyPending = coverageRequests.some((req) => {
           if (!req) return false;
           const sameDate = dateKey ? req.date === dateKey : true;
           const status = String(req.status || '').toLowerCase();
@@ -4165,10 +4680,12 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
           responses: [],
         };
 
-        backupCoverageRequests.push(coverageRequest);
+        coverageRequests.push(coverageRequest);
 
         const result = await ApiService.updateAppointment(appointment.id, {
-          backupCoverageRequests,
+          coverageRequests,
+          // Also mirror into backupCoverageRequests for compatibility with older records
+          backupCoverageRequests: coverageRequests,
           updatedAt: nowIso,
         });
 
@@ -4593,6 +5110,65 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
   const getShiftScheduledStartDateTime = (shift, now = new Date()) => {
     if (!shift || typeof shift !== 'object') return null;
 
+    const isSplitSchedule = (() => {
+      if (String(shift?.assignmentType || '').trim().toLowerCase() === 'split-schedule') return true;
+      const schedule = shift?.nurseSchedule;
+      return Boolean(schedule && typeof schedule === 'object' && Object.keys(schedule).length > 0);
+    })();
+
+    const resolveSplitAssignedDaysForMe = (schedule) => {
+      if (!schedule || typeof schedule !== 'object') return [];
+      const out = [];
+      const dayMap = { sun: 0, sunday: 0, mon: 1, monday: 1, tue: 2, tues: 2, tuesday: 2, wed: 3, wednesday: 3, thu: 4, thur: 4, thurs: 4, thursday: 4, fri: 5, friday: 5, sat: 6, saturday: 6 };
+      const pushDayKey = (dayKey) => {
+        let idx = null;
+        if (typeof dayKey === 'number' && Number.isFinite(dayKey)) {
+          idx = ((Math.trunc(dayKey) % 7) + 7) % 7;
+        } else {
+          const raw = String(dayKey).trim().toLowerCase();
+          if (dayMap[raw] != null) {
+            idx = dayMap[raw];
+          } else {
+            const parsed = Number(raw);
+            if (Number.isFinite(parsed)) idx = ((Math.trunc(parsed) % 7) + 7) % 7;
+          }
+        }
+        if (idx === null) return;
+        out.push(idx);
+      };
+
+      for (const [dayKey, assignedVal] of Object.entries(schedule)) {
+        if (!assignedVal) continue;
+        if (!matchesMine(assignedVal)) continue;
+
+        pushDayKey(dayKey);
+      }
+
+      // Fallback: if schedule exists but we couldn't match identifiers (data shape varies),
+      // use any truthy days from the schedule rather than blocking clock-in.
+      if (out.length === 0) {
+        for (const [dayKey, assignedVal] of Object.entries(schedule)) {
+          if (!assignedVal) continue;
+          pushDayKey(dayKey);
+        }
+      }
+
+      return Array.from(new Set(out)).sort((a, b) => a - b);
+    };
+
+    const isAssignedToMeForDate = (dateObj) => {
+      if (!(dateObj instanceof Date) || Number.isNaN(dateObj.getTime())) return false;
+      const schedule = shift?.nurseSchedule;
+      if (!schedule || typeof schedule !== 'object') return true;
+      const dayIdx = dateObj.getDay();
+      const numericKey = String(dayIdx);
+      const dayKeys = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+      const textKey = dayKeys[dayIdx];
+      const assignedVal = schedule[numericKey] ?? schedule[textKey] ?? schedule[textKey?.toUpperCase?.()] ?? null;
+      if (!assignedVal) return false;
+      return matchesMine(assignedVal);
+    };
+
     const coerceToDate = (val) => {
       if (!val) return null;
       if (val instanceof Date) return Number.isFinite(val.getTime()) ? val : null;
@@ -4601,7 +5177,10 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
         return Number.isFinite(d.getTime()) ? d : null;
       }
       if (typeof val === 'string') {
-        const d = new Date(val);
+        // Important: date-only strings (YYYY-MM-DD) are parsed as UTC by JS.
+        // That can shift the day in local timezones and break periodEnd checks.
+        const s = val.trim();
+        const d = /^\d{4}-\d{2}-\d{2}$/.test(s) ? new Date(`${s}T00:00:00`) : new Date(s);
         return Number.isFinite(d.getTime()) ? d : null;
       }
       if (typeof val === 'object') {
@@ -4686,11 +5265,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
       shift.appointmentDate ||
       shift.schedule?.scheduledDate ||
       shift.schedule?.date ||
-      shift.schedule?.startDate ||
       shift.schedule?.appointmentDate ||
-      shift.startDate ||
-      shift.recurringStartDate ||
-      shift.recurringPeriodStart ||
       shift.scheduledStartDate ||
       shift.scheduledStart ||
       null;
@@ -4720,11 +5295,37 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
         const d = new Date(t);
         if (Number.isFinite(d.getTime())) return d;
       }
-      return parseTimeToDateOnDay(t, base || new Date());
+
+      const parsed = parseTimeToDateOnDay(t, base || new Date());
+      if (parsed) return parsed;
+
+      // Common case in this app: time ranges like "10:40 - 11:00" or "10:40 AM - 11:00 AM".
+      // If we can't parse the full string, fall back to the start time.
+      if (typeof t === 'string') {
+        const raw = t.trim();
+        if (!raw) return null;
+        const startPart = raw.split('-')[0]?.trim();
+        if (startPart) {
+          const parsedStart = parseTimeToDateOnDay(startPart, base || new Date());
+          if (parsedStart) return parsedStart;
+        }
+
+        // Last resort: extract the first HH:MM(+AM/PM) token.
+        const token = raw.match(/\b\d{1,2}:\d{2}\s*(?:AM|PM)?\b/i)?.[0];
+        if (token) {
+          const parsedToken = parseTimeToDateOnDay(token, base || new Date());
+          if (parsedToken) return parsedToken;
+        }
+      }
+
+      return null;
     };
 
     // If we have an explicit date, combine it with the time (if any) and return.
     if (explicitDate) {
+      if (isSplitSchedule && !isAssignedToMeForDate(explicitDate)) {
+        return null;
+      }
       if (timeCandidate) {
         const t = parseTime(timeCandidate, explicitDate);
         if (!t) return explicitDate;
@@ -4737,6 +5338,97 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
 
     // Recurring series: compute the next occurrence start (today/next matching weekday).
     if (isAnyRecurring) {
+      const normalizeDayKey = (value) => {
+        if (value == null) return null;
+        if (typeof value === 'string') {
+          const raw = value.trim();
+          if (!raw) return null;
+          if (/^\d{4}-\d{2}-\d{2}$/.test(raw)) return raw;
+          if (/^\d{8}$/.test(raw)) {
+            const yyyy = raw.slice(0, 4);
+            const mm = raw.slice(4, 6);
+            const dd = raw.slice(6, 8);
+            return `${yyyy}-${mm}-${dd}`;
+          }
+          const d = new Date(raw);
+          if (!Number.isFinite(d.getTime())) return null;
+          const yyyy = String(d.getFullYear());
+          const mm = String(d.getMonth() + 1).padStart(2, '0');
+          const dd = String(d.getDate()).padStart(2, '0');
+          return `${yyyy}-${mm}-${dd}`;
+        }
+        if (typeof value === 'number' && Number.isFinite(value)) {
+          const raw = String(Math.trunc(value));
+          if (/^\d{8}$/.test(raw)) {
+            const yyyy = raw.slice(0, 4);
+            const mm = raw.slice(4, 6);
+            const dd = raw.slice(6, 8);
+            return `${yyyy}-${mm}-${dd}`;
+          }
+        }
+        if (value instanceof Date && Number.isFinite(value.getTime())) {
+          const yyyy = String(value.getFullYear());
+          const mm = String(value.getMonth() + 1).padStart(2, '0');
+          const dd = String(value.getDate()).padStart(2, '0');
+          return `${yyyy}-${mm}-${dd}`;
+        }
+        try {
+          const d = new Date(value);
+          if (!Number.isFinite(d.getTime())) return null;
+          const yyyy = String(d.getFullYear());
+          const mm = String(d.getMonth() + 1).padStart(2, '0');
+          const dd = String(d.getDate()).padStart(2, '0');
+          return `${yyyy}-${mm}-${dd}`;
+        } catch (e) {
+          return null;
+        }
+      };
+
+      const getCompletedDayKeysForCurrentNurse = (shiftLike) => {
+        const completed = new Set();
+        if (!shiftLike || typeof shiftLike !== 'object') return completed;
+
+        const clockByNurse = shiftLike?.clockByNurse;
+        if (clockByNurse && typeof clockByNurse === 'object') {
+          for (const [key, entry] of Object.entries(clockByNurse)) {
+            if (!entry || typeof entry !== 'object') continue;
+
+            const keyMatches = matchesMine(key);
+            const entryId = entry.nurseId || entry.id || entry._id || entry.uid || entry.nurseCode || entry.staffCode || entry.code;
+            const entryMatches = entryId ? matchesMine(entryId) : false;
+            if (!keyMatches && !entryMatches) continue;
+
+            const sessions = Array.isArray(entry.clockEntries) ? entry.clockEntries : [];
+            sessions.forEach((s) => {
+              if (!s || typeof s !== 'object') return;
+              const hasOut = Boolean(s.clockOutTime || s.actualEndTime || s.completedAt);
+              if (!hasOut) return;
+              const outKey = normalizeDayKey(s.dayKey || s.clockOutTime || s.actualEndTime || s.completedAt);
+              if (outKey) completed.add(outKey);
+            });
+
+            const lastOutKey = normalizeDayKey(entry.lastClockOutTime || entry.clockOutTime || entry.actualEndTime || entry.completedAt);
+            if (lastOutKey) completed.add(lastOutKey);
+          }
+        }
+
+        const globalSessions = Array.isArray(shiftLike.clockEntries) ? shiftLike.clockEntries : [];
+        globalSessions.forEach((s) => {
+          if (!s || typeof s !== 'object') return;
+          const sid = s.nurseId || s.id || s._id;
+          // Only treat a global session as "mine" when it has an explicit nurse identifier.
+          // Otherwise it can incorrectly block other nurses from clocking in.
+          if (!sid) return;
+          if (!matchesMine(sid)) return;
+          const hasOut = Boolean(s.clockOutTime || s.actualEndTime || s.completedAt);
+          if (!hasOut) return;
+          const outKey = normalizeDayKey(s.dayKey || s.clockOutTime || s.actualEndTime || s.completedAt);
+          if (outKey) completed.add(outKey);
+        });
+
+        return completed;
+      };
+
       const daysRaw =
         shift.daysOfWeek ||
         shift.recurringDaysOfWeek ||
@@ -4744,12 +5436,23 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
         shift.selectedDays ||
         shift.recurringDays ||
         null;
-      const days = normalizeDaysOfWeek(daysRaw);
+      let days = normalizeDaysOfWeek(daysRaw);
+
+      if (isSplitSchedule) {
+        const assignedDays = resolveSplitAssignedDaysForMe(shift?.nurseSchedule);
+        // For split schedules, only allow clock-in on the days assigned to *this* nurse.
+        if (assignedDays.length === 0) return null;
+        days = assignedDays;
+      }
+
+      const completedDayKeys = getCompletedDayKeysForCurrentNurse(shift);
 
       const timeParsed = parseTime(timeCandidate, now);
       if (!timeParsed) return null;
       const hours = timeParsed.getHours();
       const minutes = timeParsed.getMinutes();
+
+      if (days.length === 0) return null;
 
       // Search up to 14 days out to find a valid next occurrence.
       for (let offset = 0; offset <= 14; offset += 1) {
@@ -4757,7 +5460,10 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
         candidate.setDate(candidate.getDate() + offset);
         candidate.setHours(hours, minutes, 0, 0);
 
-        if (days.length > 0 && !days.includes(candidate.getDay())) continue;
+        const candidateKey = normalizeDayKey(candidate);
+        if (candidateKey && completedDayKeys.has(candidateKey)) continue;
+
+        if (!days.includes(candidate.getDay())) continue;
         if (periodStart && candidate < new Date(periodStart.getFullYear(), periodStart.getMonth(), periodStart.getDate(), 0, 0, 0, 0)) continue;
         if (periodEnd && candidate > new Date(periodEnd.getFullYear(), periodEnd.getMonth(), periodEnd.getDate(), 23, 59, 59, 999)) continue;
 
@@ -4770,6 +5476,9 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
     // Non-recurring with only periodStart/startDate: fall back to that day + time.
     const baseDate = coerceToDate(shift.startDate) || periodStart;
     if (baseDate) {
+      if (isSplitSchedule && !isAssignedToMeForDate(baseDate)) {
+        return null;
+      }
       if (timeCandidate) {
         const t = parseTime(timeCandidate, baseDate);
         if (!t) return baseDate;
@@ -4784,8 +5493,21 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
   };
 
   const canClockInForShiftNow = (shift, now = new Date()) => {
+    // Check if this is a recurring shift
+    const isAdminRecurring = shift?.adminRecurring === true || String(shift?.adminRecurring || '').trim().toLowerCase() === 'true';
+    const isPatientRecurring =
+      shift?.isRecurring === true ||
+      String(shift?.isRecurring || '').trim().toLowerCase() === 'true' ||
+      (shift?.recurringSchedule && typeof shift?.recurringSchedule === 'object');
+    const isRecurring = isAdminRecurring || isPatientRecurring;
+
     const scheduled = getShiftScheduledStartDateTime(shift, now);
     if (!scheduled) {
+      // For recurring shifts, if no scheduled time found, return false
+      if (isRecurring) {
+        return false;
+      }
+      
       // For regular appointments without full datetime, check if current time is past appointment time
       const appointmentTimeStr = shift?.time || shift?.startTime || shift?.appointmentTime;
       const appointmentDateStr = shift?.date || shift?.appointmentDate || shift?.scheduledStartDate;
@@ -4952,6 +5674,12 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
   };
 
   const handleClockOut = async (shift) => {
+    console.log('💰 [Feb13] ===== NURSE CLOCK OUT BUTTON PRESSED =====', {
+      shiftId: shift?.id,
+      service: shift?.service,
+      date: shift?.date,
+    });
+    
     try {
       // Get location permission and current location
       const { status } = await Location.requestForegroundPermissionsAsync();
@@ -4978,6 +5706,8 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
         
         // Complete the shift in ShiftContext with location data
         const keepBookedFlag = shouldKeepBookedAfterClockOut(shift);
+        console.log('💰 [Feb13] About to call completeShift with keepBooked:', keepBookedFlag);
+        
         const completionResult = await completeShift(
           shift.id,
           endTime,
@@ -5061,6 +5791,10 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
         // Close modal and refresh UI
         setDetailsModalVisible(false);
         setRefreshKey(prev => prev + 1);
+
+        if (keptBooked) {
+          setSelectedCard('booked');
+        }
         
         const locationLabel = getLocationDisplayText(resolvedLocation) || 'Location unavailable';
         Alert.alert(
@@ -5285,7 +6019,12 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
       case 'pending':
         // Show pending assignments (admin-assigned appointments), pending shift requests AND pending recurring shifts sent by admin
         // Deduplicate by ID to avoid showing same item twice
-        const allPendingItems = [...pendingAssignments, ...pendingShiftRequests, ...pendingRecurringShifts];
+        const allPendingItems = [
+          ...pendingAssignments,
+          ...pendingCoverageAppointmentsForMe,
+          ...pendingShiftRequests,
+          ...pendingRecurringShifts,
+        ];
         const pendingItems = deduplicateByID(allPendingItems);
         return pendingItems;
       case 'completed':
@@ -5326,11 +6065,35 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
         
         // Include confirmed appointments (status='confirmed') and approved recurring shifts
         const activeRecurringIds = new Set((activeRecurringShifts || []).map(s => s?.id).filter(Boolean));
+        const completedRecurringIds = new Set((completedRecurringShifts || []).map(s => s?.id).filter(Boolean));
         const filteredAcceptedRecurring = (acceptedRecurringShifts || []).filter((s) => {
           const id = getAnyId(s);
-          return !activeRecurringIds.has(id) && !activeLocalIds.has(id);
+          return !activeRecurringIds.has(id) && !activeLocalIds.has(id) && !completedRecurringIds.has(id);
         });
         const bookedItems = deduplicateByID([...bookedAppointments, ...filteredApprovedShifts, ...filteredAcceptedRecurring]);
+        
+        // DEV: Debug tab classification for test shift
+        if (__DEV__) {
+          const debugShiftId = 'IFUO3HmNuZ5sO74KFQGb';
+          const inBooked = bookedItems.some(s => (s?.id || s?._id) === debugShiftId);
+          const inActive = activeRecurringShifts.some(s => (s?.id || s?._id) === debugShiftId);
+          const inCompleted = completedRecurringShifts.some(s => (s?.id || s?._id) === debugShiftId);
+          
+          if (inBooked || inActive || inCompleted) {
+            console.log('[Tab Classification][DEBUG]', {
+              shiftId: debugShiftId,
+              appearsIn: {
+                booked: inBooked,
+                active: inActive,
+                completed: inCompleted,
+              },
+              bookedCount: bookedItems.length,
+              activeRecurringCount: activeRecurringShifts.length,
+              completedRecurringCount: completedRecurringShifts.length,
+            });
+          }
+        }
+        
         // Booked items ready
         return bookedItems;
       default:
@@ -5339,6 +6102,65 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
   };
 
   const displayedAppointments = getDisplayedAppointments();
+
+  const sortedDisplayedAppointments = React.useMemo(() => {
+    const items = Array.isArray(displayedAppointments) ? [...displayedAppointments] : [];
+    if (selectedCard !== 'completed') return items;
+
+    const resolveLatestCompletionFromClockByNurse = (item) => {
+      const map = item?.clockByNurse;
+      if (!map || typeof map !== 'object') return null;
+
+      let latest = null;
+      let latestMs = -Infinity;
+      for (const entry of Object.values(map)) {
+        if (!entry || typeof entry !== 'object') continue;
+        const time =
+          entry.lastClockOutTime ||
+          entry.actualEndTime ||
+          entry.clockOutTime ||
+          entry.completedAt ||
+          null;
+        if (!time) continue;
+        const ms = Date.parse(time);
+        if (Number.isFinite(ms) && ms > latestMs) {
+          latestMs = ms;
+          latest = time;
+        }
+      }
+      return latest;
+    };
+
+    const toMs = (value) => {
+      if (!value) return -Infinity;
+      const ms = Date.parse(value);
+      if (Number.isFinite(ms)) return ms;
+      const d = new Date(value);
+      return Number.isFinite(d.getTime()) ? d.getTime() : -Infinity;
+    };
+
+    const getCompletionMs = (item) => {
+      if (!item) return -Infinity;
+      const candidates = [
+        item?.actualEndTime,
+        item?.completedAt,
+        item?.clockOutTime,
+        item?.lastClockOutTime,
+        resolveLatestCompletionFromClockByNurse(item),
+        item?.updatedAt,
+        item?.createdAt,
+      ];
+      let best = -Infinity;
+      for (const c of candidates) {
+        const ms = toMs(c);
+        if (ms > best) best = ms;
+      }
+      return best;
+    };
+
+    items.sort((a, b) => getCompletionMs(b) - getCompletionMs(a));
+    return items;
+  }, [displayedAppointments, matchesMine, selectedCard]);
 
   // Debug log for displayed appointments
   useEffect(() => {
@@ -5998,6 +6820,51 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                       </>
                     )}
 
+                    {/* Backup Coverage Requests (Appointments) */}
+                    {pendingCoverageAppointmentsForMe.length > 0 && (
+                      <>
+                        <Text style={styles.sectionHeaderText}>Backup Coverage Requests</Text>
+                        {pendingCoverageAppointmentsForMe.map((item, index) => {
+                          const uniqueKey = `coverage-${item.id}-${index}`;
+                          const displayName = item.clientName || item.patientName || 'Appointment Coverage';
+                          const photo = resolveClientProfilePhoto(item);
+                          const photoUri = getPhotoUri(photo);
+                          const initials = getInitials(displayName);
+                          return (
+                            <View key={uniqueKey} style={styles.compactCard}>
+                              <View style={styles.compactHeader}>
+                                {photoUri ? (
+                                  <View style={styles.compactAvatarWrapper}>
+                                    <Image source={{ uri: photoUri }} style={styles.compactAvatarImage} />
+                                  </View>
+                                ) : (
+                                  <View style={[styles.compactAvatarWrapper, styles.compactAvatarFallback]}>
+                                    <Text style={styles.compactAvatarInitials}>{initials}</Text>
+                                  </View>
+                                )}
+                                <View style={styles.compactInfo}>
+                                  <Text style={styles.compactClient}>
+                                    {displayName}
+                                  </Text>
+                                </View>
+                                <TouchableOpacity 
+                                  style={styles.detailsButton} 
+                                  onPress={() => handleShowDetails(item)}
+                                >
+                                  <LinearGradient
+                                    colors={GRADIENTS.header}
+                                    style={styles.previewBtnGradient}
+                                  >
+                                    <Text style={styles.detailsButtonText}>View</Text>
+                                  </LinearGradient>
+                                </TouchableOpacity>
+                              </View>
+                            </View>
+                          );
+                        })}
+                      </>
+                    )}
+
                     {/* Regular Shift Requests Section */}
                     {pendingShiftRequests.length > 0 && (
                       <>
@@ -6064,7 +6931,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                 )}
 
                 {/* Non-pending items rendered normally */}
-                {selectedCard !== 'pending' && displayedAppointments.map((item, index) => {
+                {selectedCard !== 'pending' && sortedDisplayedAppointments.map((item, index) => {
                   const uniqueKey = `${selectedCard}-${item.id}-${index}`;
                   const normalizedStatus = (item.status || '').toLowerCase();
                   const clockInTimestamp = item.actualStartTime || item.startedAt;
@@ -6084,6 +6951,57 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                         })}`
                       : 'Clocked In'
                     : null;
+
+                  const completedTimeLabel = (() => {
+                    const isCompletedCard = selectedCard === 'completed' || normalizedStatus === 'completed';
+                    if (!isCompletedCard) return null;
+
+                    const resolveClockOutFromClockByNurse = () => {
+                      const map = item?.clockByNurse;
+                      if (!map || typeof map !== 'object') return null;
+
+                      for (const [key, entry] of Object.entries(map)) {
+                        if (matchesMine(key)) {
+                          return entry?.lastClockOutTime || entry?.actualEndTime || entry?.clockOutTime || entry?.completedAt || null;
+                        }
+                        if (entry && typeof entry === 'object') {
+                          const entryId =
+                            entry.nurseId ||
+                            entry.id ||
+                            entry._id ||
+                            entry.uid ||
+                            entry.nurseCode ||
+                            entry.staffCode ||
+                            entry.code;
+                          if (entryId && matchesMine(entryId)) {
+                            return entry?.lastClockOutTime || entry?.actualEndTime || entry?.clockOutTime || entry?.completedAt || null;
+                          }
+                        }
+                      }
+                      return null;
+                    };
+
+                    const completedSource =
+                      item?.actualEndTime ||
+                      item?.completedAt ||
+                      item?.clockOutTime ||
+                      item?.lastClockOutTime ||
+                      resolveClockOutFromClockByNurse() ||
+                      item?.date ||
+                      item?.scheduledDate ||
+                      item?.startDate ||
+                      null;
+
+                    if (!completedSource) return null;
+
+                    const dt = new Date(completedSource);
+                    if (!Number.isNaN(dt.getTime())) {
+                      const date = dt.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                      const time = dt.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: true });
+                      return `Completed: ${date} ${time}`;
+                    }
+                    return `Completed: ${String(completedSource)}`;
+                  })();
 
                   const iconConfig = (() => {
                     if (selectedCard === 'active' && hasClockedIn) {
@@ -6120,6 +7038,9 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                           {clockInTimeLabel && selectedCard !== 'completed' && normalizedStatus !== 'completed' && (
                             <Text style={styles.compactTimestamp}>{clockInTimeLabel}</Text>
                           )}
+                          {completedTimeLabel ? (
+                            <Text style={styles.compactTimestamp}>{completedTimeLabel}</Text>
+                          ) : null}
                         </View>
                         <TouchableOpacity 
                           style={styles.detailsButton} 
@@ -6174,6 +7095,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                   >
                     {/* Backup coverage banner for targeted backup nurse */}
                     {(() => {
+                      // Show banner for shift requests
                       if (!selectedItemDetails.isShiftRequest || selectedItemDetails.isRecurring) return null;
                       const coverageList = Array.isArray(selectedItemDetails.coverageRequests)
                         ? selectedItemDetails.coverageRequests
@@ -6198,6 +7120,37 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                         <View style={[styles.detailsSection, { paddingBottom: 0 }] }>
                           <Text style={{ color: COLORS.error, fontWeight: '600', marginBottom: 8 }}>
                             Requesting backup coverage for this shift
+                          </Text>
+                        </View>
+                      );
+                    })()}
+
+                    {/* Backup coverage banner for targeted backup nurse (Appointments) */}
+                    {(() => {
+                      if (selectedItemDetails.isShiftRequest || selectedItemDetails.isRecurring) return null;
+                      const coverageList = Array.isArray(selectedItemDetails.coverageRequests)
+                        ? selectedItemDetails.coverageRequests
+                        : [];
+                      if (coverageList.length === 0) return null;
+
+                      const hasPendingCoverageForMe = coverageList.some((cr) => {
+                        if (!cr) return false;
+                        const crStatus = String(cr.status || '').trim().toLowerCase();
+                        if (crStatus !== 'pending') return false;
+                        const targets = [
+                          cr.targetBackupNurseId,
+                          cr.targetBackupNurseStaffCode,
+                          ...(Array.isArray(cr.backupNursesNotified) ? cr.backupNursesNotified : []),
+                        ].filter(Boolean);
+                        return targets.some((t) => matchesMine(t));
+                      });
+
+                      if (!hasPendingCoverageForMe) return null;
+
+                      return (
+                        <View style={[styles.detailsSection, { paddingBottom: 0 }] }>
+                          <Text style={{ color: COLORS.error, fontWeight: '600', marginBottom: 8 }}>
+                            Emergency backup coverage requested for this appointment
                           </Text>
                         </View>
                       );
@@ -6256,6 +7209,8 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                               ? selectedItemDetails.coverageRequests
                               : [];
 
+                            const acceptedCoverage = coverageList.find(cr => normalizeStatus(cr?.status) === 'accepted');
+
                             const pendingCoverageForMe = coverageList.find((cr) => {
                               if (!cr) return false;
                               const status = String(cr.status || '').trim().toLowerCase();
@@ -6268,13 +7223,21 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                               return targets.some((t) => matchesMine(t));
                             });
 
-                            const requestingNurseId = pendingCoverageForMe?.requestingNurseId || null;
-                            const requestingName = pendingCoverageForMe?.requestingNurseName || null;
-                            const requestingCode = pendingCoverageForMe?.requestingNurseCode || null;
+                            const requestingNurseIdFromPending = pendingCoverageForMe?.requestingNurseId || null;
+                            const requestingNameFromPending = pendingCoverageForMe?.requestingNurseName || null;
+                            const requestingCodeFromPending = pendingCoverageForMe?.requestingNurseCode || null;
 
-                            const assignedNurseId = selectedItemDetails.nurseId || selectedItemDetails.assignedNurseId || null;
+                            // Resolve assigned nurse ID - if someone accepted coverage, we show the requester
+                            const assignedNurseId = 
+                              acceptedCoverage?.requestingNurseId || 
+                              selectedItemDetails.nurseId || 
+                              selectedItemDetails.assignedNurseId || 
+                              null;
+                            
                             const assignedName = selectedItemDisplayNurseName || null;
-                            const assignedCode =
+                            
+                            const assignedCodeFromRecord =
+                              acceptedCoverage?.requestingNurseCode ||
                               selectedItemDetails.nurseCode ||
                               selectedItemDetails.nurseStaffCode ||
                               selectedItemDetails.assignedNurseCode ||
@@ -6283,33 +7246,47 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                               null;
 
                             // Find nurse from nurses list for additional details
-                            const findNurse = (nurseId) => {
-                              if (!nurseId || !nurses || nurses.length === 0) return null;
-                              const normalized = String(nurseId).trim().toUpperCase();
+                            const findNurse = (nurseId, nurseCodeCandidate) => {
+                              if (!nurses || nurses.length === 0) return null;
+                              const normalizedId = nurseId ? String(nurseId).trim().toUpperCase() : null;
+                              const normalizedCode = nurseCodeCandidate ? String(nurseCodeCandidate).trim().toUpperCase() : null;
                               return nurses.find(n => {
                                 const ids = [n.id, n._id, n.uid, n.nurseId, n.code, n.staffCode, n.nurseCode].filter(Boolean);
-                                return ids.some(id => String(id).trim().toUpperCase() === normalized);
+                                return ids.some(id => String(id).trim().toUpperCase() === normalizedId) ||
+                                       (normalizedCode && ids.some(id => String(id).trim().toUpperCase() === normalizedCode));
                               });
                             };
 
-                            const requestingNurse = requestingNurseId ? findNurse(requestingNurseId) : null;
-                            const assignedNurse = assignedNurseId ? findNurse(assignedNurseId) : null;
+                            const assignedNurse = findNurse(assignedNurseId, assignedCodeFromRecord);
+                            const requestingNurse = requestingNurseIdFromPending ? findNurse(requestingNurseIdFromPending, requestingCodeFromPending) : null;
+
+                            // Debug: mirror AdminDashboard logging to verify Service Info nurse resolution
+                            try {
+                              console.log('[NurseAppointments] ServiceInfo Assigned Nurse', {
+                                appointmentId: selectedItemDetails?.id || selectedItemDetails?._id || null,
+                                coverageRequestingNurseName: acceptedCoverage?.requestingNurseName || pendingCoverageForMe?.requestingNurseName || null,
+                                nurseDisplayName: assignedName,
+                                nurseCode: assignedCodeFromRecord,
+                                resolvedAssignedNurseId: assignedNurse?.id || assignedNurse?._id || null,
+                                resolvedAssignedNurseCode: assignedNurse?.nurseCode || assignedNurse?.staffCode || assignedNurse?.code || null,
+                              });
+                            } catch (e) {}
 
                             return (
                               <View style={styles.splitNurseCard}>
                                 {/* Nurse Card */}
                                 {(() => {
-                                  // Show requesting nurse if this is a backup coverage request
-                                  if (requestingName && requestingCode) {
+                                  // Show requesting nurse if this is a pending backup coverage request targeting me
+                                  if (requestingNameFromPending && (requestingCodeFromPending || requestingNurseIdFromPending)) {
                                     return (
                                       <NurseInfoCard
                                         variant="embedded"
                                         nurse={{
-                                          id: requestingNurseId,
-                                          name: requestingName,
-                                          fullName: requestingName,
-                                          code: requestingCode,
-                                          staffCode: requestingCode,
+                                          id: requestingNurseIdFromPending,
+                                          name: requestingNameFromPending,
+                                          fullName: requestingNameFromPending,
+                                          code: requestingCodeFromPending,
+                                          staffCode: requestingCodeFromPending,
                                           specialty: requestingNurse?.specialty || 'General Nursing',
                                           profilePhoto: requestingNurse?.profilePhoto || null,
                                           profileImage: requestingNurse?.profileImage || null,
@@ -6324,17 +7301,17 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                                     );
                                   }
 
-                                  // Otherwise show assigned nurse if available
-                                  if (assignedName && assignedCode) {
+                                  // Otherwise show assigned nurse (the person being covered if someone accepted)
+                                  if (assignedName || assignedNurse) {
                                     return (
                                       <NurseInfoCard
                                         variant="embedded"
                                         nurse={{
-                                          id: assignedNurseId,
-                                          name: assignedName,
-                                          fullName: assignedName,
-                                          code: assignedCode,
-                                          staffCode: assignedCode,
+                                          id: assignedNurseId || assignedNurse?.id,
+                                          name: assignedName || (assignedNurse ? getNurseName(assignedNurse) : null),
+                                          fullName: assignedName || (assignedNurse ? getNurseName(assignedNurse) : null),
+                                          code: assignedNurse?.nurseCode || assignedNurse?.staffCode || assignedNurse?.code || assignedCodeFromRecord,
+                                          staffCode: assignedNurse?.nurseCode || assignedNurse?.staffCode || assignedNurse?.code || assignedCodeFromRecord,
                                           specialty: assignedNurse?.specialty || 'General Nursing',
                                           profilePhoto: assignedNurse?.profilePhoto || null,
                                           profileImage: assignedNurse?.profileImage || null,
@@ -6366,10 +7343,49 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
 
                                 {/* Assigned Days */}
                                 {(() => {
-                                  const toDayNumber = (value) => {
-                                    const n = typeof value === 'string' ? Number(value) : value;
-                                    return Number.isInteger(n) ? n : null;
+                                  const dayNameToIndex = {
+                                    sun: 0, sunday: 0,
+                                    mon: 1, monday: 1,
+                                    tue: 2, tues: 2, tuesday: 2,
+                                    wed: 3, wednesday: 3,
+                                    thu: 4, thur: 4, thurs: 4, thursday: 4,
+                                    fri: 5, friday: 5,
+                                    sat: 6, saturday: 6,
                                   };
+
+                                  const toDayNumber = (value) => {
+                                    if (value === null || value === undefined) return null;
+                                    if (typeof value === 'number' && Number.isInteger(value)) return value;
+                                    const str = String(value).trim().toLowerCase();
+                                    if (!str) return null;
+                                    const asNum = Number(str);
+                                    if (Number.isInteger(asNum)) return asNum;
+                                    if (dayNameToIndex.hasOwnProperty(str)) return dayNameToIndex[str];
+                                    return null;
+                                  };
+
+                                  // For single shift requests, extract day from date
+                                  const getSingleShiftDay = () => {
+                                    const dateField = selectedItemDetails.date || selectedItemDetails.scheduledDate || selectedItemDetails.requestDate;
+                                    if (!dateField) return null;
+                                    
+                                    let dateObj;
+                                    if (dateField?.seconds) {
+                                      // Firestore timestamp
+                                      dateObj = new Date(dateField.seconds * 1000);
+                                    } else if (typeof dateField === 'string') {
+                                      dateObj = new Date(dateField);
+                                    } else if (dateField instanceof Date) {
+                                      dateObj = dateField;
+                                    }
+                                    
+                                    if (dateObj && !isNaN(dateObj)) {
+                                      return dateObj.getDay(); // Returns 0-6 (Sunday-Saturday)
+                                    }
+                                    return null;
+                                  };
+
+                                  const singleShiftDay = getSingleShiftDay();
 
                                   const combined = []
                                     .concat(selectedItemDetails.daysOfWeek || [])
@@ -6379,7 +7395,8 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                                     .concat(selectedItemDetails.recurringDaysOfWeek || [])
                                     .concat(selectedItemDetails.recurringPattern?.daysOfWeek || [])
                                     .concat(selectedItemDetails.schedule?.daysOfWeek || [])
-                                    .concat(selectedItemDetails.schedule?.selectedDays || []);
+                                    .concat(selectedItemDetails.schedule?.selectedDays || [])
+                                    .concat(singleShiftDay !== null ? [singleShiftDay] : []);
 
                                   const daysArray = Array.from(
                                     new Set(
@@ -6616,9 +7633,22 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                         <Text style={styles.sectionTitle}>Service Information</Text>
 
                         {(() => {
-                            const assignedNurseId = selectedItemDetails.nurseId || selectedItemDetails.assignedNurseId || null;
+                            const coverageList = Array.isArray(selectedItemDetails.coverageRequests)
+                                ? selectedItemDetails.coverageRequests
+                                : [];
+                            
+                            const acceptedCoverage = coverageList.find(cr => normalizeStatus(cr?.status) === 'accepted');
+
+                            const assignedNurseId = 
+                              acceptedCoverage?.requestingNurseId ||
+                              selectedItemDetails.nurseId || 
+                              selectedItemDetails.assignedNurseId || 
+                              null;
+                            
                             const assignedName = selectedItemDisplayNurseName || null;
-                            const assignedCode =
+                            
+                            const assignedCodeFromRecord =
+                              acceptedCoverage?.requestingNurseCode ||
                               selectedItemDetails.nurseCode ||
                               selectedItemDetails.nurseStaffCode ||
                               selectedItemDetails.assignedNurseCode ||
@@ -6627,29 +7657,43 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                               null;
 
                             // Find nurse from nurses list for additional details
-                            const findNurse = (nurseId) => {
-                              if (!nurseId || !nurses || nurses.length === 0) return null;
-                              const normalized = String(nurseId).trim().toUpperCase();
+                            const findNurse = (nurseId, nurseCodeCandidate) => {
+                              if (!nurses || nurses.length === 0) return null;
+                              const normalizedId = nurseId ? String(nurseId).trim().toUpperCase() : null;
+                              const normalizedCode = nurseCodeCandidate ? String(nurseCodeCandidate).trim().toUpperCase() : null;
                               return nurses.find(n => {
                                 const ids = [n.id, n._id, n.uid, n.nurseId, n.code, n.staffCode, n.nurseCode].filter(Boolean);
-                                return ids.some(id => String(id).trim().toUpperCase() === normalized);
+                                return ids.some(id => String(id).trim().toUpperCase() === normalizedId) ||
+                                       (normalizedCode && ids.some(id => String(id).trim().toUpperCase() === normalizedCode));
                               });
                             };
 
-                            const assignedNurse = assignedNurseId ? findNurse(assignedNurseId) : null;
+                            const assignedNurse = findNurse(assignedNurseId, assignedCodeFromRecord);
+
+                            // Debug: mirror AdminDashboard logging for recurring shifts
+                            try {
+                              console.log('[NurseAppointments] ServiceInfo Assigned Nurse (Recurring)', {
+                                appointmentId: selectedItemDetails?.id || selectedItemDetails?._id || null,
+                                coverageRequestingNurseName: acceptedCoverage?.requestingNurseName || null,
+                                nurseDisplayName: assignedName,
+                                nurseCode: assignedCodeFromRecord,
+                                resolvedAssignedNurseId: assignedNurse?.id || assignedNurse?._id || null,
+                                resolvedAssignedNurseCode: assignedNurse?.nurseCode || assignedNurse?.staffCode || assignedNurse?.code || null,
+                              });
+                            } catch (e) {}
 
                             return (
                               <View style={styles.splitNurseCard}>
                                 {/* Nurse Card */}
-                                {assignedName && assignedCode && (
+                                {(assignedName || assignedNurse) && (
                                   <NurseInfoCard
                                     variant="embedded"
                                     nurse={{
-                                      id: assignedNurseId,
-                                      name: assignedName,
-                                      fullName: assignedName,
-                                      code: assignedCode,
-                                      staffCode: assignedCode,
+                                      id: assignedNurseId || assignedNurse?.id,
+                                      name: assignedName || (assignedNurse ? getNurseName(assignedNurse) : null),
+                                      fullName: assignedName || (assignedNurse ? getNurseName(assignedNurse) : null),
+                                      code: assignedNurse?.nurseCode || assignedNurse?.staffCode || assignedNurse?.code || assignedCodeFromRecord,
+                                      staffCode: assignedNurse?.nurseCode || assignedNurse?.staffCode || assignedNurse?.code || assignedCodeFromRecord,
                                       specialty: assignedNurse?.specialty || 'General Nursing',
                                       profilePhoto: assignedNurse?.profilePhoto || null,
                                       profileImage: assignedNurse?.profileImage || null,
@@ -6677,9 +7721,25 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
 
                           {/* Assigned Days */}
                           {(() => {
+                            const dayNameToIndex = {
+                              sun: 0, sunday: 0,
+                              mon: 1, monday: 1,
+                              tue: 2, tues: 2, tuesday: 2,
+                              wed: 3, wednesday: 3,
+                              thu: 4, thur: 4, thurs: 4, thursday: 4,
+                              fri: 5, friday: 5,
+                              sat: 6, saturday: 6,
+                            };
+
                             const toDayNumber = (value) => {
-                              const n = typeof value === 'string' ? Number(value) : value;
-                              return Number.isInteger(n) ? n : null;
+                              if (value === null || value === undefined) return null;
+                              if (typeof value === 'number' && Number.isInteger(value)) return value;
+                              const str = String(value).trim().toLowerCase();
+                              if (!str) return null;
+                              const asNum = Number(str);
+                              if (Number.isInteger(asNum)) return asNum;
+                              if (dayNameToIndex.hasOwnProperty(str)) return dayNameToIndex[str];
+                              return null;
                             };
 
                             const combined = []
@@ -6688,6 +7748,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                               .concat(selectedItemDetails.recurringDaysOfWeek || [])
                               .concat(selectedItemDetails.daysOfWeek || [])
                               .concat(selectedItemDetails.selectedDays || [])
+                              .concat(selectedItemDetails.requestedDays || [])
                               .concat(selectedItemDetails.schedule?.daysOfWeek || [])
                               .concat(selectedItemDetails.schedule?.selectedDays || []);
 
@@ -6923,13 +7984,98 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                          selectedItemDetails.isRecurring ? 'Recurring Schedule Information' : 
                          'Service Information'}
                       </Text>
-                      <View style={styles.detailItem}>
-                        <MaterialCommunityIcons name="medical-bag" size={20} color={COLORS.primary} />
-                        <View style={styles.detailContent}>
-                          <Text style={styles.detailLabel}>Service</Text>
-                          <Text style={styles.detailValue}>{selectedItemDetails.service || selectedItemDetails.serviceName || 'N/A'}</Text>
-                        </View>
-                      </View>
+                      {(() => {
+                        const isRegularAppointment = !selectedItemDetails.isShiftRequest && !selectedItemDetails.isRecurring;
+
+                        if (isRegularAppointment) {
+                          return (
+                            <View style={styles.detailItem}>
+                              <MaterialCommunityIcons name="medical-bag" size={20} color={COLORS.primary} />
+                              <View style={styles.detailContent}>
+                                <Text style={styles.detailLabel}>Service</Text>
+                                <Text style={styles.detailValue}>
+                                  {selectedItemDetails.service || selectedItemDetails.serviceName || 'General Care'}
+                                </Text>
+                              </View>
+                            </View>
+                          );
+                        }
+
+                        return (
+                          <View
+                            style={{
+                              backgroundColor: COLORS.white,
+                              borderRadius: 12,
+                              borderWidth: 2,
+                              borderColor: COLORS.primary,
+                              padding: 16,
+                              marginBottom: 12,
+                              shadowColor: '#000',
+                              shadowOffset: { width: 0, height: 2 },
+                              shadowOpacity: 0.1,
+                              shadowRadius: 4,
+                              elevation: 3,
+                            }}
+                          >
+                            {(() => {
+                              // Resolve assigned nurse details
+                              const assignedNurseId = selectedItemDetails.nurseId || selectedItemDetails.assignedNurseId || null;
+                              const assignedName = selectedItemDisplayNurseName || null;
+                              const assignedCode =
+                                selectedItemDetails.nurseCode ||
+                                selectedItemDetails.nurseStaffCode ||
+                                selectedItemDetails.assignedNurseCode ||
+                                selectedItemDetails.assignedNurseStaffCode ||
+                                selectedItemDetails.staffCode ||
+                                selectedItemDetails.code ||
+                                null;
+
+                              // If we have nurse info, use NurseInfoCard (variant="embedded")
+                              if (assignedName || assignedNurseId) {
+                                return (
+                                  <View
+                                    style={{
+                                      marginBottom: 12,
+                                      paddingBottom: 12,
+                                      borderBottomWidth: 1,
+                                      borderBottomColor: COLORS.border,
+                                    }}
+                                  >
+                                    <NurseInfoCard
+                                      variant="embedded"
+                                      nurse={{
+                                        id: assignedNurseId,
+                                        name: assignedName || 'Assigned Nurse',
+                                        fullName: assignedName || 'Assigned Nurse',
+                                        code: assignedCode,
+                                        staffCode: assignedCode,
+                                        // NurseInfoCard resolves photo/specialty from roster via ID
+                                      }}
+                                      nursesRoster={nurses}
+                                      showViewButton={true}
+                                      style={{ marginBottom: 0 }}
+                                    />
+                                  </View>
+                                );
+                              }
+                              return null;
+                            })()}
+
+                            <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
+                              <MaterialCommunityIcons name="medical-bag" size={18} color={COLORS.primary} />
+                              <Text
+                                style={{
+                                  fontSize: 14,
+                                  fontFamily: 'Poppins_600SemiBold',
+                                  color: COLORS.text,
+                                }}
+                              >
+                                {selectedItemDetails.service || selectedItemDetails.serviceName || 'General Care'}
+                              </Text>
+                            </View>
+                          </View>
+                        );
+                      })()}
                       {/* Shift Requests: Show Start/End dates above time row (supports schedule.* fallback) */}
                       {selectedItemDetails.isShiftRequest && !selectedItemDetails.isRecurring && (() => {
                         const startDateValue =
@@ -7109,64 +8255,101 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                           return null;
                         }
                       })()}
-                      {/* Horizontal Clock In and Clock Out Times */}
-                      {selectedItemDetails.actualStartTime && selectedItemDetails.actualEndTime && (
-                        <View style={styles.timeRow}>
-                          <View style={[styles.timeItem, { flex: 1 }]}>
-                            <MaterialCommunityIcons name="clock-in" size={20} color={COLORS.success} />
-                            <View style={styles.timeContent}>
-                              <Text style={styles.timeLabel}>Clock In</Text>
-                              <Text style={styles.timeValue}>
-                                {new Date(selectedItemDetails.actualStartTime).toLocaleTimeString('en-US', { 
-                                  hour: '2-digit', 
-                                  minute: '2-digit',
-                                  second: '2-digit',
-                                  hour12: true
-                                })}
-                              </Text>
-                            </View>
-                          </View>
-                          <View style={styles.timeDashContainer}>
-                            <Text style={styles.timeDash}>—</Text>
-                          </View>
-                          <View style={[styles.timeItem, { flex: 1 }]}>
-                            <MaterialCommunityIcons name="clock-out" size={20} color={COLORS.error} />
-                            <View style={styles.timeContent}>
-                              <Text style={styles.timeLabel}>Clock Out</Text>
-                              <Text style={styles.timeValue}>
-                                {new Date(selectedItemDetails.actualEndTime).toLocaleTimeString('en-US', { 
-                                  hour: '2-digit', 
-                                  minute: '2-digit',
-                                  second: '2-digit',
-                                  hour12: true
-                                })}
-                              </Text>
-                            </View>
-                          </View>
-                        </View>
-                      )}
-                      {selectedItemDetails.actualStartTime && selectedItemDetails.actualEndTime && (() => {
-                        const start = new Date(selectedItemDetails.actualStartTime);
-                        const end = new Date(selectedItemDetails.actualEndTime);
-                        const diffMs = end - start;
-                        const hours = Math.floor(diffMs / (1000 * 60 * 60));
-                        const minutes = Math.floor((diffMs % (1000 * 60 * 60)) / (1000 * 60));
-                        const totalHours = (diffMs / (1000 * 60 * 60)).toFixed(2);
-                        
+                    </View>
+                    )}
+
+                      {/* Assigned Nurse Section (appointments) - place above Emergency Backup Nurses */}
+                      {(() => {
+                        if (selectedItemDetails.isShiftRequest || selectedItemDetails.isRecurring) return null;
+
+                        const coverageList = Array.isArray(selectedItemDetails.coverageRequests)
+                          ? selectedItemDetails.coverageRequests
+                          : [];
+
+                        // If I accepted a backup coverage request for this appointment, show the nurse who requested the backup
+                        // (so the backup nurse's Booked modal shows Sara Day as the Assigned Nurse).
+                        const acceptedCoverageForMe = coverageList.find((cr) => {
+                          if (!cr) return false;
+                          const status = normalizeStatus(cr.status);
+                          if (status !== 'accepted') return false;
+                          return checkIsAcceptedCoverageForNurse(
+                            [cr],
+                            nurseId,
+                            user?.staffCode || user?.nurseCode || user?.code || user?.username
+                          );
+                        });
+
+                        const resolveFromRoster = (candidateId) => {
+                          if (!candidateId || !Array.isArray(nurses) || nurses.length === 0) return null;
+                          return nurses.find((n) =>
+                            String(n?.id || '').trim() === String(candidateId).trim() ||
+                            String(n?._id || '').trim() === String(candidateId).trim() ||
+                            String(n?.nurseId || '').trim() === String(candidateId).trim()
+                          ) || null;
+                        };
+
+                        let assignedNurseId = null;
+                        let assignedName = null;
+                        let assignedCode = null;
+
+                        if (acceptedCoverageForMe) {
+                          assignedNurseId = acceptedCoverageForMe.requestingNurseId || null;
+                          assignedName = acceptedCoverageForMe.requestingNurseName || null;
+                          assignedCode = acceptedCoverageForMe.requestingNurseCode || null;
+
+                          if (!assignedName && assignedNurseId) {
+                            const fromRoster = resolveFromRoster(assignedNurseId);
+                            if (fromRoster) {
+                              assignedName = getNurseName(fromRoster);
+                              assignedCode = assignedCode || fromRoster.staffCode || fromRoster.nurseCode || fromRoster.code || null;
+                            }
+                          }
+                        } else {
+                          assignedNurseId =
+                            selectedItemDetails.nurseId ||
+                            selectedItemDetails.assignedNurseId ||
+                            selectedItemDetails.assignedNurse?.id ||
+                            selectedItemDetails.assignedNurse?._id ||
+                            null;
+
+                          assignedName = selectedItemDisplayNurseName || null;
+                          assignedCode =
+                            selectedItemDetails.nurseCode ||
+                            selectedItemDetails.nurseStaffCode ||
+                            selectedItemDetails.assignedNurseCode ||
+                            selectedItemDetails.assignedNurseStaffCode ||
+                            selectedItemDetails.staffCode ||
+                            null;
+                        }
+
+                        // If we have neither ID nor name, there's nothing useful to show.
+                        if (!assignedNurseId && !assignedName) return null;
+
                         return (
-                          <View style={styles.detailItem}>
-                            <MaterialCommunityIcons name="clock-check" size={20} color={COLORS.primary} />
-                            <View style={styles.detailContent}>
-                              <Text style={styles.detailLabel}>Total Hours</Text>
-                              <Text style={styles.detailValue}>
-                                {hours}h {minutes}m ({totalHours} hours)
-                              </Text>
-                            </View>
+                          <View style={styles.detailsSection}>
+                            <Text style={styles.sectionTitle}>Assigned Nurse</Text>
+                            <NurseInfoCard
+                              variant="card"
+                              nurse={{
+                                id: assignedNurseId,
+                                nurseId: assignedNurseId,
+                                name: assignedName || 'Assigned Nurse',
+                                fullName: assignedName || 'Assigned Nurse',
+                                nurseCode:
+                                  selectedItemDetails.nurseCode ||
+                                  selectedItemDetails.nurseStaffCode ||
+                                  selectedItemDetails.assignedNurseCode ||
+                                  selectedItemDetails.assignedNurseStaffCode ||
+                                  selectedItemDetails.staffCode ||
+                                  null,
+                              }}
+                              nursesRoster={nurses}
+                              showViewButton={true}
+                              style={{ marginBottom: 0 }}
+                            />
                           </View>
                         );
                       })()}
-                    </View>
-                    )}
 
                     {/* Emergency Backup Nurses Section (below Service Information) */}
                     {(() => {
@@ -7305,7 +8488,47 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                                 selectedItemDetails.shift?.clockByNurse ||
                                 selectedItemDetails.shiftDetails?.clockByNurse;
 
-                              if (isAccepted && mergedClockByNurse) {
+                              // If this appointment itself is currently clocked-in/active,
+                              // highlight whichever backup nurse matches the appointment's assigned nurse fields.
+                              const appointmentStatusRaw = String(
+                                selectedItemDetails.status ||
+                                  selectedItemDetails.shift?.status ||
+                                  selectedItemDetails.shiftDetails?.status ||
+                                  ''
+                              )
+                                .trim()
+                                .toLowerCase();
+
+                              const appointmentIsClockedIn =
+                                appointmentStatusRaw === 'clocked-in' || appointmentStatusRaw === 'active';
+
+                              if (appointmentIsClockedIn) {
+                                const assignedKeys = [
+                                  selectedItemDetails.nurseId,
+                                  selectedItemDetails.assignedNurseId,
+                                  selectedItemDetails.assignedNurse?.id,
+                                  selectedItemDetails.assignedNurse?._id,
+                                  selectedItemDetails.nurseCode,
+                                  selectedItemDetails.nurseStaffCode,
+                                  selectedItemDetails.staffCode,
+                                  selectedItemDetails.assignedNurseCode,
+                                  selectedItemDetails.assignedNurseStaffCode,
+                                ].filter(Boolean);
+
+                                const matchesAssigned = assignedKeys.some((k) => {
+                                  const kId = normalizeId(k);
+                                  const kCode = normalizeCode(k);
+                                  if (backupId && kId && backupId === kId) return true;
+                                  if (backupCode && kCode && backupCode === kCode) return true;
+                                  return false;
+                                });
+
+                                if (matchesAssigned) {
+                                  isClockedIn = true;
+                                }
+                              }
+
+                              if (!isClockedIn && mergedClockByNurse) {
                                 const candidates = [
                                   backupId,
                                   backupCode,
@@ -7383,26 +8606,10 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                       const patientItems = [];
                       const nurseItems = [];
 
-                      const formatNoteTimestamp = (value) => {
-                        const date = toDateFromValue(value);
-                        if (!date) return null;
-                        return date.toLocaleString('en-US', {
-                          month: 'short',
-                          day: 'numeric',
-                          hour: 'numeric',
-                          minute: '2-digit',
-                        });
-                      };
-
                       if (hasPatientBookingNotes && patientBookingNotes) {
-                        const patientTimestamp = formatNoteTimestamp(
-                          selectedItemDetails?.createdAt || selectedItemDetails?.updatedAt || null
-                        );
-                        const patientSubtitle = patientTimestamp
-                          ? `From booking - ${patientTimestamp}`
-                          : 'From booking';
+                        const patientSubtitle = 'From booking';
                         patientItems.push({
-                          id: 'patient-booking-notes',
+                          id: `patient-booking-notes-${selectedItemDetails?.id || selectedItemDetails?._id || 'note'}`,
                           date: selectedItemDetails?.createdAt || selectedItemDetails?.updatedAt || null,
                           title: selectedItemPatientInfo?.name || 'Patient Note',
                           subtitle: patientSubtitle,
@@ -7421,9 +8628,6 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                       })();
 
                       if (nurseNotesBody) {
-                        const nurseTimestamp = formatNoteTimestamp(
-                          selectedItemDetails?.updatedAt || selectedItemDetails?.assignedAt || null
-                        );
                         const nurseSubtitle =
                           selectedItemDetails?.nurseCode ||
                           selectedItemDetails?.staffCode ||
@@ -7432,16 +8636,13 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                           selectedItemDetails?.assignedNurseCode ||
                           selectedItemDetails?.assignedNurseId ||
                           selectedItemDetails?.nurseId ||
-                          null;
-                        const nurseSubtitleWithTime = nurseTimestamp
-                          ? `${nurseSubtitle || 'Nurse'} - ${nurseTimestamp}`
-                          : (nurseSubtitle || 'Nurse');
+                          'Nurse';
 
                         nurseItems.push({
-                          id: 'nurse-notes',
+                          id: `nurse-notes-${selectedItemDetails?.id || selectedItemDetails?._id || 'note'}`,
                           date: selectedItemDetails?.updatedAt || selectedItemDetails?.assignedAt || null,
                           title: selectedItemDisplayNurseName || 'Nurse Note',
-                          subtitle: nurseSubtitleWithTime,
+                          subtitle: nurseSubtitle,
                           body: nurseNotesBody,
                         });
                       }
@@ -7452,10 +8653,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                           : null;
 
                       if (completionNotesBody) {
-                        const completionTimestamp = formatNoteTimestamp(
-                          selectedItemDetails?.completedAt || selectedItemDetails?.actualEndTime || null
-                        );
-                        const nurseSubtitle =
+                        const completionSubtitle =
                           selectedItemDetails?.nurseCode ||
                           selectedItemDetails?.staffCode ||
                           selectedItemDetails?.assignedNurse?.code ||
@@ -7463,36 +8661,36 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                           selectedItemDetails?.assignedNurseCode ||
                           selectedItemDetails?.assignedNurseId ||
                           selectedItemDetails?.nurseId ||
-                          null;
-                        const completionSubtitleWithTime = completionTimestamp
-                          ? `${nurseSubtitle || 'Nurse'} - ${completionTimestamp}`
-                          : (nurseSubtitle || 'Nurse');
+                          'Nurse';
 
                         nurseItems.push({
-                          id: 'completion-notes',
+                          id: `completion-notes-${selectedItemDetails?.id || selectedItemDetails?._id || 'note'}`,
                           date: selectedItemDetails?.completedAt || selectedItemDetails?.actualEndTime || null,
                           title: selectedItemDisplayNurseName || 'Nurse Note',
-                          subtitle: completionSubtitleWithTime,
+                          subtitle: completionSubtitle,
                           body: completionNotesBody,
                         });
                       }
 
                       return (
                         <>
-                          <View style={styles.detailsSection}>
-                            <Text style={styles.sectionTitle}>Patient Notes</Text>
-                            <NotesAccordionList
-                              items={patientItems}
-                              emptyText="No notes yet"
-                            />
-                          </View>
-
                           {nurseItems.length > 0 && (
                             <View style={styles.detailsSection}>
                               <Text style={styles.sectionTitle}>Nurses Notes</Text>
                               <NotesAccordionList
                                 items={nurseItems}
                                 emptyText="No notes yet"
+                                showTime
+                              />
+                            </View>
+                          )}
+                          {patientItems.length > 0 && (
+                            <View style={styles.detailsSection}>
+                              <Text style={styles.sectionTitle}>Patient Notes</Text>
+                              <NotesAccordionList
+                                items={patientItems}
+                                emptyText="No patient notes provided."
+                                showTime
                               />
                             </View>
                           )}
@@ -7863,6 +9061,125 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                     );
                   })()}
 
+                  {/* Action Buttons for appointment coverage requests (backup targeted at me) */}
+                  {!selectedItemDetails.isShiftRequest && !selectedItemDetails.isRecurring && (() => {
+                    const coverageList = Array.isArray(selectedItemDetails.coverageRequests)
+                      ? selectedItemDetails.coverageRequests
+                      : [];
+
+                    const myPendingCoverage = coverageList.find((cr) => {
+                      if (!cr) return false;
+                      const crStatus = String(cr.status || '').trim().toLowerCase();
+                      if (crStatus !== 'pending') return false;
+                      const targets = [
+                        cr.targetBackupNurseId,
+                        cr.targetBackupNurseStaffCode,
+                        ...(Array.isArray(cr.backupNursesNotified) ? cr.backupNursesNotified : []),
+                      ].filter(Boolean);
+                      return targets.some((t) => matchesMine(t));
+                    });
+
+                    if (!myPendingCoverage) return null;
+
+                    return (
+                      <View style={styles.modalFooter}>
+                        <TouchableOpacity
+                          style={styles.modalDenyButton}
+                          onPress={async () => {
+                            try {
+                              const latest = await ApiService.getAppointmentById(selectedItemDetails.id);
+                              if (!latest) throw new Error('Unable to load appointment');
+
+                              const existingRequestsRaw = latest.coverageRequests || latest.backupCoverageRequests;
+                              const list = Array.isArray(existingRequestsRaw) ? [...existingRequestsRaw] : [];
+
+                              const index = list.findIndex((cr) => cr && cr.id === myPendingCoverage.id);
+                              if (index === -1) {
+                                Alert.alert('Not Found', 'Backup request is no longer pending.');
+                                return;
+                              }
+
+                              const entry = { ...list[index] };
+                              entry.status = 'declined';
+                              entry.respondedAt = new Date().toISOString();
+                              entry.responseById = user?.id === 'nurse-001' ? 'NURSE001' : user?.id;
+
+                              list[index] = entry;
+
+                              await ApiService.updateAppointment(selectedItemDetails.id, {
+                                coverageRequests: list,
+                                backupCoverageRequests: list,
+                                updatedAt: entry.respondedAt,
+                              });
+
+                              Alert.alert('Response Sent', 'You declined this backup request.');
+                              setDetailsModalVisible(false);
+                              setRefreshKey((prev) => prev + 1);
+                            } catch (error) {
+                              console.error('Failed to decline appointment backup request:', error);
+                              Alert.alert('Error', 'Failed to decline backup request.');
+                            }
+                          }}
+                        >
+                          <Text style={styles.modalDenyButtonText}>Decline</Text>
+                        </TouchableOpacity>
+
+                        <TouchableOpacity
+                          style={styles.modalAcceptButton}
+                          onPress={async () => {
+                            try {
+                              const latest = await ApiService.getAppointmentById(selectedItemDetails.id);
+                              if (!latest) throw new Error('Unable to load appointment');
+
+                              const existingRequestsRaw = latest.coverageRequests || latest.backupCoverageRequests;
+                              const list = Array.isArray(existingRequestsRaw) ? [...existingRequestsRaw] : [];
+
+                              const index = list.findIndex((cr) => cr && cr.id === myPendingCoverage.id);
+                              if (index === -1) {
+                                Alert.alert('Not Found', 'Backup request is no longer pending.');
+                                return;
+                              }
+
+                              const entry = { ...list[index] };
+                              const nowIso = new Date().toISOString();
+                              entry.status = 'accepted';
+                              entry.respondedAt = nowIso;
+                              entry.acceptedBy = user?.id === 'nurse-001' ? 'NURSE001' : user?.id;
+                              entry.acceptedByStaffCode = user?.nurseCode || user?.code || null;
+
+                              list[index] = entry;
+
+                              await ApiService.updateAppointment(selectedItemDetails.id, {
+                                coverageRequests: list,
+                                backupCoverageRequests: list,
+                                nurseId: entry.acceptedBy,
+                                nurseCode: entry.acceptedByStaffCode,
+                                status: latest.status || 'confirmed',
+                                updatedAt: nowIso,
+                              });
+
+                              Alert.alert('Response Sent', 'You accepted this backup request.');
+                              setDetailsModalVisible(false);
+                              setRefreshKey((prev) => prev + 1);
+                            } catch (error) {
+                              console.error('Failed to accept appointment backup request:', error);
+                              Alert.alert('Error', 'Failed to accept backup request.');
+                            }
+                          }}
+                        >
+                          <LinearGradient
+                            colors={['#10b981', '#059669']}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 0, y: 1 }}
+                            style={styles.modalAcceptButtonGradient}
+                          >
+                            <Text style={styles.modalAcceptButtonText}>Accept</Text>
+                          </LinearGradient>
+                        </TouchableOpacity>
+                      </View>
+                    );
+                  })()}
+
                   {/* Action Buttons for confirmed/active appointments */}
                   {(() => {
                     const normalizedStatus = (selectedItemDetails.status || '').toLowerCase();
@@ -7876,6 +9193,23 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                     if (!isRegularAppointment || !eligibleStatuses.includes(normalizedStatus) || normalizedStatus === 'completed') {
                       return null;
                     }
+
+                    // Hide clock/notes/backup when there is a pending coverage request targeting me
+                    const coverageList = Array.isArray(selectedItemDetails.coverageRequests)
+                      ? selectedItemDetails.coverageRequests
+                      : [];
+                    const hasPendingCoverageForMe = coverageList.some((cr) => {
+                      if (!cr) return false;
+                      const crStatus = String(cr.status || '').trim().toLowerCase();
+                      if (crStatus !== 'pending') return false;
+                      const targets = [
+                        cr.targetBackupNurseId,
+                        cr.targetBackupNurseStaffCode,
+                        ...(Array.isArray(cr.backupNursesNotified) ? cr.backupNursesNotified : []),
+                      ].filter(Boolean);
+                      return targets.some((t) => matchesMine(t));
+                    });
+                    if (hasPendingCoverageForMe) return null;
 
                     const hasAppointmentClockIn = Boolean(selectedItemDetails.actualStartTime || selectedItemDetails.startedAt);
                     const clockInTimeReached = canClockInForShiftNow(selectedItemDetails);
@@ -7904,7 +9238,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                                               ? `${existingNotes}\n\n--- ${new Date().toLocaleString()} ---\n${String(text).trim()}`
                                               : String(text).trim();
 
-                                            await updateNurseNotes(selectedItemDetails.id, finalNotes);
+                                            await updateItemNotes(selectedItemDetails.id, finalNotes, false);
 
                                             // Update local modal state
                                             setSelectedItemDetails(prev => ({
@@ -8003,7 +9337,13 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                                           ? `${existingNotes}\n\n--- ${new Date().toLocaleString()} ---\n${String(text).trim()}`
                                           : String(text).trim();
 
-                                        await updateNurseNotes(selectedItemDetails.id, finalNotes);
+                                        const isShiftItem = Boolean(
+                                          selectedItemDetails.isShift ||
+                                          selectedItemDetails.isShiftRequest ||
+                                          selectedItemDetails.adminRecurring
+                                        );
+
+                                        await updateItemNotes(selectedItemDetails.id, finalNotes, isShiftItem);
 
                                         setSelectedItemDetails(prev => ({
                                           ...prev,
@@ -8125,12 +9465,13 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                                               ? `${existingNotes}\n\n--- ${new Date().toLocaleString()} ---\n${String(text).trim()}`
                                               : String(text).trim();
 
-                                            await updateNurseNotes(selectedItemDetails.id, finalNotes);
-                                            if (selectedItemDetails?.isShift || selectedItemDetails?.isShiftRequest || selectedItemDetails?.adminRecurring) {
-                                              await updateShiftRequestDetails(selectedItemDetails.id, {
-                                                nurseNotes: finalNotes,
-                                              });
-                                            }
+                                            const isShiftItem = Boolean(
+                                              selectedItemDetails?.isShift ||
+                                              selectedItemDetails?.isShiftRequest ||
+                                              selectedItemDetails?.adminRecurring
+                                            );
+
+                                            await updateItemNotes(selectedItemDetails.id, finalNotes, isShiftItem);
                                             setSelectedItemDetails(prev => ({
                                               ...prev,
                                               nurseNotes: finalNotes
@@ -8200,12 +9541,13 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                                             ? `${existingNotes}\n\n--- ${new Date().toLocaleString()} ---\n${String(text).trim()}`
                                             : String(text).trim();
 
-                                          await updateNurseNotes(selectedItemDetails.id, finalNotes);
-                                          if (selectedItemDetails?.isShift || selectedItemDetails?.isShiftRequest || selectedItemDetails?.adminRecurring) {
-                                            await updateShiftRequestDetails(selectedItemDetails.id, {
-                                              nurseNotes: finalNotes,
-                                            });
-                                          }
+                                          const isShiftItem = Boolean(
+                                            selectedItemDetails?.isShift ||
+                                            selectedItemDetails?.isShiftRequest ||
+                                            selectedItemDetails?.adminRecurring
+                                          );
+
+                                          await updateItemNotes(selectedItemDetails.id, finalNotes, isShiftItem);
                                           setSelectedItemDetails(prev => ({
                                             ...prev,
                                             nurseNotes: finalNotes
@@ -9124,152 +10466,88 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
           </View>
         </Modal>
 
-        {/* Backup Nurse Details Modal - Outside shift booking modal */}
-        <Modal
-          visible={backupCandidateDetailsVisible && !!selectedBackupCandidate}
-          transparent={true}
-          animationType="fade"
-          onRequestClose={() => setBackupCandidateDetailsVisible(false)}
-          presentationStyle="overFullScreen"
-          statusBarTranslucent={true}
-          onShow={() => console.log('[Backup Details] onShow fired')}
-        >
-          <View style={[styles.nurseCardModalOverlay, { padding: 20, elevation: 10 }]}> 
-            <View style={[styles.nurseCardModalContainer, backupDetailsCardSizeStyle, { elevation: 11 }]}> 
-              <LinearGradient
-                colors={SAFE_GRADIENTS.header}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 0, y: 1 }}
-                style={styles.nurseCardModalHeader}
+        {/* Backup Nurse Details Modal - reuse shared NurseDetailsModal for consistent styling */}
+        {selectedBackupCandidate && (
+          <NurseDetailsModal
+            visible={backupCandidateDetailsVisible}
+            onClose={() => {
+              setBackupCandidateDetailsVisible(false);
+              if (resumeShiftModalAfterDetails) {
+                setResumeShiftModalAfterDetails(false);
+                setTimeout(() => setShiftBookingModal(true), 200);
+              }
+            }}
+            nurse={{
+              name: selectedBackupCandidate.displayName,
+              fullName: selectedBackupCandidate.displayName,
+              nurseCode: selectedBackupCandidate.displayCode,
+              staffCode: selectedBackupCandidate.displayCode,
+              specialization: selectedBackupCandidate.specialization || selectedBackupCandidate.specialty,
+              specialty: selectedBackupCandidate.specialization || selectedBackupCandidate.specialty,
+              email: selectedBackupCandidate.email,
+              phone: selectedBackupCandidate.phone,
+              profilePhoto: selectedBackupCandidate.photoUri || selectedBackupCandidate.profilePhoto,
+              profileImage: selectedBackupCandidate.profileImage,
+              photoUrl: selectedBackupCandidate.photoUrl,
+              id: selectedBackupCandidate.id || selectedBackupCandidate._id,
+              _id: selectedBackupCandidate._id,
+            }}
+            nursesRoster={nurses}
+            footer={(
+              <TouchableWeb
+                style={styles.selectNurseButton}
+                onPress={() => {
+                  if (!selectedBackupCandidate) return;
+                  const nurse = selectedBackupCandidate;
+                  const displayName = nurse.displayName;
+                  const displayCode = nurse.displayCode;
+                  const exists = backupNurses.some(
+                    (b) => b.nurseId === nurse.id || b.id === nurse.id || b.id === nurse._id
+                  );
+                  if (!exists) {
+                    setBackupNurses([
+                      ...backupNurses,
+                      {
+                        nurseId: nurse.id || nurse._id,
+                        id: nurse.id || nurse._id,
+                        name: displayName,
+                        nurseName: displayName,
+                        fullName: displayName,
+                        firstName: nurse.firstName,
+                        lastName: nurse.lastName,
+                        staffCode: displayCode,
+                        nurseCode: displayCode,
+                        code: displayCode,
+                        profilePhoto: nurse.profilePhoto,
+                        profileImage: nurse.profileImage,
+                        photoUrl: nurse.photoUrl,
+                        priority: backupNurses.length + 1,
+                      },
+                    ]);
+                  }
+                  setBackupNurseSearch('');
+                  setFilteredBackupNurses([]);
+                  setBackupCandidateDetailsVisible(false);
+                  if (resumeShiftModalAfterDetails) {
+                    setResumeShiftModalAfterDetails(false);
+                    setTimeout(() => setShiftBookingModal(true), 200);
+                  }
+                }}
+                activeOpacity={0.8}
               >
-                <TouchableWeb
-                  style={styles.nurseCardModalCloseButton}
-                  onPress={() => {
-                    setBackupCandidateDetailsVisible(false);
-                    if (resumeShiftModalAfterDetails) {
-                      setResumeShiftModalAfterDetails(false);
-                      // Resume the shift booking modal after a brief delay to avoid flicker
-                      setTimeout(() => setShiftBookingModal(true), 200);
-                    }
-                  }}
-                  activeOpacity={0.7}
+                <LinearGradient
+                  colors={GRADIENTS.primary}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={styles.selectNurseButtonGradient}
                 >
-                  <MaterialCommunityIcons name="close" size={24} color={COLORS.white} />
-                </TouchableWeb>
-
-                <View style={styles.nurseCardModalPhotoCircle}>
-                  {selectedBackupCandidate?.photoUri ? (
-                    <Image
-                      source={{ uri: selectedBackupCandidate.photoUri }}
-                      style={styles.nurseCardModalPhoto}
-                    />
-                  ) : (
-                    <MaterialCommunityIcons name="account-heart" size={48} color={COLORS.primary} />
-                  )}
-                </View>
-
-                <Text style={styles.nurseCardModalTitle}>
-                  {selectedBackupCandidate?.displayName || 'Nurse'}
-                </Text>
-              </LinearGradient>
-
-              <ScrollView style={styles.nurseCardModalBody} showsVerticalScrollIndicator={false}>
-                <View style={styles.nurseCardInfoSection}>
-                  <View style={styles.nurseCardInfoRow}>
-                    <MaterialCommunityIcons name="badge-account" size={20} color={COLORS.primary} />
-                    <View style={styles.nurseCardInfoContent}>
-                      <Text style={styles.nurseCardInfoLabel}>Nurse Code</Text>
-                      <Text style={styles.nurseCardInfoValue}>
-                        {selectedBackupCandidate?.displayCode || 'N/A'}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.nurseCardInfoRow}>
-                    <MaterialCommunityIcons name="medical-bag" size={20} color={COLORS.primary} />
-                    <View style={styles.nurseCardInfoContent}>
-                      <Text style={styles.nurseCardInfoLabel}>Specialty</Text>
-                      <Text style={styles.nurseCardInfoValue}>
-                        {selectedBackupCandidate?.specialization || selectedBackupCandidate?.specialty || 'General Nursing'}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.nurseCardInfoRow}>
-                    <MaterialCommunityIcons name="email-outline" size={20} color={COLORS.primary} />
-                    <View style={styles.nurseCardInfoContent}>
-                      <Text style={styles.nurseCardInfoLabel}>Email</Text>
-                      <Text style={styles.nurseCardInfoValue}>
-                        {selectedBackupCandidate?.email || 'Not provided'}
-                      </Text>
-                    </View>
-                  </View>
-
-                  <View style={styles.nurseCardInfoRow}>
-                    <MaterialCommunityIcons name="phone" size={20} color={COLORS.primary} />
-                    <View style={styles.nurseCardInfoContent}>
-                      <Text style={styles.nurseCardInfoLabel}>Phone</Text>
-                      <Text style={styles.nurseCardInfoValue}>
-                        {selectedBackupCandidate?.phone || 'Not provided'}
-                      </Text>
-                    </View>
-                  </View>
-                </View>
-
-                {/* Select Button inside modal */}
-                <TouchableWeb
-                  style={styles.selectNurseButton}
-                  onPress={() => {
-                    if (!selectedBackupCandidate) return;
-                    const nurse = selectedBackupCandidate;
-                    const displayName = nurse.displayName;
-                    const displayCode = nurse.displayCode;
-                    const exists = backupNurses.some(b => (b.nurseId === nurse.id || b.id === nurse.id || b.id === nurse._id));
-                    if (!exists) {
-                      setBackupNurses([
-                        ...backupNurses,
-                        {
-                          nurseId: nurse.id || nurse._id,
-                          id: nurse.id || nurse._id,
-                          name: displayName,
-                          nurseName: displayName,
-                          fullName: displayName,
-                          firstName: nurse.firstName,
-                          lastName: nurse.lastName,
-                          staffCode: displayCode,
-                          nurseCode: displayCode,
-                          code: displayCode,
-                          profilePhoto: nurse.profilePhoto,
-                          profileImage: nurse.profileImage,
-                          photoUrl: nurse.photoUrl,
-                          priority: backupNurses.length + 1,
-                        },
-                      ]);
-                    }
-                    setBackupNurseSearch('');
-                    setFilteredBackupNurses([]);
-                    setBackupCandidateDetailsVisible(false);
-                    if (resumeShiftModalAfterDetails) {
-                      setResumeShiftModalAfterDetails(false);
-                      setTimeout(() => setShiftBookingModal(true), 200);
-                    }
-                  }}
-                  activeOpacity={0.8}
-                >
-                  <LinearGradient
-                    colors={GRADIENTS.primary}
-                    start={{ x: 0, y: 0 }}
-                    end={{ x: 0, y: 1 }}
-                    style={styles.selectNurseButtonGradient}
-                  >
-                    <MaterialCommunityIcons name="check-circle" size={20} color={COLORS.white} />
-                    <Text style={styles.selectNurseButtonText}>Select This Nurse</Text>
-                  </LinearGradient>
-                </TouchableWeb>
-              </ScrollView>
-            </View>
-          </View>
-        </Modal>
+                  <MaterialCommunityIcons name="check-circle" size={20} color={COLORS.white} />
+                  <Text style={styles.selectNurseButtonText}>Select This Nurse</Text>
+                </LinearGradient>
+              </TouchableWeb>
+            )}
+          />
+        )}
 
         {/* Recurring Shift Details Modal */}
         <RecurringShiftDetailsModal
@@ -9450,6 +10728,33 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
             try {
               if (!canClockInForShiftNow(target)) {
                 const scheduled = getShiftScheduledStartDateTime(target);
+                if (__DEV__) {
+                  const nowIso = new Date().toISOString();
+                  const scheduledIso = scheduled && typeof scheduled.toISOString === 'function' ? scheduled.toISOString() : null;
+                  console.log('[ClockInBlocked]', {
+                    shiftId,
+                    now: nowIso,
+                    scheduled: scheduledIso,
+                    assignmentType: target?.assignmentType,
+                    adminRecurring: target?.adminRecurring,
+                    isRecurring: target?.isRecurring,
+                    time: target?.time,
+                    startTime: target?.startTime,
+                    scheduledStartTime: target?.scheduledStartTime,
+                    recurringStartTime: target?.recurringStartTime,
+                    scheduledDate: target?.scheduledDate,
+                    date: target?.date,
+                    shiftDate: target?.shiftDate,
+                    startDate: target?.startDate,
+                    recurringPeriodStart: target?.recurringPeriodStart,
+                    recurringPeriodEnd: target?.recurringPeriodEnd,
+                    daysOfWeek: target?.daysOfWeek,
+                    recurringDaysOfWeek: target?.recurringDaysOfWeek,
+                    selectedDays: target?.selectedDays,
+                    nurseScheduleKeys: target?.nurseSchedule && typeof target.nurseSchedule === 'object' ? Object.keys(target.nurseSchedule) : null,
+                    clockByNurseKeys: target?.clockByNurse && typeof target.clockByNurse === 'object' ? Object.keys(target.clockByNurse) : null,
+                  });
+                }
                 Alert.alert(
                   'Clock In Not Available Yet',
                   scheduled
@@ -9865,7 +11170,7 @@ const AppointmentCard = ({
         await onUpdateNotes(appointment.id, finalNotes);
       } else {
         // Direct context usage if prop not provided
-        await updateNurseNotes(appointment.id, finalNotes);
+        await updateItemNotes(appointment.id, finalNotes, Boolean(appointment?.isShift || appointment?.isShiftRequest || appointment?.adminRecurring));
       }
       setOriginalNotes(finalNotes);
       setNotes('');
@@ -9891,7 +11196,7 @@ const AppointmentCard = ({
               if (onUpdateNotes) {
                 await onUpdateNotes(appointment.id, '');
               } else {
-                await updateNurseNotes(appointment.id, '');
+                await updateItemNotes(appointment.id, '', Boolean(appointment?.isShift || appointment?.isShiftRequest || appointment?.adminRecurring));
               }
               setNotes('');
               setOriginalNotes('');

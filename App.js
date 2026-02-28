@@ -1,6 +1,7 @@
-import React from 'react';
+import React, { useEffect, useState } from 'react';
 import { LogBox } from 'react-native';
 import ErrorBoundary from './components/ErrorBoundary';
+import { migrateAsyncStorageCareTo876 } from './utils/migrateAsyncStorageCareTo876';
 
 // Suppress Expo notifications warning in Expo Go (SDK 53+)
 LogBox.ignoreLogs([
@@ -23,7 +24,23 @@ import AppOriginal from './App-original';
  * Direct loading of the 876Nurses app with all features!
  */
 export default function App() {
-  // Render the FULL 876Nurses app directly
+  const [storageReady, setStorageReady] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+
+    (async () => {
+      await migrateAsyncStorageCareTo876();
+      if (!cancelled) setStorageReady(true);
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  if (!storageReady) return null;
+
   return (
     <ErrorBoundary>
       <AppOriginal />

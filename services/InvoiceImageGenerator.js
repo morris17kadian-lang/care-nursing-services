@@ -83,8 +83,27 @@ class InvoiceImageGenerator {
     const height = 1123;
     
     const formatDate = (dateString) => {
-      if (!dateString) return 'N/A';
-      const date = new Date(dateString);
+            if (!dateString) return 'N/A';
+
+            let date;
+            if (dateString instanceof Date) {
+                date = dateString;
+            } else if (typeof dateString === 'string' || typeof dateString === 'number') {
+                date = new Date(dateString);
+            } else if (typeof dateString === 'object') {
+                // Firestore Timestamp (or Timestamp-like)
+                if (typeof dateString.toDate === 'function') {
+                    date = dateString.toDate();
+                } else if (typeof dateString.seconds === 'number') {
+                    date = new Date(dateString.seconds * 1000);
+                } else {
+                    date = new Date(String(dateString));
+                }
+            } else {
+                date = new Date(String(dateString));
+            }
+
+            if (!(date instanceof Date) || Number.isNaN(date.getTime())) return 'N/A';
       return date.toLocaleDateString('en-US', { 
         year: 'numeric', 
         month: 'short', 
@@ -96,6 +115,22 @@ class InvoiceImageGenerator {
       if (!amount && amount !== 0) return 'J$0.00';
       return `J$${amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
     };
+
+        const resolveBillTo = (data) => {
+            const base = data?.billTo && typeof data.billTo === 'object' ? data.billTo : {};
+            return {
+                name: base.name || data?.clientName || data?.patientName || data?.customerName || 'N/A',
+                address: base.address || data?.clientAddress || data?.patientAddress || data?.address || 'N/A',
+                phone: base.phone || data?.clientPhone || data?.patientPhone || data?.phone || '',
+                email: base.email || data?.clientEmail || data?.patientEmail || data?.email || '',
+            };
+        };
+
+        const billTo = resolveBillTo(invoiceData);
+        const invoiceDisplayNumber = (invoiceData?.invoiceId || invoiceData?.invoiceNumber || '').replace(
+            'CARE-INV',
+            'NUR-INV'
+        );
 
     // Create service rows for SVG
     let serviceRowsY = 420;
@@ -142,17 +177,17 @@ class InvoiceImageGenerator {
   
   <!-- Invoice Header -->
   <text x="650" y="50" class="header-text primary-color" font-size="32" text-anchor="end">INVOICE</text>
-  <text x="650" y="80" class="header-text" font-size="18" fill="#333" text-anchor="end">#${invoiceData.invoiceNumber}</text>
-  <text x="650" y="100" class="body-text" font-size="14" fill="#666" text-anchor="end">${formatDate(invoiceData.date)}</text>
+    <text x="650" y="80" class="header-text" font-size="18" fill="#333" text-anchor="end">#${invoiceDisplayNumber}</text>
+    <text x="650" y="100" class="body-text" font-size="14" fill="#666" text-anchor="end">${formatDate(invoiceData.date || invoiceData.issueDate || invoiceData.createdAt)}</text>
   
   <!-- Bill To Section -->
   <rect x="60" y="140" width="320" height="140" fill="#f8f9fa" stroke="#2196F3" stroke-width="1"/>
   <text x="80" y="165" class="header-text primary-color" font-size="14">BILL TO:</text>
   <line x1="80" y1="170" x2="200" y2="170" stroke="#2196F3" stroke-width="1"/>
-  <text x="80" y="195" class="header-text" font-size="16" fill="#333">${invoiceData.billTo?.name || 'N/A'}</text>
-  <text x="80" y="215" class="body-text" font-size="13" fill="#666">${invoiceData.billTo?.address || 'N/A'}</text>
-  <text x="80" y="235" class="body-text" font-size="13" fill="#666">${invoiceData.billTo?.phone || ''}</text>
-  <text x="80" y="255" class="body-text" font-size="13" fill="#666">${invoiceData.billTo?.email || ''}</text>
+    <text x="80" y="195" class="header-text" font-size="16" fill="#333">${billTo.name}</text>
+    <text x="80" y="215" class="body-text" font-size="13" fill="#666">${billTo.address}</text>
+    <text x="80" y="235" class="body-text" font-size="13" fill="#666">${billTo.phone}</text>
+    <text x="80" y="255" class="body-text" font-size="13" fill="#666">${billTo.email}</text>
   
   <!-- Service Information -->
   <rect x="400" y="140" width="334" height="140" fill="#f8f9fa" stroke="#2196F3" stroke-width="1"/>
@@ -227,852 +262,252 @@ class InvoiceImageGenerator {
   }
 
   static createInvoiceHTML(invoiceData) {
-    const formatDate = (dateString) => {
-      if (!dateString) return 'N/A';
-      const date = new Date(dateString);
-      return date.toLocaleDateString('en-US', { 
-        year: 'numeric', 
-        month: 'short', 
-        day: 'numeric' 
-      });
+    const formatDate = (value) => {
+      if (!value) return 'N/A';
+
+      let date;
+      if (value instanceof Date) {
+        date = value;
+      } else if (typeof value === 'string' || typeof value === 'number') {
+        date = new Date(value);
+      } else if (typeof value === 'object') {
+        if (typeof value.toDate === 'function') {
+          date = value.toDate();
+        } else if (typeof value.seconds === 'number') {
+          date = new Date(value.seconds * 1000);
+        } else {
+          date = new Date(String(value));
+        }
+      } else {
+        date = new Date(String(value));
+      }
+
+      if (!(date instanceof Date) || Number.isNaN(date.getTime())) return 'N/A';
+      return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
     };
 
-        const periodStart = invoiceData?.periodStart || invoiceData?.billingPeriodStart || invoiceData?.recurringPeriodStart;
-        const periodEnd = invoiceData?.periodEnd || invoiceData?.billingPeriodEnd || invoiceData?.recurringPeriodEnd;
+    const resolveBillTo = (data) => {
+      const base = data?.billTo && typeof data.billTo === 'object' ? data.billTo : {};
+      return {
+        name: base.name || data?.clientName || data?.patientName || data?.customerName || 'N/A',
+        address: base.address || data?.clientAddress || data?.patientAddress || data?.address || 'N/A',
+        phone: base.phone || data?.clientPhone || data?.patientPhone || data?.phone || '',
+        email: base.email || data?.clientEmail || data?.patientEmail || data?.email || '',
+      };
+    };
+
+    const safeText = (value) => {
+      if (value === null || value === undefined) return '';
+      return String(value)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#039;');
+    };
 
     const formatCurrency = (amount) => {
-      if (!amount && amount !== 0) return 'J$0.00';
-      return `J$${amount.toLocaleString('en-US', { minimumFractionDigits: 2 })}`;
+      const numericAmount = typeof amount === 'number' ? amount : parseFloat(amount || 0) || 0;
+      const currencyCode = invoiceData?.currencyCode || invoiceData?.currency;
+      const currencyMap = { JMD: '$', USD: 'US$', CAD: 'CA$', EUR: '€' };
+      const symbol = currencyMap[currencyCode] || (currencyCode ? `${currencyCode} ` : 'J$');
+      return `${symbol}${numericAmount.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}`;
     };
 
-    // Generate service rows HTML
-    const serviceRowsHTML = invoiceData.items.map(item => `
-      <tr class="service-row">
-        <td>
-          <div class="service-description">${item.description}</div>
-          <div class="service-details">${item.detailedDescription || 'Professional healthcare services provided'}</div>
-          ${item.serviceDates ? `<div class="service-dates"><strong>Service Dates:</strong> ${item.serviceDates}</div>` : ''}
-          ${item.nurseNames ? `<div class="service-nurse"><strong>Nurse(s):</strong> ${item.nurseNames}</div>` : ''}
-        </td>
-        <td class="center-align"><strong>${item.quantity}</strong></td>
-        <td class="center-align"><strong>${formatCurrency(item.price)}</strong></td>
-        <td class="amount-col"><strong>${formatCurrency(item.total)}</strong></td>
-      </tr>
-    `).join('');
+    const billTo = resolveBillTo(invoiceData);
+    const invoiceReference = invoiceData?.invoiceNumber || invoiceData?.invoiceId || '';
+    const isStorePurchase = invoiceData?.service === 'Store Purchase' || invoiceData?.serviceType === 'Store Purchase';
+
+    const logoDataUri = invoiceData?.logoDataUri || invoiceData?.logoUri || null;
+
+    const invoiceNumberDisplay =
+      (invoiceData?.invoiceId || invoiceData?.invoiceNumber || '')?.replace?.('CARE-INV', 'NUR-INV') ||
+      (invoiceData?.invoiceId || invoiceData?.invoiceNumber || '');
+
+    const issueDateDisplay = formatDate(invoiceData?.issueDate || invoiceData?.date || invoiceData?.createdAt);
+    const dueDateDisplay = formatDate(invoiceData?.dueDate);
+
+    const periodStart = invoiceData?.periodStart || invoiceData?.billingPeriodStart || invoiceData?.recurringPeriodStart;
+    const periodEnd = invoiceData?.periodEnd || invoiceData?.billingPeriodEnd || invoiceData?.recurringPeriodEnd;
+    const showPeriod = !isStorePurchase && periodStart && periodEnd;
+
+    const companyName = invoiceData?.companyDetails?.companyName || '876 Nurses Home Care Services Limited';
+    const companyAddress =
+      invoiceData?.companyDetails?.address ||
+      '60 Knutsford Blvd, Panjam Building, 9th Floor - Regus, Kingston 5, Jamaica, West Indies';
+    const companyPhone = invoiceData?.companyDetails?.phone || '(876) 618-9876';
+    const companyEmail = invoiceData?.companyDetails?.email || '876nurses@gmail.com';
+    const companyWebsite = invoiceData?.companyDetails?.website || 'www.876nurses.com';
+
+    const paymentMethodDisplay = invoiceData?.paymentMethod || 'Bank Transfer';
+
+    const rawItems = Array.isArray(invoiceData?.items) ? invoiceData.items : [];
+    const items = rawItems.length > 0
+      ? rawItems
+      : [
+          {
+            description: invoiceData?.service || 'Service',
+            quantity: invoiceData?.hours || 1,
+            unitPrice: invoiceData?.rate || invoiceData?.total || 0,
+            total: invoiceData?.total || 0,
+          },
+        ];
+
+    const serviceRowsHTML = items
+      .map((item) => {
+        const description = item?.description || invoiceData?.service || '';
+        const quantity = item?.quantity ?? item?.hours ?? '';
+        const unitPrice = item?.unitPrice ?? item?.price ?? item?.rate ?? 0;
+        const total = item?.total ?? 0;
+
+        return `
+          <tr>
+            <td>${safeText(description)}</td>
+            <td class="num">${safeText(quantity)}</td>
+            <td class="num">${safeText(formatCurrency(unitPrice))}</td>
+            <td class="num">${safeText(formatCurrency(total))}</td>
+          </tr>
+        `;
+      })
+      .join('');
 
     return `
 <!DOCTYPE html>
 <html>
-<head>
-    <meta charset="UTF-8">
+  <head>
+    <meta charset="UTF-8" />
     <style>
-        * { margin: 0; padding: 0; box-sizing: border-box; }
-        body { 
-            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-            line-height: 1.5;
-            color: #333;
-            background: white;
-            padding: 40px;
-            width: 612px;
-            min-height: 792px;
-        }
-        
-        .invoice-container {
-            width: 100%;
-            position: relative;
-        }
-        
-        .header {
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-start;
-            margin-bottom: 40px;
-            border-bottom: 3px solid #2196F3;
-            padding-bottom: 20px;
-        }
-        
-        .company-info {
-            flex: 1;
-        }
-        
-        .company-name {
-            font-size: 36px;
-            font-weight: bold;
-            color: #2196F3;
-            margin-bottom: 8px;
-            letter-spacing: 3px;
-        }
-        
-        .company-tagline {
-            font-size: 16px;
-            color: #666;
-            font-style: italic;
-            margin-bottom: 15px;
-        }
-        
-        .company-details {
-            font-size: 12px;
-            color: #666;
-            line-height: 1.6;
-        }
-        
-        .invoice-header {
-            text-align: right;
-        }
-        
-        .invoice-title {
-            font-size: 40px;
-            font-weight: bold;
-            color: #2196F3;
-            margin-bottom: 10px;
-        }
-        
-        .invoice-number {
-            font-size: 18px;
-            font-weight: bold;
-            color: #333;
-            margin-bottom: 5px;
-        }
-        
-        .invoice-date {
-            font-size: 14px;
-            color: #666;
-        }
-        
-        .billing-section {
-            display: flex;
-            justify-content: space-between;
-            margin: 20px 0;
-            background: #f8f9fa;
-            padding: 20px;
-            border-radius: 8px;
-            border: 1px solid #e9ecef;
-        }
-        
-        .bill-to, .service-period {
-            flex: 1;
-            padding: 0 10px;
-        }
-        
-        .service-period {
-            margin-left: 30px;
-            border-left: 2px solid #2196F3;
-            padding-left: 20px;
-        }
-        
-        .section-title {
-            font-size: 14px;
-            font-weight: bold;
-            color: #2196F3;
-            margin-bottom: 15px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            border-bottom: 1px solid #2196F3;
-            padding-bottom: 5px;
-        }
-        
-        .client-name {
-            font-size: 18px;
-            font-weight: bold;
-            color: #333;
-            margin-bottom: 8px;
-            margin-top: 5px;
-        }
-        
-        .client-details, .service-details-info {
-            font-size: 14px;
-            color: #666;
-            line-height: 1.8;
-            margin-top: 5px;
-        }
-        
-        .client-details div, .service-details-info div {
-            margin-bottom: 4px;
-        }
-        
-        .services-section {
-            margin: 40px 0;
-        }
-        
-        .services-table {
-            width: 100%;
-            border-collapse: collapse;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-            border-radius: 8px;
-            overflow: hidden;
-            margin: 20px 0;
-        }
-        
-        .table-header {
-            background: linear-gradient(135deg, #2196F3, #1976D2);
-            color: white;
-        }
-        
-        .table-header th {
-            padding: 18px 15px;
-            text-align: left;
-            font-size: 14px;
-            font-weight: bold;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            border-right: 1px solid rgba(255,255,255,0.2);
-        }
-        
-        .table-header th:last-child {
-            border-right: none;
-        }
-        
-        .table-header .center-align {
-            text-align: center;
-        }
-        
-        .table-header .amount-col {
-            text-align: right;
-        }
-        
-        .service-row {
-            background: white;
-            border-bottom: 1px solid #eee;
-        }
-        
-        .service-row:last-child {
-            border-bottom: none;
-        }
-        
-        .service-row td {
-            padding: 15px 12px;
-            font-size: 14px;
-            vertical-align: top;
-            border-right: 1px solid #f0f0f0;
-        }
-        
-        .service-row td:last-child {
-            border-right: none;
-        }
-        
-        .center-align {
-            text-align: center;
-            font-weight: 600;
-        }
-        
-        .amount-col {
-            text-align: right;
-            font-weight: 600;
-        }
-        
-        .service-description {
-            font-weight: 600;
-            color: #333;
-            font-size: 16px;
-            margin-bottom: 8px;
-        }
-        
-        .service-details {
-            font-size: 13px;
-            color: #666;
-            margin-bottom: 10px;
-            font-style: italic;
-            line-height: 1.4;
-        }
-        
-        .service-dates, .service-nurse {
-            font-size: 12px;
-            color: #555;
-            margin: 6px 0;
-            background: #f8f9fa;
-            padding: 4px 8px;
-            border-radius: 4px;
-            display: inline-block;
-        }
-        
-        .session-summary {
-            margin-top: 12px;
-            font-size: 12px;
-            color: #555;
-            background: #f0f7ff;
-            padding: 10px;
-            border-radius: 6px;
-            border-left: 3px solid #2196F3;
-        }
-        
-        .session-list {
-            margin: 8px 0 0 15px;
-            padding: 0;
-            list-style-type: disc;
-        }
-        
-        .session-list li {
-            margin: 5px 0;
-            font-size: 11px;
-            color: #666;
-            line-height: 1.4;
-        }
-        
-        .amount-cell {
-            text-align: right;
-            font-weight: bold;
-            color: #2196F3;
-            font-size: 18px;
-            background: #f8f9fa;
-            padding: 20px 15px !important;
-        }
-        
-        .total-section {
-            margin-top: 40px;
-            display: flex;
-            justify-content: flex-end;
-        }
-        
-        .total-box {
-            width: 350px;
-            background: linear-gradient(135deg, #f8f9fa, #e9ecef);
-            border-radius: 8px;
-            padding: 25px;
-            box-shadow: 0 4px 15px rgba(0,0,0,0.1);
-        }
-        
-        .total-row {
-            display: flex;
-            justify-content: space-between;
-            margin-bottom: 12px;
-            font-size: 14px;
-        }
-        
-        .grand-total {
-            border-top: 2px solid #2196F3;
-            padding-top: 15px;
-            margin-top: 15px;
-            font-size: 20px;
-            font-weight: bold;
-        }
-        
-        .total-label {
-            color: #333;
-        }
-        
-        .total-amount {
-            color: #2196F3;
-            font-weight: bold;
-        }
-        
-        .payment-section {
-            margin-top: 25px;
-            background: #f8f9fa;
-            padding: 25px;
-            border-radius: 8px;
-            border-left: 5px solid #2196F3;
-            border: 1px solid #e9ecef;
-        }
-        
-        .payment-title {
-            font-size: 16px;
-            font-weight: bold;
-            color: #2196F3;
-            margin-bottom: 25px;
-            text-transform: uppercase;
-            letter-spacing: 1px;
-            border-bottom: 2px solid #2196F3;
-            padding-bottom: 8px;
-        }
-        
-        .payment-details {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 20px;
-            margin-bottom: 20px;
-        }
-        
-        .payment-item {
-            font-size: 13px;
-            background: white;
-            padding: 12px;
-            border-radius: 6px;
-            border-left: 3px solid #2196F3;
-        }
-        
-        .payment-label {
-            font-weight: bold;
-            color: #333;
-            margin-bottom: 4px;
-        }
-        
-        .payment-value {
-            color: #666;
-            font-size: 14px;
-        }
-        
-        .banking-info {
-            background: white;
-            padding: 20px;
-            border-radius: 8px;
-            margin-top: 15px;
-            border: 1px solid #ddd;
-        }
-        
-        .banking-title {
-            font-size: 14px;
-            font-weight: bold;
-            color: #2196F3;
-            margin-bottom: 15px;
-            text-transform: uppercase;
-        }
-        
-        .banking-details {
-            display: grid;
-            grid-template-columns: 1fr 1fr;
-            gap: 15px;
-        }
-        
-        .banking-item {
-            font-size: 12px;
-        }
-        
-        .banking-label {
-            font-weight: bold;
-            color: #333;
-            margin-bottom: 2px;
-        }
-        
-        .banking-value {
-            color: #666;
-        }
-        
-        .invoice-notes {
-            margin-top: 30px;
-            background: #fffbf0;
-            padding: 20px;
-            border-radius: 8px;
-            border-left: 4px solid #ffa726;
-        }
-        
-        .notes-title {
-            font-size: 14px;
-            font-weight: bold;
-            color: #e65100;
-            margin-bottom: 10px;
-        }
-        
-        .notes-text {
-            font-size: 12px;
-            color: #555;
-            line-height: 1.6;
-        }
-        
-        .footer {
-            margin-top: 50px;
-            text-align: center;
-            border-top: 1px solid #eee;
-            padding-top: 20px;
-        }
-        
-        .footer-text {
-            font-size: 11px;
-            color: #999;
-            margin: 3px 0;
-        }
-        
-        .thank-you {
-            font-size: 16px;
-            color: #2196F3;
-            font-weight: bold;
-            margin-bottom: 10px;
-        }
-        
-        .page-break {
-            page-break-after: always;
-        }
+      * { margin: 0; padding: 0; box-sizing: border-box; }
+      @page { size: letter; margin: 0; }
+      html, body { width: 612px; min-height: 792px; }
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+        color: #1f2937;
+        background: #ffffff;
+        padding: 28px;
+        width: 612px;
+        min-height: 792px;
+      }
+      .invoicePreviewCard { border: 1px solid #e5e7eb; border-radius: 12px; padding: 18px; }
+      .headerLogoWrap { display: flex; justify-content: center; align-items: center; margin-bottom: 10px; }
+      .headerLogo { height: 34px; width: auto; object-fit: contain; }
+      .pdfHeaderTop { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; }
+      .logoBox { width: 140px; }
+      .logoText { font-size: 22px; font-weight: 800; color: #111827; letter-spacing: 1px; }
+      .pdfInvoiceInfo { text-align: right; flex: 1; }
+      .pdfInvoiceTitle { font-size: 28px; font-weight: 800; color: #111827; letter-spacing: 1px; }
+      .pdfInvoiceNumber { font-size: 16px; font-weight: 700; margin-top: 6px; color: #111827; }
+      .pdfInvoiceDate { font-size: 12px; color: #6b7280; margin-top: 4px; }
+      .pdfBlueLine { height: 1px; background: #e5e7eb; margin-top: 12px; }
+      .pdfClientRow { display: flex; justify-content: space-between; margin-top: 18px; gap: 18px; }
+      .pdfBillTo, .pdfServiceProvider { flex: 1; }
+      .pdfSectionTitle { font-size: 12px; font-weight: 800; color: #374151; margin-bottom: 10px; letter-spacing: 0.5px; }
+      .pdfClientName { font-size: 16px; font-weight: 800; color: #111827; margin-bottom: 6px; }
+      .pdfClientInfo, .pdfProviderInfo { font-size: 12px; color: #374151; margin-bottom: 4px; line-height: 1.35; }
+      .pdfProviderName { font-size: 12px; font-weight: 700; color: #111827; margin-bottom: 6px; }
+      .pdfTable { margin-top: 18px; border: 1px solid #e5e7eb; border-radius: 10px; overflow: hidden; }
+      table { width: 100%; border-collapse: collapse; }
+      thead { background: #f3f4f6; }
+      th { color: #111827; font-size: 12px; font-weight: 800; text-align: left; padding: 10px 10px; border-bottom: 1px solid #e5e7eb; }
+      th.num, td.num { text-align: right; }
+      td { font-size: 12px; color: #111827; padding: 10px 10px; border-top: 1px solid #e5e7eb; vertical-align: top; }
+      .pdfBottomSection { display: flex; justify-content: space-between; gap: 18px; margin-top: 18px; }
+      .pdfPaymentSection { flex: 1; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; }
+      .pdfPaymentTitle { font-size: 13px; font-weight: 800; color: #111827; margin-bottom: 8px; }
+      .pdfPaymentInfo { font-size: 12px; color: #374151; margin-bottom: 4px; line-height: 1.35; }
+      .pdfTotalsSection { width: 220px; border: 1px solid #e5e7eb; border-radius: 10px; padding: 12px; }
+      .pdfTotalRow, .pdfFinalTotalRow { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+      .pdfTotalLabel { font-size: 12px; color: #374151; }
+      .pdfTotalValue { font-size: 12px; font-weight: 700; color: #111827; }
+      .pdfFinalTotalLabel { font-size: 12px; font-weight: 800; color: #111827; }
+      .pdfFinalTotalAmount { font-size: 14px; font-weight: 900; color: #111827; }
+      .paidStamp { margin-top: 10px; border: 2px solid #16a34a; border-radius: 8px; padding: 8px; text-align: center; }
+      .paidStampText { font-size: 18px; font-weight: 900; color: #16a34a; letter-spacing: 2px; }
+      .paidMeta { font-size: 11px; color: #166534; margin-top: 4px; }
     </style>
-</head>
-<body>
-    <div class="invoice-container">
-        <div class="header">
-            <div class="company-info">
-                <div class="company-name">876 Nurses</div>
-                <div class="company-tagline">Home Care Services Limited</div>
-                <div class="company-details">
-                    60 Knutsford Blvd, Panjam Building, 9th Floor - Regus, Kingston 5, Jamaica, West Indies<br>
-                    Phone: (876) 618-9876<br>
-                    Email: 876nurses@gmail.com
-                </div>
-            </div>
-            <div class="invoice-header">
-                <div class="invoice-title">INVOICE</div>
-                <div class="invoice-number">#${(invoiceData.invoiceId || invoiceData.invoiceNumber)?.replace('CARE-INV', 'NUR-INV')}</div>
-                <div class="invoice-date">${formatDate(invoiceData.date)}</div>
-            </div>
+  </head>
+  <body>
+    <div class="invoicePreviewCard">
+      <div class="headerLogoWrap">
+        ${logoDataUri ? `<img class="headerLogo" src="${safeText(logoDataUri)}" />` : `<div class="logoText">876 Nurses</div>`}
+      </div>
+      <div class="pdfHeaderTop">
+        <div class="logoBox"></div>
+        <div class="pdfInvoiceInfo">
+          <div class="pdfInvoiceTitle">INVOICE</div>
+          <div class="pdfInvoiceNumber">${safeText(invoiceNumberDisplay)}</div>
+          ${showPeriod ? `<div class="pdfInvoiceDate">Period: ${safeText(formatDate(periodStart))} - ${safeText(formatDate(periodEnd))}</div>` : ''}
+          <div class="pdfInvoiceDate">Issue Date: ${safeText(issueDateDisplay)}</div>
+          <div class="pdfInvoiceDate">Due Date: ${safeText(dueDateDisplay)}</div>
         </div>
-        
-        <div class="billing-section">
-            <div class="bill-to">
-                <div class="section-title">Bill To</div>
-                <div class="client-name">${invoiceData.billTo?.name || 'N/A'}</div>
-                <div class="client-details">
-                    <div>${invoiceData.billTo?.address || 'N/A'}</div>
-                    <div>${invoiceData.billTo?.phone || ''}</div>
-                    <div>${invoiceData.billTo?.email || ''}</div>
-                </div>
-            </div>
-            <div class="service-period">
-                <div class="section-title">Service Information</div>
-                <div class="service-details-info">
-                    <div><strong>Service Date:</strong> ${formatDate(invoiceData.serviceDate) || formatDate(invoiceData.date)}</div>
-                    ${periodStart && periodEnd ? `<div><strong>Service Period:</strong> ${formatDate(periodStart)} - ${formatDate(periodEnd)}</div>` : ''}
-                    <div><strong>Total Sessions:</strong> ${invoiceData.totalSessions || 1}</div>
-                    <div><strong>Nurse:</strong> ${invoiceData.nurseName || 'Care Professional'}</div>
-                    <div><strong>Payment Method:</strong> ${invoiceData.paymentMethod || 'Bank Transfer'}</div>
-                    <div><strong>Due Date:</strong> ${formatDate(invoiceData.dueDate)}</div>
-                </div>
-            </div>
-        </div>
-        
-        <div class="services-section">
-            <table class="services-table">
-                <thead class="table-header">
-                    <tr>
-                        <th>Service Description</th>
-                        <th class="center-align">Quantity</th>
-                        <th class="center-align">Unit Price</th>
-                        <th class="amount-col">Total</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    ${serviceRowsHTML}
-                </tbody>
-            </table>
-        </div>
-        
-        <div class="total-section">
-            <div class="total-box">
-                <div class="total-row">
-                    <span class="total-label">Deposit:</span>
-                    <span class="total-amount">${formatCurrency(invoiceData.subtotal)}</span>
-                </div>
-                <div class="total-row">
-                    <span class="total-label">Tax (Healthcare Services):</span>
-                    <span class="total-amount">${formatCurrency(invoiceData.tax || 0)}</span>
-                </div>
-                <div class="total-row grand-total">
-                    <span class="total-label">TOTAL DUE:</span>
-                    <span class="total-amount">${formatCurrency(invoiceData.total)}</span>
-                </div>
-            </div>
-        </div>
-        
-        <div class="payment-section">
-            <div class="payment-title">Payment Instructions</div>
-            <div class="payment-details">
-                <div class="payment-item">
-                    <div class="payment-label">Payment Terms:</div>
-                    <div class="payment-value">Payment due within 24 hours</div>
-                </div>
-                <div class="payment-item">
-                    <div class="payment-label">Accepted Methods:</div>
-                    <div class="payment-value">Bank Transfer, Cash, Cheque</div>
-                </div>
-                <div class="payment-item">
-                    <div class="payment-label">Invoice Reference:</div>
-                    <div class="payment-value">${invoiceData.invoiceNumber}</div>
-                </div>
-                <div class="payment-item">
-                    <div class="payment-label">Contact for Queries:</div>
-                    <div class="payment-value">876-288-7304</div>
-                </div>
-            </div>
-            
-            <div class="banking-info">
-                <div class="banking-title">876Nurses Banking Details</div>
-                <div class="banking-details">
-                    <div class="banking-item">
-                        <div class="banking-label">Bank Name:</div>
-                        <div class="banking-value">National Commercial Bank (NCB)</div>
-                    </div>
-                    <div class="banking-item">
-                        <div class="banking-label">Branch:</div>
-                        <div class="banking-value">Knutsford Branch</div>
-                    </div>
-                    <div class="banking-item">
-                        <div class="banking-label">Account Type:</div>
-                        <div class="banking-value">NCB Saving Account</div>
-                    </div>
-                    <div class="banking-item">
-                        <div class="banking-label">Account Holder:</div>
-                        <div class="banking-value">876 Nurses Home Care Services Limited</div>
-                    </div>
-                    <div class="banking-item">
-                        <div class="banking-label">JMD Account:</div>
-                        <div class="banking-value">JMD354756226</div>
-                    </div>
-                    <div class="banking-item">
-                        <div class="banking-label">USD Account:</div>
-                        <div class="banking-value">USD354756234</div>
-                    </div>
-                    <div class="banking-item">
-                        <div class="banking-label">Swift Code:</div>
-                        <div class="banking-value">JNCBXX</div>
-                    </div>
-                    <div class="banking-item">
-                        <div class="banking-label">Bank Code:</div>
-                        <div class="banking-value">02</div>
-                    </div>
-                    <div class="banking-item">
-                        <div class="banking-label">Business Phone:</div>
-                        <div class="banking-value">876-288-7304</div>
-                    </div>
-                    <div class="banking-item">
-                        <div class="banking-label">Business Email:</div>
-                        <div class="banking-value">info@876nurses.com</div>
-                    </div>
-                    <div class="banking-item">
-                        <div class="banking-label">Registration:</div>
-                        <div class="banking-value">Licensed Healthcare Provider</div>
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <div class="invoice-notes">
-            <div class="notes-title">Payment Terms & Notes</div>
-            <div class="notes-text">
-                • Payment is due within 24 hours of invoice date<br>
-                • Please include invoice number <strong>${invoiceData.invoiceNumber}</strong> in payment reference<br>
-                • All services have been completed by licensed healthcare professionals<br>
-                • For questions about this invoice, please contact us at 876-288-7304<br>
-                ${invoiceData.isRecurring ? '• This client is on automatic recurring billing for continued services' : ''}
-            </div>
-        </div>
-        
-        <div class="footer">
-            <div class="thank-you">Thank you for choosing 876NURSES Home Care Services</div>
-            <div class="footer-text">This invoice was generated electronically and is valid without signature.</div>
-            <div class="footer-text">Professional healthcare services provided with care and compassion.</div>
-            <div class="footer-text">License Number: [Healthcare License] | Registration: [Professional Registration]</div>
-        </div>
-    </div>
-</body>
-</html>`;
-  }
+      </div>
+      <div class="pdfBlueLine"></div>
 
-  // Alternative: HTML-to-Image approach
-  static async generateHTMLInvoice(invoiceData) {
-    const htmlContent = `
-<!DOCTYPE html>
-<html>
-<head>
-    <meta charset="UTF-8">
-    <style>
-        body { 
-            font-family: Arial, sans-serif; 
-            margin: 0; 
-            padding: 40px;
-            width: 794px;
-            height: 1123px;
-            background: white;
-        }
-        .header { 
-            text-align: left; 
-            margin-bottom: 40px; 
-        }
-        .company-name { 
-            font-size: 24px; 
-            font-weight: bold; 
-            color: #2196F3; 
-            margin: 0;
-        }
-        .company-subtitle { 
-            font-size: 16px; 
-            color: #666; 
-            margin: 5px 0 0 0;
-        }
-        .invoice-header {
-            display: flex;
-            justify-content: space-between;
-            margin: 40px 0;
-        }
-        .invoice-title {
-            font-size: 20px;
-            font-weight: bold;
-            color: #333;
-        }
-        .invoice-details {
-            text-align: right;
-        }
-        .invoice-number {
-            font-size: 16px;
-            font-weight: bold;
-            color: #333;
-        }
-        .invoice-date {
-            font-size: 14px;
-            color: #666;
-            margin-top: 5px;
-        }
-        .bill-to {
-            margin: 40px 0;
-        }
-        .bill-to-header {
-            font-size: 14px;
-            font-weight: bold;
-            color: #333;
-            margin-bottom: 15px;
-        }
-        .client-name {
-            font-size: 16px;
-            font-weight: bold;
-            color: #333;
-            margin-bottom: 5px;
-        }
-        .client-address {
-            font-size: 14px;
-            color: #666;
-        }
-        .services-table {
-            width: 100%;
-            border-collapse: collapse;
-            margin: 40px 0;
-        }
-        .services-header {
-            background: #f5f5f5;
-            border: 1px solid #ddd;
-        }
-        .services-header th {
-            padding: 15px;
-            text-align: left;
-            font-size: 14px;
-            font-weight: bold;
-            color: #333;
-        }
-        .service-row td {
-            padding: 20px 15px;
-            border: 1px solid #ddd;
-            font-size: 14px;
-            color: #333;
-        }
-        .amount-cell {
-            text-align: right;
-        }
-        .total-section {
-            margin-top: 40px;
-            text-align: right;
-        }
-        .total-row {
-            background: #f5f5f5;
-            border: 1px solid #ddd;
-            padding: 15px;
-            margin-top: 10px;
-        }
-        .total-label {
-            font-size: 16px;
-            font-weight: bold;
-            color: #333;
-            display: inline-block;
-            width: 100px;
-        }
-        .total-amount {
-            font-size: 16px;
-            font-weight: bold;
-            color: #2196F3;
-        }
-        .payment-instructions {
-            margin-top: 60px;
-        }
-        .payment-title {
-            font-size: 12px;
-            font-weight: bold;
-            color: #333;
-            margin-bottom: 10px;
-        }
-        .payment-detail {
-            font-size: 11px;
-            color: #666;
-            margin: 3px 0;
-        }
-        .footer {
-            position: absolute;
-            bottom: 40px;
-            left: 40px;
-            right: 40px;
-        }
-        .footer-text {
-            font-size: 10px;
-            color: #999;
-            margin: 2px 0;
-        }
-    </style>
-</head>
-<body>
-    <div class="header">
-        <div class="company-name">876 Nurses</div>
-        <div class="company-subtitle">Home Care Services Limited</div>
-    </div>
-    
-    <div class="invoice-header">
-        <div class="invoice-title">INVOICE</div>
-        <div class="invoice-details">
-            <div class="invoice-number">#${invoiceData.invoiceNumber}</div>
-            <div class="invoice-date">${invoiceData.date}</div>
+      <div class="pdfClientRow">
+        <div class="pdfBillTo">
+          <div class="pdfSectionTitle">BILL TO:</div>
+          <div class="pdfClientName">${safeText(billTo.name)}</div>
+          <div class="pdfClientInfo">${safeText(billTo.email || 'N/A')}</div>
+          <div class="pdfClientInfo">${safeText(billTo.phone || 'N/A')}</div>
+          ${isStorePurchase && invoiceData?.relatedOrderId ? `<div class="pdfClientInfo">Order #${safeText(invoiceData.relatedOrderId)}</div>` : ''}
+          ${!isStorePurchase ? `<div class="pdfClientInfo">${safeText(billTo.address || 'N/A')}</div>` : ''}
         </div>
-    </div>
-    
-    <div class="bill-to">
-        <div class="bill-to-header">BILL TO:</div>
-        <div class="client-name">${invoiceData.billTo?.name || 'N/A'}</div>
-        <div class="client-address">${invoiceData.billTo?.address || 'N/A'}</div>
-    </div>
-    
-    <table class="services-table">
-        <tr class="services-header">
-            <th>DESCRIPTION</th>
-            <th class="amount-cell">QTY</th>
-            <th class="amount-cell">RATE</th>
-            <th class="amount-cell">TOTAL</th>
-        </tr>
-        ${invoiceData.items?.map(item => `
-        <tr class="service-row">
-            <td>${item.description || 'Healthcare Services'}</td>
-            <td class="amount-cell">${item.quantity || 1}</td>
-            <td class="amount-cell">J$${item.price?.toLocaleString() || '0'}</td>
-            <td class="amount-cell">J$${item.total?.toLocaleString() || '0'}</td>
-        </tr>
-        `).join('') || `
-        <tr class="service-row">
-            <td>Healthcare Services</td>
-            <td class="amount-cell">1</td>
-            <td class="amount-cell">J$${invoiceData.total?.toLocaleString() || '0'}</td>
-            <td class="amount-cell">J$${invoiceData.total?.toLocaleString() || '0'}</td>
-        </tr>
-        `}
-    </table>
-    
-    <div class="total-section">
-        <div class="total-row">
-            <span class="total-label">TOTAL</span>
-            <span class="total-amount">J$${invoiceData.total?.toLocaleString() || '0'}</span>
+        <div class="pdfServiceProvider">
+          <div class="pdfSectionTitle">SERVICE PROVIDED BY:</div>
+          <div class="pdfProviderName">${safeText(companyName)}</div>
+          <div class="pdfProviderInfo">${safeText(companyAddress)}</div>
+          <div class="pdfProviderInfo">Phone: ${safeText(companyPhone)}</div>
+          <div class="pdfProviderInfo">Email: ${safeText(companyEmail)}</div>
+          ${companyWebsite ? `<div class="pdfProviderInfo">Web: ${safeText(companyWebsite)}</div>` : ''}
         </div>
-    </div>
-    
-    <div class="payment-instructions">
-        <div class="payment-title">PAYMENT INSTRUCTIONS:</div>
-        <div class="payment-detail">Bank: NCB Saving</div>
-        <div class="payment-detail">Account: JMD354756226 / USD354756234</div>
-        <div class="payment-detail">Payee: 876 Nurses Home Care Services Limited</div>
-    </div>
-    
-    <div class="footer">
-        <div class="footer-text">Thank you for choosing 876NURSES Home Care Services</div>
-        <div class="footer-text">Phone: (876) 618-9876 | Email: 876nurses@gmail.com</div>
-    </div>
-</body>
-</html>`;
+      </div>
 
-    // Save HTML file
-    const fileName = `invoice_${invoiceData.invoiceNumber}_${Date.now()}.html`;
-    const fileUri = `${FileSystem.documentDirectory}${fileName}`;
-    
-    await FileSystem.writeAsStringAsync(fileUri, htmlContent, {
-      encoding: FileSystem.EncodingType.UTF8,
-    });
-    
-    return fileUri;
+      <div class="pdfTable">
+        <table>
+          <thead>
+            <tr>
+              <th style="width: 55%">${isStorePurchase ? 'Item Description' : 'Service Description'}</th>
+              <th class="num" style="width: 15%">${isStorePurchase ? 'Qty' : 'Hours'}</th>
+              <th class="num" style="width: 15%">${isStorePurchase ? 'Unit Price' : 'Rate'}</th>
+              <th class="num" style="width: 15%">Amount</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${serviceRowsHTML}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="pdfBottomSection">
+        <div class="pdfPaymentSection">
+          <div class="pdfPaymentTitle">Payment Information</div>
+          <div class="pdfPaymentInfo">Payment Method: ${safeText(paymentMethodDisplay)}</div>
+          <div class="pdfPaymentInfo">Invoice Reference: ${safeText(invoiceReference)}</div>
+          <div class="pdfPaymentInfo">Contact: 876-288-7304</div>
+          <div class="pdfPaymentInfo">Email: info@876nurses.com</div>
+        </div>
+        <div class="pdfTotalsSection">
+          <div class="pdfTotalRow">
+            <div class="pdfTotalLabel">Deposit:</div>
+            <div class="pdfTotalValue">${safeText(formatCurrency(invoiceData.subtotal || invoiceData.total || invoiceData.amount || 0))}</div>
+          </div>
+          <div class="pdfBlueLine"></div>
+          <div class="pdfFinalTotalRow">
+            <div class="pdfFinalTotalLabel">Total Amount:</div>
+            <div class="pdfFinalTotalAmount">${safeText(formatCurrency(invoiceData.finalTotal || invoiceData.total || invoiceData.amount || 0))}</div>
+          </div>
+          ${invoiceData?.status === 'Paid' ? `
+            <div class="paidStamp">
+              <div class="paidStampText">PAID</div>
+              ${invoiceData?.paymentMethod ? `<div class="paidMeta">${safeText(invoiceData.paymentMethod)}</div>` : ''}
+              ${invoiceData?.paidDate ? `<div class="paidMeta">${safeText(formatDate(invoiceData.paidDate))}</div>` : ''}
+            </div>
+          ` : ''}
+        </div>
+      </div>
+    </div>
+  </body>
+</html>`;
   }
 }
 

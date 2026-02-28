@@ -216,6 +216,11 @@ export default function SplashScreen({ onFinish }) {
         } else {
           await clearSavedCredentials();
         }
+
+        // Dismiss the SplashScreen once authenticated.
+        if (typeof onFinish === 'function') {
+          onFinish();
+        }
       } else {
         Alert.alert('Sign In Failed', result?.error || 'Unable to sign in. Please try again.');
       }
@@ -251,26 +256,25 @@ export default function SplashScreen({ onFinish }) {
     if (!result.success) {
       Alert.alert('Signup Failed', result.error);
     } else {
-      // Show success message and switch to login
-      Alert.alert(
-        'Account Created',
-        'Your account has been created successfully! Please sign in with your email and password.',
-        [
-          {
-            text: 'Sign In',
-            onPress: () => {
-              // Reset signup form and switch to login
-              setSignupUsername('');
-              setEmail('');
-              setPassword('');
-              setConfirmPassword('');
-              setPhone('');
-              setAddress('');
-              setIsLogin(true);
+      // Account is created AND the user remains signed in.
+      Alert.alert('Account Created', 'Your account has been created successfully. You are now signed in.', [
+        {
+          text: 'Continue',
+          onPress: () => {
+            // Reset signup form (optional) and continue into the app.
+            setSignupUsername('');
+            setEmail('');
+            setPassword('');
+            setConfirmPassword('');
+            setPhone('');
+            setAddress('');
+
+            if (typeof onFinish === 'function') {
+              onFinish();
             }
-          }
-        ]
-      );
+          },
+        },
+      ]);
     }
   };
 
@@ -373,6 +377,7 @@ export default function SplashScreen({ onFinish }) {
 
     setForgotPasswordLoading(true);
     setForgotPasswordMessage('');
+
     try {
       await confirmPasswordReset(auth, resetToken.trim(), resetNewPassword);
 
@@ -383,16 +388,14 @@ export default function SplashScreen({ onFinish }) {
       setResetNewPassword('');
       setResetConfirmPassword('');
       setForgotPasswordStep('email');
-      setForgotPasswordMessage('Password updated successfully.');
+      setForgotPasswordMessage('');
       setSentToEmail('');
     } catch (error) {
-      console.error('Error resetting password:', error);
-      let errorMessage = 'Unable to reset password. Please check the token and try again.';
+      console.error('Reset password error:', error);
+      let errorMessage = error?.message || 'Unable to reset password. Please try again.';
 
       if (error?.code === 'auth/invalid-action-code') {
-        errorMessage = 'Invalid or expired reset token. Please request a new email.';
-      } else if (error?.code === 'auth/expired-action-code') {
-        errorMessage = 'This reset link has expired. Please request a new one.';
+        errorMessage = 'That reset token is invalid or has expired. Please request a new one.';
       } else if (error?.code === 'auth/weak-password') {
         errorMessage = 'Password is too weak. Please choose at least 6 characters.';
       }

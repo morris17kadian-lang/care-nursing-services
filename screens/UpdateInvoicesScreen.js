@@ -109,7 +109,7 @@ export default function UpdateInvoicesScreen({ navigation }) {
           <Text style={styles.title}>Invoice Price Update</Text>
           <Text style={styles.description}>
             This tool will update all existing invoices to use the current service pricing
-            from the CARE price list. All amounts will be recalculated in Jamaican dollars.
+            from the 876Nurses price list. All amounts will be recalculated in Jamaican dollars.
           </Text>
 
           {result && (
@@ -183,7 +183,7 @@ export default function UpdateInvoicesScreen({ navigation }) {
           <View style={styles.infoItem}>
             <MaterialCommunityIcons name="check-circle" size={20} color={COLORS.success} />
             <Text style={styles.infoText}>
-              Syncs with the official CARE service price list
+              Syncs with the official 876Nurses service price list
             </Text>
           </View>
         </View>

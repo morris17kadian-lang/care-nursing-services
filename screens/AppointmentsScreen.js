@@ -99,6 +99,8 @@ export default function AppointmentsScreen({ navigation, route }) {
   useEffect(() => {
     if (route.params?.highlightId || route.params?.openAppointmentDetails) {
       const highlightId = route.params.highlightId || route.params.appointmentId;
+      const requestedTab = route.params?.appointmentTab || null;
+      const requestedModalType = route.params?.appointmentModalType || null; // 'details' | 'recurring'
 
       const normalizeClockMs = (value) => {
         if (!value) return null;
@@ -147,48 +149,132 @@ export default function AppointmentsScreen({ navigation, route }) {
         const upcoming = getUpcomingAppointments();
         const past = getAppointmentHistory();
         const shifts = shiftRequests || [];
-        
-        // Check upcoming appointments
-        const foundUpcoming = upcoming.find(a => a.id === highlightId);
-        if (foundUpcoming) {
-          setActiveTab('upcoming');
-          setSelectedAppointment(foundUpcoming);
-          
-          // Check if it's recurring to open correct modal
-          const isRecurring = foundUpcoming.isRecurring || foundUpcoming.recurringScheduleId || foundUpcoming.recurringSchedule;
+
+        const openRequestedModal = (record) => {
+          if (!record) return;
+          setSelectedAppointment(record);
+
+          if (requestedModalType === 'details') {
+            setDetailsModalVisible(true);
+            return;
+          }
+          if (requestedModalType === 'recurring') {
+            setRecurringShiftDetailsModalVisible(true);
+            return;
+          }
+
+          const isRecurring = record.isRecurring || record.recurringScheduleId || record.recurringSchedule;
           if (isRecurring) {
             setRecurringShiftDetailsModalVisible(true);
           } else {
             setDetailsModalVisible(true);
           }
-          return;
-        }
+        };
+
+        const findInUpcoming = () => upcoming.find((a) => a?.id === highlightId) || null;
+        const findInPast = () => past.find((a) => a?.id === highlightId) || null;
+        const findInShifts = () => shifts.find((s) => s?.id === highlightId) || null;
         
-        // Check shifts (which are also displayed)
-        const foundShift = shifts.find(s => s.id === highlightId);
-        if (foundShift) {
-          // Determine if it's upcoming or past based on status/date
-          // Treat clocked-out shifts as Past even if status remains 'approved' (kept booked).
-          const isPast =
-            String(foundShift.status || '').toLowerCase() === 'completed' ||
-            hasClockedOutForAnyNurse(foundShift);
-          setActiveTab(isPast ? 'past' : 'upcoming');
-          setSelectedAppointment(foundShift);
-          setRecurringShiftDetailsModalVisible(true); // Shifts use recurring modal usually
+        // If caller explicitly wants the details modal, do NOT fall back to shifts
+        // (prevents reopening the wrong recurring/shift modal when IDs overlap).
+        const allowShiftLookup = requestedModalType !== 'details';
+
+        const setTabIfProvided = (tab, record) => {
+          if (requestedTab === 'past' || requestedTab === 'upcoming') {
+            setActiveTab(requestedTab);
+            return;
+          }
+          if (tab) setActiveTab(tab);
+          if (record && allowShiftLookup && (record?.clockByNurse || record?.nurseSchedule)) {
+            const isPast =
+              String(record.status || '').toLowerCase() === 'completed' ||
+              hasClockedOutForAnyNurse(record);
+            setActiveTab(isPast ? 'past' : 'upcoming');
+          }
+        };
+
+        // Priority order:
+        // - If modalType explicitly recurring: shifts first
+        // - Else if tab explicitly set: that tab first
+        // - Else: upcoming -> shifts -> past (legacy behavior)
+        if (requestedModalType === 'recurring') {
+          const shift = allowShiftLookup ? findInShifts() : null;
+          if (shift) {
+            setTabIfProvided(null, shift);
+            openRequestedModal(shift);
+            return;
+          }
+        }
+
+        if (requestedTab === 'past') {
+          const foundPast = findInPast();
+          if (foundPast) {
+            setActiveTab('past');
+            openRequestedModal(foundPast);
+            return;
+          }
+          const foundUpcoming = findInUpcoming();
+          if (foundUpcoming) {
+            setActiveTab('upcoming');
+            openRequestedModal(foundUpcoming);
+            return;
+          }
+          if (allowShiftLookup) {
+            const shift = findInShifts();
+            if (shift) {
+              setTabIfProvided(null, shift);
+              openRequestedModal(shift);
+              return;
+            }
+          }
           return;
         }
 
-        // Check past appointments
-        const foundPast = past.find(a => a.id === highlightId);
+        if (requestedTab === 'upcoming') {
+          const foundUpcoming = findInUpcoming();
+          if (foundUpcoming) {
+            setActiveTab('upcoming');
+            openRequestedModal(foundUpcoming);
+            return;
+          }
+          if (allowShiftLookup) {
+            const shift = findInShifts();
+            if (shift) {
+              setTabIfProvided(null, shift);
+              openRequestedModal(shift);
+              return;
+            }
+          }
+          const foundPast = findInPast();
+          if (foundPast) {
+            setActiveTab('past');
+            openRequestedModal(foundPast);
+            return;
+          }
+          return;
+        }
+
+        // Legacy fallback
+        const foundUpcoming = findInUpcoming();
+        if (foundUpcoming) {
+          setActiveTab('upcoming');
+          openRequestedModal(foundUpcoming);
+          return;
+        }
+
+        if (allowShiftLookup) {
+          const shift = findInShifts();
+          if (shift) {
+            setTabIfProvided(null, shift);
+            openRequestedModal(shift);
+            return;
+          }
+        }
+
+        const foundPast = findInPast();
         if (foundPast) {
           setActiveTab('past');
-          setSelectedAppointment(foundPast);
-          const isRecurring = foundPast.isRecurring || foundPast.recurringScheduleId || foundPast.recurringSchedule;
-          if (isRecurring) {
-            setRecurringShiftDetailsModalVisible(true);
-          } else {
-            setDetailsModalVisible(true);
-          }
+          openRequestedModal(foundPast);
           return;
         }
       };
@@ -197,7 +283,13 @@ export default function AppointmentsScreen({ navigation, route }) {
       setTimeout(findAndHighlight, 500);
       
       // Clear the param so it doesn't trigger again on simple re-renders
-      navigation.setParams({ highlightId: null, openAppointmentDetails: null, appointmentId: null });
+      navigation.setParams({
+        highlightId: null,
+        openAppointmentDetails: null,
+        appointmentId: null,
+        appointmentTab: null,
+        appointmentModalType: null,
+      });
     }
   }, [route.params?.highlightId, route.params?.openAppointmentDetails, appointments, shiftRequests]);
 
@@ -256,6 +348,55 @@ export default function AppointmentsScreen({ navigation, route }) {
 
   const resolveAssignedNurse = (appointment) => {
     if (!appointment) return null;
+
+    const normalizeId = (value) => {
+      if (value === undefined || value === null) return null;
+      const str = String(value).trim();
+      return str ? str : null;
+    };
+
+    const normalizeCode = (value) => {
+      if (value === undefined || value === null) return null;
+      const str = String(value).trim();
+      return str ? str.toUpperCase() : null;
+    };
+
+    // For backup coverage flows, keep Assigned Nurse = the nurse who requested backup (if present).
+    const coverageList = Array.isArray(appointment.coverageRequests) ? appointment.coverageRequests : [];
+    const acceptedCoverage = coverageList.find((cr) => {
+      if (!cr) return false;
+      const s = String(cr.status || '').toLowerCase();
+      return s.includes('accept');
+    }) || null;
+
+    if (acceptedCoverage?.requestingNurseId || acceptedCoverage?.requestingNurseName) {
+      const requestingId = acceptedCoverage.requestingNurseId || null;
+      const requestingCode = acceptedCoverage.requestingNurseCode || null;
+
+      const matched = (requestingId || requestingCode)
+        ? nurses.find((nurse) => {
+            const nId = normalizeId(nurse.id || nurse._id || nurse.uid || nurse.nurseId);
+            const nCode = normalizeCode(nurse.nurseCode || nurse.staffCode || nurse.code || nurse.username);
+            const wantId = requestingId ? String(requestingId).trim() : null;
+            const wantCode = requestingCode ? String(requestingCode).trim().toUpperCase() : null;
+            if (wantId && nId && String(nId) === wantId) return true;
+            if (wantCode && nCode && String(nCode) === wantCode) return true;
+            return false;
+          })
+        : null;
+
+      if (matched) return matched;
+
+      return {
+        id: requestingId || 'requesting-nurse',
+        nurseId: requestingId || 'requesting-nurse',
+        name: acceptedCoverage.requestingNurseName || 'Assigned Nurse',
+        nurseName: acceptedCoverage.requestingNurseName || 'Assigned Nurse',
+        nurseCode: requestingCode || null,
+        staffCode: requestingCode || null,
+        code: requestingCode || null,
+      };
+    }
 
     const candidateId =
       appointment.nurseId ||
@@ -417,6 +558,79 @@ export default function AppointmentsScreen({ navigation, route }) {
     }
 
     return null;
+  };
+
+  const formatCompactCardDate = (value) => {
+    const date = parseDateValue(value);
+    if (!date) return null;
+    try {
+      return date.toLocaleDateString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+      });
+    } catch (e) {
+      return null;
+    }
+  };
+
+  const resolveLatestClockOutValue = (clockByNurse) => {
+    if (!clockByNurse || typeof clockByNurse !== 'object') return null;
+    try {
+      const entries = Object.values(clockByNurse).filter((v) => v && typeof v === 'object');
+      let best = null;
+      let bestMs = null;
+
+      for (const entry of entries) {
+        const raw =
+          entry.lastClockOutTime ||
+          entry.actualEndTime ||
+          entry.clockOutTime ||
+          entry.completedAt ||
+          null;
+        if (!raw) continue;
+        const ms = parseDateValue(raw)?.getTime?.();
+        if (!Number.isFinite(ms)) continue;
+        if (bestMs === null || ms > bestMs) {
+          bestMs = ms;
+          best = raw;
+        }
+      }
+
+      return best;
+    } catch (e) {
+      return null;
+    }
+  };
+
+  const getPastCardDateLabel = (appointment) => {
+    if (!appointment) return null;
+
+    const completionRaw =
+      appointment.completedAt ||
+      appointment.actualEndTime ||
+      appointment.clockOutTime ||
+      appointment.lastClockOutTime ||
+      appointment.lastActualEndTime ||
+      appointment.lastCompletedAt ||
+      resolveLatestClockOutValue(appointment.clockByNurse) ||
+      null;
+
+    const completionText = completionRaw ? formatCompactCardDate(completionRaw) : null;
+    if (completionText) {
+      return `Completed: ${completionText}`;
+    }
+
+    const scheduledRaw =
+      appointment.date ||
+      appointment.appointmentDate ||
+      appointment.scheduledDate ||
+      appointment.startDate ||
+      appointment.shiftDate ||
+      null;
+
+    const scheduledText = scheduledRaw ? formatCompactCardDate(scheduledRaw) : null;
+    return scheduledText ? `Date: ${scheduledText}` : 'Date: N/A';
   };
 
   const getShiftScheduleBounds = (shift) => {
@@ -754,28 +968,33 @@ export default function AppointmentsScreen({ navigation, route }) {
         totalSessions: 1
       };
 
-      // Update company info before generating
-      await InvoiceService.updateCompanyInfo();
-      
-      const result = await InvoiceService.createInvoice(appointmentData);
-      
-      if (result.success) {
-        // Close details modal and navigate to invoice display
-        setDetailsModalVisible(false);
-        setTimeout(() => {
-          navigation.navigate('InvoiceDisplay', {
-            invoiceData: result.invoice,
-            clientName: appointmentData.clientName,
-            returnToAppointmentModal: true,
-            appointmentId: appointment.id
-          });
-        }, 300);
-      } else {
-        Alert.alert('Error', result.error || 'Failed to generate invoice');
+      // No tap-to-generate invoices: only view an existing invoice if it exists.
+      const allInvoices = await InvoiceService.getAllInvoices();
+      const matching = (allInvoices || []).filter((inv) => {
+        const invAppointmentId = String(inv?.appointmentId || inv?.relatedAppointmentId || inv?.appointmentID || '');
+        return invAppointmentId && invAppointmentId === String(resolvedAppointmentId);
+      });
+
+      const invoice = matching.length > 0 ? matching[0] : null;
+      if (!invoice) {
+        Alert.alert('No Invoice Yet', 'No invoice has been generated for this appointment yet.');
+        return;
       }
+
+      setDetailsModalVisible(false);
+      setTimeout(() => {
+        navigation.navigate('InvoiceDisplay', {
+          invoiceData: invoice,
+          clientName: appointmentData.clientName,
+          returnToAppointmentModal: true,
+          appointmentId: selectedAppointment?.id || appointment?.id,
+          appointmentTab: activeTab,
+          appointmentModalType: 'details',
+        });
+      }, 300);
     } catch (error) {
-      console.error('Error generating invoice:', error);
-      Alert.alert('Error', 'Failed to generate invoice');
+      console.error('Error viewing invoice:', error);
+      Alert.alert('Error', 'Failed to load invoice');
     }
   };
 
@@ -830,8 +1049,53 @@ export default function AppointmentsScreen({ navigation, route }) {
             selectedAppointment?.completedAt ||
             selectedAppointment?.actualEndTime ||
             null;
+
           if (!raw) return null;
+
+          // Already normalized
           if (typeof raw === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(raw.trim())) return raw.trim();
+
+          // Firestore Timestamp
+          if (typeof raw === 'object') {
+            if (typeof raw.toDate === 'function') {
+              const d = raw.toDate();
+              if (d instanceof Date && Number.isFinite(d.getTime())) {
+                const yyyy = String(d.getFullYear());
+                const mm = String(d.getMonth() + 1).padStart(2, '0');
+                const dd = String(d.getDate()).padStart(2, '0');
+                return `${yyyy}-${mm}-${dd}`;
+              }
+            }
+            if (typeof raw.seconds === 'number') {
+              const d = new Date(raw.seconds * 1000);
+              if (Number.isFinite(d.getTime())) {
+                const yyyy = String(d.getFullYear());
+                const mm = String(d.getMonth() + 1).padStart(2, '0');
+                const dd = String(d.getDate()).padStart(2, '0');
+                return `${yyyy}-${mm}-${dd}`;
+              }
+            }
+          }
+
+          // Handle "Feb 10, 2026" format defensively
+          if (typeof raw === 'string') {
+            const match = raw.trim().match(/^([A-Za-z]{3})\s+(\d{1,2}),?\s+(\d{4})$/);
+            if (match) {
+              const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+              const monthIndex = monthNames.findIndex((m) => m === match[1]);
+              if (monthIndex !== -1) {
+                const d = new Date(parseInt(match[3], 10), monthIndex, parseInt(match[2], 10));
+                if (Number.isFinite(d.getTime())) {
+                  const yyyy = String(d.getFullYear());
+                  const mm = String(d.getMonth() + 1).padStart(2, '0');
+                  const dd = String(d.getDate()).padStart(2, '0');
+                  return `${yyyy}-${mm}-${dd}`;
+                }
+              }
+            }
+          }
+
+          // ISO string / date string
           const d = new Date(raw);
           if (!Number.isFinite(d.getTime())) return null;
           const yyyy = String(d.getFullYear());
@@ -850,7 +1114,19 @@ export default function AppointmentsScreen({ navigation, route }) {
           selectedAppointment?._id ||
           null;
 
+        const finalInvoiceIdFromShift =
+          selectedAppointment?.finalInvoiceId ||
+          selectedAppointment?.finalInvoice ||
+          null;
+
         const visitKey = shiftId && dateKey ? `${shiftId}:${dateKey}` : null;
+
+        // If the appointment has its own id (and we have a dateKey), also try the common
+        // visitKey format built from that id. This helps when different screens store
+        // the primary identifier under different keys.
+        const appointmentIdVisitKey = (selectedAppointment?.id && dateKey)
+          ? `${String(selectedAppointment.id)}:${dateKey}`
+          : null;
 
         const appointmentIdentifiers = [
           selectedAppointment?.id,
@@ -861,6 +1137,7 @@ export default function AppointmentsScreen({ navigation, route }) {
           selectedAppointment?.requestId,
           selectedAppointment?.assignmentId,
           selectedAppointment?.documentId,
+          selectedAppointment?.seriesId,
           selectedAppointment?.relatedAppointmentId,
           selectedAppointment?.relatedShiftId,
           selectedAppointment?.originalShiftId,
@@ -869,10 +1146,49 @@ export default function AppointmentsScreen({ navigation, route }) {
           selectedAppointment?.shift?._id,
           selectedAppointment?.shiftDetails?.id,
           selectedAppointment?.shiftDetails?._id,
+          finalInvoiceIdFromShift,
           visitKey,
+          appointmentIdVisitKey,
         ]
           .filter((v) => v !== undefined && v !== null && String(v).trim() !== '')
           .map((v) => String(v));
+
+        const collectPrimitiveValuesDeep = (input, maxDepth = 3) => {
+          const out = new Set();
+          const visited = new Set();
+
+          const visit = (node, depth) => {
+            if (node === null || node === undefined) return;
+            if (depth > maxDepth) return;
+
+            const t = typeof node;
+            if (t === 'string') {
+              const trimmed = node.trim();
+              if (trimmed) out.add(trimmed);
+              return;
+            }
+            if (t === 'number') {
+              if (Number.isFinite(node)) out.add(String(node));
+              return;
+            }
+            if (t !== 'object') return;
+
+            if (visited.has(node)) return;
+            visited.add(node);
+
+            if (Array.isArray(node)) {
+              node.forEach((item) => visit(item, depth + 1));
+              return;
+            }
+
+            Object.values(node).forEach((val) => visit(val, depth + 1));
+          };
+
+          visit(input, 0);
+          return out;
+        };
+
+        const selectedAppointmentValueSet = collectPrimitiveValuesDeep(selectedAppointment, 3);
 
         const normalizeDateValue = (value) => {
           if (!value) return null;
@@ -907,8 +1223,38 @@ export default function AppointmentsScreen({ navigation, route }) {
         // This mirrors the logic in AdminClientsScreen handleShowClientDetails
         const allInvoices = await InvoiceService.getAllInvoices();
 
-        const matchingInvoices = allInvoices.filter((inv) => {
+        const appointmentClientEmails = [
+          selectedAppointment?.patientEmail,
+          selectedAppointment?.clientEmail,
+          user?.email,
+        ]
+          .filter((v) => v !== undefined && v !== null && String(v).trim() !== '')
+          .map((v) => String(v).trim().toLowerCase());
+
+        const normalizeToDayKey = (value) => {
+          const ms = normalizeDateValue(value);
+          if (ms === null) return null;
+          const d = new Date(ms);
+          if (!Number.isFinite(d.getTime())) return null;
+          const yyyy = String(d.getFullYear());
+          const mm = String(d.getMonth() + 1).padStart(2, '0');
+          const dd = String(d.getDate()).padStart(2, '0');
+          return `${yyyy}-${mm}-${dd}`;
+        };
+
+        const appointmentDayKey =
+          dateKey ||
+          normalizeToDayKey(selectedAppointment?.date) ||
+          normalizeToDayKey(selectedAppointment?.startDate) ||
+          normalizeToDayKey(selectedAppointment?.appointmentDate) ||
+          null;
+
+        const normalizeText = (value) => String(value || '').toLowerCase().replace(/\s+/g, ' ').trim();
+
+        let matchingInvoices = allInvoices.filter((inv) => {
           const invoiceIds = [
+            inv?.invoiceId,
+            inv?.invoiceNumber,
             inv?.relatedAppointmentId,
             inv?.appointmentId,
             inv?.shiftRequestId,
@@ -933,10 +1279,78 @@ export default function AppointmentsScreen({ navigation, route }) {
             .map((v) => String(v));
 
           if (invoiceIds.length === 0) return false;
-          return invoiceIds.some((id) => appointmentIdentifiers.includes(id));
+
+          // First: check if finalInvoiceId matches this invoice's invoiceId
+          if (finalInvoiceIdFromShift && (inv?.invoiceId === finalInvoiceIdFromShift || inv?.invoiceNumber === finalInvoiceIdFromShift)) {
+            return true;
+          }
+
+          // Second: explicit identifiers (preferred)
+          if (invoiceIds.some((id) => appointmentIdentifiers.includes(id))) return true;
+
+          // Fallback: sometimes the appointment record stores the shift/invoice linkage
+          // under a different field (e.g., seriesId). We treat any nested primitive value
+          // on the appointment as a candidate only for matching invoice IDs.
+          if (invoiceIds.some((id) => selectedAppointmentValueSet.has(id))) return true;
+
+          // Last resort (read-only): match by client email + service day + service name.
+          if (!appointmentDayKey) return false;
+
+          const invoiceDayKey =
+            normalizeToDayKey(inv?.serviceDate) ||
+            normalizeToDayKey(inv?.date) ||
+            normalizeToDayKey(inv?.issueDate) ||
+            normalizeToDayKey(inv?.createdAt) ||
+            null;
+
+          if (!invoiceDayKey || invoiceDayKey !== appointmentDayKey) return false;
+
+          const invEmail = String(inv?.clientEmail || '').trim().toLowerCase();
+          if (invEmail && appointmentClientEmails.length > 0 && !appointmentClientEmails.includes(invEmail)) return false;
+
+          const invService = String(inv?.service || '').trim().toLowerCase();
+          const aptService = String(selectedAppointment?.service || selectedAppointment?.serviceType || selectedAppointment?.appointmentType || '').trim().toLowerCase();
+          if (invService && aptService && invService !== aptService) return false;
+
+          return true;
         });
 
-        // Debug logging removed
+        // If no ID-based match exists, try a deterministic fallback using:
+        // - same service day
+        // - same client email (if invoice email present)
+        // - service name similarity (loose contains match)
+        if (matchingInvoices.length === 0 && appointmentDayKey) {
+          const aptEmailSet = new Set(appointmentClientEmails);
+          const aptServiceNorm = normalizeText(
+            selectedAppointment?.service || selectedAppointment?.serviceType || selectedAppointment?.appointmentType
+          );
+
+          const fallbackCandidates = allInvoices.filter((inv) => {
+            const invoiceDayKey =
+              normalizeToDayKey(inv?.serviceDate) ||
+              normalizeToDayKey(inv?.date) ||
+              normalizeToDayKey(inv?.issueDate) ||
+              normalizeToDayKey(inv?.createdAt) ||
+              null;
+
+            if (!invoiceDayKey || invoiceDayKey !== appointmentDayKey) return false;
+
+            const invEmail = normalizeText(inv?.clientEmail);
+            if (invEmail && aptEmailSet.size > 0 && !aptEmailSet.has(invEmail)) return false;
+
+            const invServiceNorm = normalizeText(inv?.service);
+            if (invServiceNorm && aptServiceNorm) {
+              const serviceMatches = invServiceNorm.includes(aptServiceNorm) || aptServiceNorm.includes(invServiceNorm);
+              if (!serviceMatches) return false;
+            }
+
+            return true;
+          });
+
+          if (fallbackCandidates.length > 0) {
+            matchingInvoices = fallbackCandidates;
+          }
+        }
 
         const canCreateInvoiceFromClient = ['admin', 'superAdmin', 'nurse'].includes(String(user?.role || '').trim());
 
@@ -1000,54 +1414,7 @@ export default function AppointmentsScreen({ navigation, route }) {
             });
           })();
 
-          // Debug logging removed
-
-          if (canCreateInvoiceFromClient && canAttempt && isSplitSchedule && allClockedOut) {
-            lastAutoInvoiceAttemptRef.current = { key: visitKey, at: now };
-
-            const appointmentData = {
-              id: visitKey,
-              relatedAppointmentId: visitKey,
-              shiftRequestId: shiftId,
-              clientId: user?.id || 'patient-current',
-              clientName: selectedAppointment.patientName || user?.name || 'Valued Client',
-              clientEmail: selectedAppointment.patientEmail || user?.email || 'client@example.com',
-              clientPhone: selectedAppointment.patientPhone || user?.phone || selectedAppointment.phone || 'N/A',
-              clientAddress: selectedAppointment.address || user?.address || 'Address on file',
-              serviceName: selectedAppointment.service,
-              serviceType: selectedAppointment.service,
-              appointmentDate: dateKey || selectedAppointment.date,
-              appointmentTime: formatTimeTo12Hour(selectedAppointment.time || selectedAppointment.scheduledTime) || '10:00 AM',
-              status: 'completed',
-              notes:
-                selectedAppointment.completionNotes ||
-                selectedAppointment.nurseNotes ||
-                selectedAppointment.notes ||
-                'Professional nursing services provided',
-              duration: selectedAppointment.duration || '1 hour',
-              hoursWorked: selectedAppointment.hoursWorked || 1,
-              nurseId: selectedAppointment.nurseId || 'NURSE001',
-              nurseName: resolveNurseName(selectedAppointment) || 'Care Professional',
-              paymentMethod: 'Credit Card',
-              isRecurring: false,
-              totalSessions: 1,
-            };
-
-            try {
-              await InvoiceService.updateCompanyInfo();
-              const result = await InvoiceService.createInvoice(appointmentData);
-
-              // Debug logging removed
-
-              if (result?.success && result?.invoice) {
-                setAppointmentInvoices([result.invoice]);
-                setSelectedInvoicePreview(null);
-                return;
-              }
-            } catch (e) {
-              // Intentionally silent to avoid console noise
-            }
-          }
+          // No automatic invoice generation from the client view.
         }
 
         // Pick the latest invoice deterministically (handles Firestore Timestamp values and sequencing)
@@ -1069,6 +1436,32 @@ export default function AppointmentsScreen({ navigation, route }) {
         });
 
         const primaryInvoice = sortedInvoices.length > 0 ? sortedInvoices[0] : null;
+
+        // Targeted debug for specific shift
+        if (__DEV__ && shiftId === 'IFUO3HmNuZ5sO74KFQGb') {
+          console.log('[Invoice Match Debug][IFUO3HmNuZ5sO74KFQGb]', {
+            shiftId,
+            dateKey,
+            finalInvoiceIdFromShift,
+            appointmentIdentifiers: appointmentIdentifiers.slice(0, 5),
+            totalInvoices: allInvoices.length,
+            matchingInvoicesCount: matchingInvoices.length,
+            matchingInvoiceIds: matchingInvoices.map(i => i?.invoiceId || i?.invoiceNumber).slice(0, 3),
+            primaryInvoiceId: primaryInvoice?.invoiceId || primaryInvoice?.invoiceNumber || null,
+            selectedAppointmentKeys: Object.keys(selectedAppointment || {}).slice(0, 10),
+          });
+
+          if (matchingInvoices.length === 0 && allInvoices.length > 0) {
+            const sample = allInvoices.slice(0, 3).map(inv => ({
+              invoiceId: inv?.invoiceId || inv?.invoiceNumber,
+              shiftRequestId: inv?.shiftRequestId,
+              relatedAppointmentId: inv?.relatedAppointmentId,
+              appointmentId: inv?.appointmentId,
+            }));
+            console.log('[Invoice Match Debug][IFUO3HmNuZ5sO74KFQGb][Sample Invoices]', sample);
+          }
+        }
+
         setAppointmentInvoices(primaryInvoice ? [primaryInvoice] : []);
         setSelectedInvoicePreview(null); // No preview in modal
       } catch (error) {
@@ -1094,6 +1487,35 @@ export default function AppointmentsScreen({ navigation, route }) {
   // AppointmentContext history can include shift-request items as appointments.
   // We merge in shiftRequests separately, so filter those out here to avoid duplicates.
   const pastAppointments = (getAppointmentHistory() || []).filter((apt) => !apt?.isShiftRequest);
+
+  const hasAnyAcceptedNurseForShift = React.useCallback((shift) => {
+    if (!shift || typeof shift !== 'object') return false;
+
+    const isAccepted = (raw) => {
+      const s = String(raw || '').trim().toLowerCase();
+      return s === 'accepted' || s.includes('accept');
+    };
+
+    const responses = shift?.nurseResponses;
+    if (responses && typeof responses === 'object') {
+      try {
+        for (const entry of Object.values(responses)) {
+          if (!entry) continue;
+          const status = typeof entry === 'object' ? entry.status : entry;
+          if (isAccepted(status)) return true;
+        }
+      } catch (e) {
+        // ignore
+      }
+    }
+
+    const coverage = Array.isArray(shift?.coverageRequests) ? shift.coverageRequests : [];
+    if (coverage.some((cr) => isAccepted(cr?.status))) {
+      return true;
+    }
+
+    return false;
+  }, []);
   
   // Get pending appointments that need patient action
   const pendingAppointments = React.useMemo(() => {
@@ -1117,8 +1539,6 @@ export default function AppointmentsScreen({ navigation, route }) {
     const now = new Date();
     now.setHours(0, 0, 0, 0); // Set to start of today for comparison
     
-    // Debug logging removed
-    
     const hasClockedOutForAnyNurse = (shift) => {
       const clockByNurse = shift?.clockByNurse;
       if (!clockByNurse || typeof clockByNurse !== 'object') return false;
@@ -1138,40 +1558,148 @@ export default function AppointmentsScreen({ navigation, route }) {
       });
     };
 
-    const filtered = shiftRequests.filter(shift => {
-      // Exclude completed/clocked-out shifts from Upcoming - they belong in Past
-      if (shift.status === 'completed' || hasClockedOutForAnyNurse(shift)) {
-        return false;
+    const hasAnyActiveClockIn = (shift) => {
+      const clockByNurse = shift?.clockByNurse;
+      if (!clockByNurse || typeof clockByNurse !== 'object') return false;
+      const entries = Object.values(clockByNurse);
+      if (!Array.isArray(entries) || entries.length === 0) return false;
+
+      return entries.some((entry) => {
+        if (!entry || typeof entry !== 'object') return false;
+        const inTime = entry.lastClockInTime || entry.clockInTime || entry.startedAt || entry.actualStartTime;
+        const outTime = entry.lastClockOutTime || entry.clockOutTime || entry.completedAt || entry.actualEndTime;
+        if (!inTime) return false;
+        if (!outTime) return true;
+        const inMs = Date.parse(inTime);
+        const outMs = Date.parse(outTime);
+        if (!Number.isFinite(inMs)) return false;
+        if (!Number.isFinite(outMs)) return true;
+        return inMs > outMs;
+      });
+    };
+
+    const resolveLatestClockOutMs = (shift) => {
+      const clockByNurse = shift?.clockByNurse;
+      if (!clockByNurse || typeof clockByNurse !== 'object') return null;
+      const entries = Object.values(clockByNurse);
+      if (!Array.isArray(entries) || entries.length === 0) return null;
+
+      let latestMs = -Infinity;
+      for (const entry of entries) {
+        if (!entry || typeof entry !== 'object') continue;
+        const outTime = entry.lastClockOutTime || entry.clockOutTime || entry.completedAt || entry.actualEndTime;
+        if (!outTime) continue;
+        const ms = Date.parse(outTime);
+        if (Number.isFinite(ms) && ms > latestMs) latestMs = ms;
       }
+      return Number.isFinite(latestMs) ? latestMs : null;
+    };
+
+    const shouldTreatShiftAsCompleted = (shift, schedule) => {
+      const normalizedStatus = String(shift?.status || '').trim().toLowerCase();
+      if (normalizedStatus === 'completed') return true;
+
+      const { endDate, isRecurringShift, startDate } = schedule || {};
+      if (!isRecurringShift) return hasClockedOutForAnyNurse(shift);
+
+      const hasFinalizedRecurring = Boolean(
+        shift?.finalCompletedAt ||
+          shift?.finalInvoiceSentAt ||
+          shift?.finalInvoiceGeneratedAt ||
+          shift?.finalInvoiceId
+      );
+      if (hasFinalizedRecurring) return hasClockedOutForAnyNurse(shift);
+
+      // Recurring schedules should only be treated as completed when the series is finished.
+      // For single-day recurring schedules, a clock-out can be treated as completed.
+      if (startDate && endDate) {
+        try {
+          if (
+            startDate.getFullYear() === endDate.getFullYear() &&
+            startDate.getMonth() === endDate.getMonth() &&
+            startDate.getDate() === endDate.getDate()
+          ) {
+            return hasClockedOutForAnyNurse(shift);
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      if (!endDate) return false;
+
+      const startOfLastDay = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate(), 0, 0, 0, 0);
+      const endOfLastDay = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate(), 23, 59, 59, 999);
+
+      const hasClockOut = hasClockedOutForAnyNurse(shift);
+      const latestOutMs = resolveLatestClockOutMs(shift);
+      const clockedOutOnLastDay =
+        Number.isFinite(latestOutMs) &&
+        latestOutMs >= startOfLastDay.getTime() &&
+        latestOutMs <= endOfLastDay.getTime();
+
+      // If the whole period has ended, any clock-out history means it's completed.
+      if (new Date() > endOfLastDay) return hasClockOut;
+
+      // On the last day, consider it completed once the final clock-out happens (and nobody is still clocked-in).
+      if (new Date() >= startOfLastDay && hasClockOut && clockedOutOnLastDay && !hasAnyActiveClockIn(shift)) return true;
+
+      return false;
+    };
+
+    const filtered = shiftRequests.filter(shift => {
+      const normalizedStatus = String(shift?.status || '').trim().toLowerCase();
+
+      // Active/clocked-in shifts should remain visible regardless of historical clock-out values.
+      const isActiveByStatus =
+        normalizedStatus === 'active' ||
+        normalizedStatus === 'clocked-in' ||
+        normalizedStatus === 'clockedin' ||
+        normalizedStatus === 'in-progress' ||
+        normalizedStatus === 'in progress';
+      const isActiveClockedIn = isActiveByStatus || hasAnyActiveClockIn(shift);
       
       // Keep patient-created requests under Pending.
-      // Only treat 'pending' as viewable in Upcoming when it is an admin-created recurring schedule.
+      // Only treat 'pending' as viewable in Upcoming once at least one nurse has accepted.
+      // This avoids split-schedule recurring services showing in both Pending and Upcoming.
+      const pendingAdminRecurringAccepted =
+        normalizedStatus === 'pending' &&
+        shift.adminRecurring === true &&
+        hasAnyAcceptedNurseForShift(shift);
+
       const isApproved =
-        shift.status === 'approved' ||
-        shift.status === 'confirmed' ||
-        shift.status === 'in-progress' ||
-        shift.status === 'clocked-in' ||
-        shift.status === 'active' ||
+        normalizedStatus === 'approved' ||
+        normalizedStatus === 'confirmed' ||
+        normalizedStatus === 'in-progress' ||
+        normalizedStatus === 'in progress' ||
+        normalizedStatus === 'clocked-in' ||
+        normalizedStatus === 'clockedin' ||
+        normalizedStatus === 'active' ||
         Boolean(shift.recurringApproved) ||
         Boolean(shift.approvedAt) ||
-        (shift.status === 'pending' && shift.adminRecurring === true);
-      
-      // Debug logging removed
+        pendingAdminRecurringAccepted;
       
       // Enhanced client matching logic
       const matchesClient = matchesCurrentPatient(shift);
       
       const { startDate, endDate, isRecurringShift } = getShiftScheduleBounds(shift);
 
+      // Exclude completed shifts from Upcoming - they belong in Past.
+      // BUT: never exclude a shift that is currently active/clocked-in.
+      if (!isActiveClockedIn && shouldTreatShiftAsCompleted(shift, { startDate, endDate, isRecurringShift })) {
+        return false;
+      }
+
       let dateValid = false;
       try {
-        if (startDate) {
+        if (isActiveClockedIn) {
+          dateValid = true; // Keep active shifts visible even if date is in the past
+        } else if (startDate) {
           const startClone = new Date(startDate.getTime());
           startClone.setHours(0, 0, 0, 0);
           if (startClone >= now) {
             dateValid = true;
           }
-          // Debug logging removed
         }
 
         if (!dateValid && isRecurringShift) {
@@ -1181,24 +1709,40 @@ export default function AppointmentsScreen({ navigation, route }) {
             const endClone = new Date(endDate.getTime());
             endClone.setHours(0, 0, 0, 0);
             dateValid = endClone >= now;
-            // Debug logging removed
           }
         }
       } catch (e) {
-        // Debug logging removed
         dateValid = false;
+      }
+
+      // Debug logging for Feb 11 shift
+      if (shift.date === '2026-02-11' || (startDate && startDate.toISOString().includes('2026-02-11'))) {
+        console.log('[PatientUpcoming][Feb11Shift]', {
+          shiftId: shift.id || shift._id,
+          service: shift.service,
+          status: shift.status,
+          date: shift.date,
+          startDate: startDate?.toISOString(),
+          isApproved,
+          matchesClient,
+          dateValid,
+          isActiveClockedIn,
+          willShow: isApproved && matchesClient && dateValid,
+          clockByNurse: shift.clockByNurse ? Object.keys(shift.clockByNurse) : null,
+        });
       }
       
       return isApproved && matchesClient && dateValid;
     });
     
-    // Debug logging removed
-    
     return filtered;
-  }, [shiftRequests, matchesCurrentPatient, user?.role]);
+  }, [shiftRequests, matchesCurrentPatient, user?.role, hasAnyAcceptedNurseForShift]);
 
   // Get completed shifts assigned to this patient for past appointments
   const completedShifts = React.useMemo(() => {
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+
     // Helper to check if any nurse has clocked out
     const hasClockedOut = (shift) => {
       if (!shift?.clockByNurse || typeof shift.clockByNurse !== 'object') return false;
@@ -1223,18 +1767,107 @@ export default function AppointmentsScreen({ navigation, route }) {
       });
     };
     
+    const hasAnyActiveClockIn = (shift) => {
+      const clockByNurse = shift?.clockByNurse;
+      if (!clockByNurse || typeof clockByNurse !== 'object') return false;
+      const entries = Object.values(clockByNurse);
+      if (!Array.isArray(entries) || entries.length === 0) return false;
+
+      return entries.some((entry) => {
+        if (!entry || typeof entry !== 'object') return false;
+        const inTime = entry.lastClockInTime || entry.clockInTime || entry.startedAt || entry.actualStartTime;
+        const outTime = entry.lastClockOutTime || entry.clockOutTime || entry.completedAt || entry.actualEndTime;
+        if (!inTime) return false;
+        if (!outTime) return true;
+        const inMs = Date.parse(inTime);
+        const outMs = Date.parse(outTime);
+        if (!Number.isFinite(inMs)) return false;
+        if (!Number.isFinite(outMs)) return true;
+        return inMs > outMs;
+      });
+    };
+
+    const resolveLatestClockOutMs = (shift) => {
+      const clockByNurse = shift?.clockByNurse;
+      if (!clockByNurse || typeof clockByNurse !== 'object') return null;
+      const entries = Object.values(clockByNurse);
+      if (!Array.isArray(entries) || entries.length === 0) return null;
+
+      let latestMs = -Infinity;
+      for (const entry of entries) {
+        if (!entry || typeof entry !== 'object') continue;
+        const outTime = entry.lastClockOutTime || entry.clockOutTime || entry.completedAt || entry.actualEndTime;
+        if (!outTime) continue;
+        const ms = Date.parse(outTime);
+        if (Number.isFinite(ms) && ms > latestMs) latestMs = ms;
+      }
+      return Number.isFinite(latestMs) ? latestMs : null;
+    };
+
+    const shouldTreatShiftAsCompleted = (shift, schedule) => {
+      const normalizedStatus = String(shift?.status || '').trim().toLowerCase();
+      if (normalizedStatus === 'completed') return true;
+
+      const { endDate, isRecurringShift, startDate } = schedule || {};
+      if (!isRecurringShift) return hasClockedOut(shift);
+
+      const hasFinalizedRecurring = Boolean(
+        shift?.finalCompletedAt ||
+          shift?.finalInvoiceSentAt ||
+          shift?.finalInvoiceGeneratedAt ||
+          shift?.finalInvoiceId
+      );
+      if (hasFinalizedRecurring) return hasClockedOut(shift);
+
+      // Single-day recurring schedules can be treated as completed after a valid clock-out.
+      if (startDate && endDate) {
+        try {
+          if (
+            startDate.getFullYear() === endDate.getFullYear() &&
+            startDate.getMonth() === endDate.getMonth() &&
+            startDate.getDate() === endDate.getDate()
+          ) {
+            return hasClockedOut(shift);
+          }
+        } catch (e) {
+          // ignore
+        }
+      }
+
+      if (!endDate) return false;
+
+      const startOfLastDay = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate(), 0, 0, 0, 0);
+      const endOfLastDay = new Date(endDate.getFullYear(), endDate.getMonth(), endDate.getDate(), 23, 59, 59, 999);
+
+      const hasClockOut = hasClockedOut(shift);
+      const latestOutMs = resolveLatestClockOutMs(shift);
+      const clockedOutOnLastDay =
+        Number.isFinite(latestOutMs) &&
+        latestOutMs >= startOfLastDay.getTime() &&
+        latestOutMs <= endOfLastDay.getTime();
+
+      // If the whole period has ended, any clock-out history means it's completed.
+      if (new Date() > endOfLastDay) return hasClockOut;
+
+      // On the last day, consider it completed once the final clock-out happens (and nobody is still clocked-in).
+      if (new Date() >= startOfLastDay && hasClockOut && clockedOutOnLastDay && !hasAnyActiveClockIn(shift)) return true;
+
+      return false;
+    };
+
     const filtered = shiftRequests.filter(shift => {
-      // Some flows keep status as 'approved' even after clock-out; treat clock-out as completion.
-      const isCompleted = shift.status === 'completed' || hasClockedOut(shift);
-      
+      const { endDate, isRecurringShift, startDate } = getShiftScheduleBounds(shift);
+
+      const isCompleted = shouldTreatShiftAsCompleted(shift, { startDate, endDate, isRecurringShift });
+
       // Match client
       const matchesClient = matchesCurrentPatient(shift);
-      
+
       return isCompleted && matchesClient;
     });
     
     return filtered;
-  }, [shiftRequests, matchesCurrentPatient, user?.role]);
+  }, [shiftRequests, matchesCurrentPatient, user?.role, getShiftScheduleBounds]);
   
   // Filter out appointments that have corresponding active shifts to avoid duplicates
   const filteredUpcomingAppointments = upcomingAppointments.filter(appointment => {
@@ -1296,15 +1929,33 @@ export default function AppointmentsScreen({ navigation, route }) {
   // Get pending shift requests (including recurring shifts) for the patient
   const pendingShiftRequests = React.useMemo(() => {
     return shiftRequests.filter(shift => {
-      const isPending = shift.status === 'pending';
+      // Admin-created recurring schedules are not patient-confirmation items.
+      // Hide them from Pending until a nurse accepts (they'll then show in Upcoming).
+      if (shift?.adminRecurring === true) {
+        return false;
+      }
+
+      const isPending = shift.status === 'pending' && !hasAnyAcceptedNurseForShift(shift);
       const matchesClient = matchesCurrentPatient(shift);
       
       return isPending && matchesClient;
     });
-  }, [shiftRequests, matchesCurrentPatient]);
+  }, [shiftRequests, matchesCurrentPatient, hasAnyAcceptedNurseForShift]);
 
   // Combine filtered appointments with approved shifts for patient
   const allUpcomingAppointments = [...filteredUpcomingAppointments, ...approvedShifts];
+
+  // Debug: Log upcoming shifts count
+  React.useEffect(() => {
+    if (activeTab === 'upcoming') {
+      console.log('[PatientUpcoming][Counts]', {
+        filteredAppointments: filteredUpcomingAppointments.length,
+        approvedShifts: approvedShifts.length,
+        total: allUpcomingAppointments.length,
+        shiftServices: approvedShifts.map(s => ({ service: s.service, date: s.date, status: s.status })),
+      });
+    }
+  }, [activeTab, approvedShifts.length, filteredUpcomingAppointments.length]);
   
   // Deduplicate past appointments by service + date to avoid showing same shift twice
   const allPastAppointmentsCombined = [...pastAppointments, ...completedShifts];
@@ -1327,6 +1978,65 @@ export default function AppointmentsScreen({ navigation, route }) {
     : activeTab === 'pending' 
     ? allPendingItems 
     : allPastAppointments;
+
+  const displayedAppointmentsSorted = React.useMemo(() => {
+    if (activeTab !== 'past') {
+      return displayedAppointments;
+    }
+
+    const items = Array.isArray(displayedAppointments) ? [...displayedAppointments] : [];
+
+    const resolveClockOutMsFromMap = (clockByNurse) => {
+      if (!clockByNurse || typeof clockByNurse !== 'object') return null;
+      try {
+        const entries = Object.values(clockByNurse);
+        let best = null;
+        for (const entry of entries) {
+          if (!entry || typeof entry !== 'object') continue;
+          const outRaw =
+            entry.lastClockOutTime ||
+            entry.actualEndTime ||
+            entry.clockOutTime ||
+            entry.completedAt ||
+            null;
+          if (!outRaw) continue;
+          const ms = Date.parse(outRaw);
+          if (!Number.isFinite(ms)) continue;
+          if (best === null || ms > best) best = ms;
+        }
+        return best;
+      } catch (e) {
+        return null;
+      }
+    };
+
+    const getCompletionMs = (item) => {
+      if (!item) return 0;
+
+      const direct =
+        item.completedAt ||
+        item.actualEndTime ||
+        item.clockOutTime ||
+        item.lastClockOutTime ||
+        item.lastActualEndTime ||
+        item.lastCompletedAt ||
+        null;
+      const directMs = direct ? Date.parse(direct) : NaN;
+      if (Number.isFinite(directMs)) return directMs;
+
+      const clockMs = resolveClockOutMsFromMap(item.clockByNurse);
+      if (typeof clockMs === 'number') return clockMs;
+
+      const fallback = item.date || item.scheduledDate || item.startDate || null;
+      const fallbackMs = fallback ? Date.parse(fallback) : NaN;
+      if (Number.isFinite(fallbackMs)) return fallbackMs;
+      const d = fallback ? new Date(fallback) : null;
+      return d && Number.isFinite(d.getTime()) ? d.getTime() : 0;
+    };
+
+    items.sort((a, b) => getCompletionMs(b) - getCompletionMs(a));
+    return items;
+  }, [activeTab, displayedAppointments]);
 
   // Helper to check if appointment is recurring
   const isRecurringAppointment = (appointment) => {
@@ -1409,7 +2119,9 @@ export default function AppointmentsScreen({ navigation, route }) {
                   invoiceData: invoice,
                   clientName: user?.name,
                   returnToAppointmentModal: true,
-                  appointmentId: selectedAppointment?.id
+                  appointmentId: selectedAppointment?.id,
+                  appointmentTab: activeTab,
+                  appointmentModalType: 'details',
                 });
               }, 300);
             }}
@@ -1625,6 +2337,23 @@ export default function AppointmentsScreen({ navigation, route }) {
   };
 
   const canEditAppointment = (appointment) => {
+    if (!appointment || typeof appointment !== 'object') return false;
+
+    // Patients should only edit their own ad-hoc appointment requests.
+    // Shift-like / admin-recurring / split-schedule items are staffing workflows and must be read-only here.
+    const isShiftLike = Boolean(
+      appointment?.isShift ||
+      appointment?.isShiftRequest ||
+      appointment?.shiftRequestId ||
+      appointment?.adminRecurring === true ||
+      Boolean(appointment?.recurringApproved) ||
+      Boolean(appointment?.approvedAt) ||
+      Boolean(appointment?.clockByNurse) ||
+      (appointment?.nurseSchedule && typeof appointment.nurseSchedule === 'object' && Object.keys(appointment.nurseSchedule).length > 0) ||
+      String(appointment?.assignmentType || '').toLowerCase() === 'split-schedule'
+    );
+    if (isShiftLike) return false;
+
     const timestamp = appointment.createdAt || appointment.requestedAt;
     if (!timestamp) return false;
 
@@ -1924,7 +2653,7 @@ export default function AppointmentsScreen({ navigation, route }) {
       </View>
 
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-        {displayedAppointments.length === 0 ? (
+        {displayedAppointmentsSorted.length === 0 ? (
           <View style={styles.emptyState}>
             <MaterialCommunityIcons name="calendar-blank" size={80} color={COLORS.border} />
             <Text style={styles.emptyTitle}>
@@ -1957,22 +2686,38 @@ export default function AppointmentsScreen({ navigation, route }) {
           </View>
         ) : (
           <View style={styles.appointmentsList}>
-            {displayedAppointments.map((appointment, index) => {
-              // Check if this is a shift or appointment - shifts have startTime/endTime and shift-related status
+            {displayedAppointmentsSorted.map((appointment, index) => {
+              // Enhanced shift detection: Check for shift-request indicators
+              const hasShiftRequestMarkers = Boolean(
+                appointment?.isShiftRequest ||
+                appointment?.shiftRequestId ||
+                appointment?.adminRecurring === true ||
+                Boolean(appointment?.recurringApproved) ||
+                Boolean(appointment?.approvedAt) ||
+                (Array.isArray(appointment?.coverageRequests) && appointment.coverageRequests.length > 0) ||
+                Boolean(appointment?.clockByNurse)
+              );
+
+              const hasShiftTimes = Boolean(
+                appointment?.startTime && appointment?.endTime &&
+                (
+                  appointment.status === 'approved' ||
+                  appointment.status === 'active' ||
+                  appointment.status === 'clocked-in' ||
+                  appointment.status === 'in-progress' ||
+                  appointment.status === 'pending' ||
+                  appointment.status === 'completed' ||
+                  appointment.nurseId ||
+                  appointment.nurseName
+                )
+              );
+
               const isShift = Boolean(
                 appointment?.isShift ||
-                (appointment?.startTime && appointment?.endTime &&
-                  (
-                    appointment.status === 'approved' ||
-                    appointment.status === 'active' ||
-                    appointment.status === 'clocked-in' ||
-                    appointment.status === 'in-progress' ||
-                    appointment.status === 'pending' ||
-                    appointment.status === 'completed' ||
-                    appointment.nurseId ||
-                    appointment.nurseName
-                  ))
+                hasShiftRequestMarkers ||
+                hasShiftTimes
               );
+
               const isConfirmed = appointment.status === 'confirmed' || appointment.status === 'approved' || appointment.status === 'assigned' || appointment.status === 'scheduled';
               const isRecurringInstance = appointment.isRecurringInstance || false;
               const recurringInfo = isRecurringInstance ? {
@@ -1989,6 +2734,20 @@ export default function AppointmentsScreen({ navigation, route }) {
               const isClockedIn = appointment.status === 'active' || appointment.status === 'clocked-in' || appointment.status === 'in-progress';
               const cardStyle = isClockedIn ? [styles.appointmentCard, styles.clockedInCard] : styles.appointmentCard;
 
+              // Debug logging for Feb 11
+              if (appointment.date === '2026-02-11') {
+                console.log('[PatientCard][Feb11]', {
+                  service: appointment.service,
+                  status: appointment.status,
+                  isShift,
+                  hasShiftRequestMarkers,
+                  hasShiftTimes,
+                  willOpenRecurringModal: isShift,
+                  hasCoverageRequests: Array.isArray(appointment?.coverageRequests) && appointment.coverageRequests.length > 0,
+                  hasClockByNurse: Boolean(appointment?.clockByNurse),
+                });
+              }
+
               return (
               <View key={uniqueKey} style={cardStyle}>
                 {/* Compact card for all appointments - matching admin style */}
@@ -2003,6 +2762,11 @@ export default function AppointmentsScreen({ navigation, route }) {
                       {appointment.service}
                       {isRecurringInstance && ` (${recurringInfo.instanceNumber}/${recurringInfo.totalInstances})`}
                     </Text>
+                    {activeTab === 'past' && (
+                      <Text style={styles.compactDate}>
+                        {getPastCardDateLabel(appointment)}
+                      </Text>
+                    )}
                   </View>
                   
                   {activeTab === 'pending' && canEditAppointment(appointment) && (
@@ -2028,6 +2792,18 @@ export default function AppointmentsScreen({ navigation, route }) {
                     onPress={() => {
                       setSelectedAppointment(appointment);
                       const isRecurring = appointment.isRecurring || appointment.isRecurringInstance || appointment.recurringScheduleId || appointment.recurringSchedule || appointment.recurringFrequency || appointment.seriesId || isShift;
+                      
+                      // Debug: Log modal selection for Feb 11
+                      if (appointment.date === '2026-02-11') {
+                        console.log('[PatientView][Feb11]', {
+                          service: appointment.service,
+                          willOpenRecurringModal: isRecurring || isShift,
+                          isShift,
+                          isRecurring,
+                          modalType: (isRecurring || isShift) ? 'RecurringShiftDetails' : 'RegularDetails',
+                        });
+                      }
+                      
                       if (isRecurring || isShift) {
                         setRecurringShiftDetailsModalVisible(true);
                       } else {
@@ -2225,8 +3001,47 @@ export default function AppointmentsScreen({ navigation, route }) {
                             );
                           }
 
-                          const startDateRaw = apt.startDate || apt.date;
-                          const endDateRaw = apt.endDate || (apt.isRecurring ? null : (apt.startDate || apt.date));
+                          const pickFirstDate = (candidates) => {
+                            for (const value of candidates) {
+                              if (value === undefined || value === null) continue;
+                              if (String(value).trim() === '') continue;
+                              return value;
+                            }
+                            return null;
+                          };
+
+                          const startDateRaw = pickFirstDate([
+                            apt.scheduledDate,
+                            apt.date,
+                            apt.shiftDate,
+                            apt.startDate,
+                            apt.start_date,
+                            apt.start,
+                            apt.serviceDate,
+                            apt.appointmentDate,
+                            apt.requestedDate,
+                            apt.preferredDate,
+                            apt.shiftDetails?.startDate,
+                            apt.shiftDetails?.date,
+                            apt.shift?.startDate,
+                            apt.shift?.date,
+                            apt.recurringStartDate,
+                            apt.recurringPeriodStart,
+                            apt.requestedAt,
+                            apt.createdAt,
+                          ]);
+
+                          const endDateRaw = pickFirstDate([
+                            apt.endDate,
+                            apt.end,
+                            apt.serviceEndDate,
+                            apt.appointmentEndDate,
+                            apt.requestedEndDate,
+                            apt.shiftDetails?.endDate,
+                            apt.shift?.endDate,
+                            apt.recurringEndDate,
+                            apt.recurringPeriodEnd,
+                          ]);
                           const startTimeRaw = apt.startTime || apt.time || apt.scheduledTime;
                           const endTimeRaw = apt.endTime;
 
@@ -2300,10 +3115,10 @@ export default function AppointmentsScreen({ navigation, route }) {
                                   <View style={styles.recurringTimeContent}>
                                     <Text style={styles.recurringTimeLabel}>End Date</Text>
                                     <Text style={styles.recurringTimeValue}>
-                                      {isTrulyRecurring
-                                        ? (formatDateMaybe(endDateRaw) || 'Ongoing')
-                                        : (formatDateMaybe(endDateRaw) || 'N/A')}
-                                    </Text>
+                                        {isTrulyRecurring
+                                          ? (formatDateMaybe(endDateRaw) || 'Ongoing')
+                                          : (formatDateMaybe(endDateRaw || startDateRaw) || 'N/A')}
+                                      </Text>
                                   </View>
                                 </View>
                                 <View style={styles.recurringTimeDivider} />
@@ -2426,26 +3241,83 @@ export default function AppointmentsScreen({ navigation, route }) {
 
                           const deduped = [];
                           const seen = new Set();
-                          merged.forEach((entry) => {
-                            const id = normalizeId(entry?.nurseId || entry?.uid || entry?.id || entry?._id || entry);
-                            const code = normalizeCode(entry?.staffCode || entry?.nurseCode || entry?.code);
-                            const key = id ? `id:${id}` : code ? `code:${code}` : null;
-                            if (key) {
-                              if (seen.has(key)) return;
-                              seen.add(key);
+
+                          const looksLikeStaffCode = (value) => {
+                            if (!value) return false;
+                            const s = String(value).trim();
+                            if (!s) return false;
+                            return /^[A-Za-z]{2,}\d{1,}$/.test(s);
+                          };
+
+                          const identityKeys = (entry) => {
+                            const keys = [];
+                            const idRaw = entry?.nurseId || entry?.uid || entry?.id || entry?._id || entry;
+                            const codeRaw = entry?.staffCode || entry?.nurseCode || entry?.code || entry?.username;
+
+                            const idNorm = normalizeId(idRaw);
+                            const codeNorm = normalizeCode(codeRaw);
+
+                            if (idNorm) keys.push(`id:${String(idNorm).trim().toLowerCase()}`);
+                            if (codeNorm) keys.push(`code:${String(codeNorm).trim().toUpperCase()}`);
+
+                            if (idRaw && looksLikeStaffCode(idRaw)) {
+                              const asCode = normalizeCode(idRaw);
+                              if (asCode) keys.push(`code:${String(asCode).trim().toUpperCase()}`);
                             }
+
+                            return keys;
+                          };
+
+                          merged.forEach((entry) => {
+                            const keys = identityKeys(entry);
+                            if (keys.length > 0 && keys.some((k) => seen.has(k))) return;
+                            keys.forEach((k) => seen.add(k));
                             deduped.push(entry);
                           });
+
+                          // Avoid showing the currently assigned/working nurse again inside the Backup Nurses list.
+                          const assignedIdForFilter =
+                            assignedNurseForModal?.id ||
+                            assignedNurseForModal?._id ||
+                            assignedNurseForModal?.nurseId ||
+                            d.nurseId ||
+                            d.assignedNurseId ||
+                            d.assignedNurse?.id ||
+                            d.assignedNurse?._id ||
+                            null;
+
+                          const assignedCodeForFilter =
+                            assignedNurseForModal?.staffCode ||
+                            assignedNurseForModal?.nurseCode ||
+                            assignedNurseForModal?.code ||
+                            d.nurseCode ||
+                            d.staffCode ||
+                            d.assignedNurseCode ||
+                            d.assignedNurseStaffCode ||
+                            null;
+
+                          const assignedIdNorm = normalizeId(assignedIdForFilter);
+                          const assignedCodeNorm = normalizeCode(assignedCodeForFilter);
+
+                          const filtered = (assignedIdNorm || assignedCodeNorm)
+                            ? deduped.filter((entry) => {
+                                const id = normalizeId(entry?.nurseId || entry?.uid || entry?.id || entry?._id || entry);
+                                const code = normalizeCode(entry?.staffCode || entry?.nurseCode || entry?.code);
+                                if (assignedIdNorm && id && assignedIdNorm === id) return false;
+                                if (assignedCodeNorm && code && assignedCodeNorm === code) return false;
+                                return true;
+                              })
+                            : deduped;
 
                           return (
                             <View style={styles.detailsSection}>
                               <Text style={styles.sectionTitle}>Backup Nurses</Text>
-                              {deduped.length === 0 ? (
+                              {filtered.length === 0 ? (
                                 <Text style={styles.assignedNurseEmptyText}>
                                   No backup nurses added yet
                                 </Text>
                               ) : (
-                                deduped.map((backup, index) => {
+                                filtered.map((backup, index) => {
                                   const backupId = backup?.nurseId || backup?.id || backup?._id;
                                   const backupCode = backup?.staffCode || backup?.nurseCode || backup?.code;
 
@@ -2497,6 +3369,90 @@ export default function AppointmentsScreen({ navigation, route }) {
 
                                   const key = backupId || backupCode || index;
 
+                                  const isClockedIn = (() => {
+                                    // 1) If the visit itself is clocked-in/active, highlight the nurse that matches
+                                    // the appointment's assigned nurse fields (this mirrors the nurse-side modal logic).
+                                    const status = String(selectedAppointment?.status || '').trim().toLowerCase();
+                                    const statusImpliesClockedIn =
+                                      status === 'clocked-in' || status === 'active' || status === 'in-progress';
+
+                                    if (statusImpliesClockedIn) {
+                                      const assignedKeys = [
+                                        selectedAppointment?.nurseId,
+                                        selectedAppointment?.assignedNurseId,
+                                        selectedAppointment?.assignedNurse?.id,
+                                        selectedAppointment?.assignedNurse?._id,
+                                        selectedAppointment?.nurseCode,
+                                        selectedAppointment?.staffCode,
+                                        selectedAppointment?.nurseStaffCode,
+                                        selectedAppointment?.assignedNurseCode,
+                                        selectedAppointment?.assignedNurseStaffCode,
+                                      ].filter(Boolean);
+
+                                      const backupIdNorm = backupId ? String(backupId).trim() : null;
+                                      const backupCodeNorm = backupCode ? String(backupCode).trim().toUpperCase() : null;
+
+                                      const matchesAssigned = assignedKeys.some((k) => {
+                                        const kId = k ? String(k).trim() : null;
+                                        const kCode = k ? String(k).trim().toUpperCase() : null;
+                                        if (backupIdNorm && kId && backupIdNorm === kId) return true;
+                                        if (backupCodeNorm && kCode && backupCodeNorm === kCode) return true;
+                                        return false;
+                                      });
+
+                                      if (matchesAssigned) return true;
+                                    }
+
+                                    // 2) Otherwise (or additionally), infer from clockByNurse when present.
+                                    const clockMap =
+                                      selectedAppointment?.clockByNurse ||
+                                      selectedAppointment?.shift?.clockByNurse ||
+                                      selectedAppointment?.shiftDetails?.clockByNurse ||
+                                      selectedAppointment?.nurseSchedule?.clockByNurse ||
+                                      null;
+                                    if (!clockMap || typeof clockMap !== 'object') return false;
+
+                                    const wantIds = [backupId, backup?.uid, backup?.nurseId, backup?.id, backup?._id].filter(Boolean).map(String);
+                                    const wantCodes = [backupCode, backup?.staffCode, backup?.nurseCode, backup?.code].filter(Boolean).map((v) => String(v).trim().toUpperCase());
+
+                                    // First try direct key lookup (many payloads store nurse id/code as the map key)
+                                    const keyCandidates = [];
+                                    wantIds.forEach((v) => {
+                                      const s = String(v).trim();
+                                      if (!s) return;
+                                      keyCandidates.push(s, s.toUpperCase(), s.toLowerCase());
+                                    });
+                                    wantCodes.forEach((v) => {
+                                      const s = String(v).trim();
+                                      if (!s) return;
+                                      keyCandidates.push(s, s.toUpperCase(), s.toLowerCase());
+                                    });
+
+                                    let entry = null;
+                                    for (const k of keyCandidates) {
+                                      if (clockMap[k]) {
+                                        entry = clockMap[k];
+                                        break;
+                                      }
+                                    }
+
+                                    const values = Object.values(clockMap).filter((v) => v && typeof v === 'object');
+                                    if (!entry) {
+                                      entry = values.find((v) => {
+                                        const vId = [v.nurseId, v.uid, v.id, v._id].filter(Boolean).map(String);
+                                        const vCode = [v.staffCode, v.nurseCode, v.code].filter(Boolean).map((c) => String(c).trim().toUpperCase());
+                                        const idMatch = wantIds.some((id) => vId.includes(id));
+                                        const codeMatch = wantCodes.some((c) => vCode.includes(c));
+                                        return idMatch || codeMatch;
+                                      });
+                                    }
+
+                                    if (!entry) return false;
+                                    const hasIn = entry.lastClockInTime || entry.actualStartTime || entry.clockInTime || entry.startedAt;
+                                    const hasOut = entry.lastClockOutTime || entry.actualEndTime || entry.clockOutTime || entry.completedAt;
+                                    return Boolean(hasIn) && !Boolean(hasOut);
+                                  })();
+
                                   return (
                                     <View key={String(key)} style={{ marginTop: index === 0 ? 8 : 10 }}>
                                       <NurseInfoCard
@@ -2504,6 +3460,7 @@ export default function AppointmentsScreen({ navigation, route }) {
                                         nursesRoster={nurses}
                                         hideSpecialty
                                         hideCode
+                                        style={isClockedIn ? styles.cardClockedIn : undefined}
                                       />
                                     </View>
                                   );
@@ -2516,41 +3473,86 @@ export default function AppointmentsScreen({ navigation, route }) {
                     )}
 
                     {/* Patient Notes (dropdown card w/ timestamp like other notes accordions) */}
-                    {selectedAppointment && isPendingLikeAppointment && (
+                    {selectedAppointment && (
                       <View style={styles.detailsSection}>
                         <Text style={styles.sectionTitle}>Patient Notes</Text>
                         <NotesAccordionList
                           showTime
                           emptyText="No patient notes provided."
                           items={(() => {
-                            const candidates = [
+                            const pickFirstNonEmptyText = (values) => {
+                              const normalizeVal = (val) => {
+                                if (val === null || val === undefined) return '';
+                                if (Array.isArray(val)) {
+                                  const inner = val
+                                    .map((v) => {
+                                      if (v === null || v === undefined) return '';
+                                      if (typeof v === 'string' || typeof v === 'number') return String(v).trim();
+                                      if (typeof v === 'object') {
+                                        const candidate = v.text ?? v.body ?? v.note ?? v.value ?? '';
+                                        return candidate === null || candidate === undefined ? '' : String(candidate).trim();
+                                      }
+                                      return '';
+                                    })
+                                    .find((t) => Boolean(t));
+                                  return inner || '';
+                                }
+                                if (typeof val === 'object') {
+                                  const candidate = val.text ?? val.body ?? val.note ?? val.value ?? '';
+                                  return candidate === null || candidate === undefined ? '' : String(candidate).trim();
+                                }
+                                return String(val).trim();
+                              };
+
+                              const found = (values || [])
+                                .map(normalizeVal)
+                                .find((text) => Boolean(text));
+
+                              return found || '';
+                            };
+
+                            const patientBookingNotesText = pickFirstNonEmptyText([
                               selectedAppointment.patientNotes,
+                              selectedAppointment.patientNote,
                               selectedAppointment.bookingNotes,
+                              selectedAppointment.bookingNote,
                               selectedAppointment.clientNotes,
                               selectedAppointment.specialInstructions,
-                            ];
-                            const raw = candidates.find((value) => {
-                              if (value === null || value === undefined) return false;
-                              const valueText = String(value).trim();
-                              return Boolean(valueText);
-                            });
-                            const legacyNotes = (selectedAppointment.notes && String(selectedAppointment.notes).trim()) || '';
-                            const hasNurseNotes = Boolean(
-                              selectedAppointment?.nurseNotes && String(selectedAppointment.nurseNotes).trim().length
-                            );
-                            const text = raw === null || raw === undefined
-                              ? (!hasNurseNotes ? legacyNotes : '')
-                              : String(raw).trim();
+                              selectedAppointment.instructions,
+                              selectedAppointment.patient?.notes,
+                              selectedAppointment.patient?.patientNotes,
+                              selectedAppointment.client?.notes,
+                              selectedAppointment.client?.patientNotes,
+                              selectedAppointment.clientSnapshot?.notes,
+                              selectedAppointment.clientSnapshot?.patientNotes,
+                              selectedAppointment.patientSnapshot?.notes,
+                              selectedAppointment.patientSnapshot?.patientNotes,
+                              selectedAppointment.clientData?.notes,
+                              selectedAppointment.clientData?.patientNotes,
+                              selectedAppointment.patientData?.notes,
+                              selectedAppointment.patientData?.patientNotes,
+                            ]);
 
-                            if (!text) {
+                            const legacyNotes = pickFirstNonEmptyText([selectedAppointment.notes]);
+                            const nurseNotesText = pickFirstNonEmptyText([
+                              selectedAppointment.nurseNotes,
+                              selectedAppointment.completionNotes,
+                            ]);
+                            const legacyLooksLikeNurseNotes =
+                              Boolean(legacyNotes && nurseNotesText) && legacyNotes === nurseNotesText;
+
+                            const text = patientBookingNotesText || (legacyLooksLikeNurseNotes ? '' : legacyNotes);
+
+                            if (!String(text || '').trim()) {
                               return [];
                             }
 
+                            // Use booking/request timestamps for note time (not the scheduled appointment start time).
+                            // `updatedAt` can drift due to later admin/nurse updates, so prefer `requestedAt`/`createdAt`.
                             const dateCandidate =
-                              selectedAppointment.updatedAt ||
+                              selectedAppointment.requestedAt ||
                               selectedAppointment.createdAt ||
-                              selectedAppointment.date ||
-                              selectedAppointment.startDate ||
+                              selectedAppointment.updatedAt ||
                               null;
 
                             return [
@@ -2559,7 +3561,7 @@ export default function AppointmentsScreen({ navigation, route }) {
                                 date: dateCandidate,
                                 title: 'Patient Note',
                                 subtitle: 'From booking',
-                                body: text,
+                                body: String(text).trim(),
                               },
                             ];
                           })()}
@@ -2571,7 +3573,7 @@ export default function AppointmentsScreen({ navigation, route }) {
                     {activeTab === 'past' && !['cancelled', 'canceled', 'declined', 'rejected'].includes(String(selectedAppointment?.status || '').toLowerCase()) && (
                       <View style={styles.invoiceSection}>
                         <Text style={styles.invoiceLabel}>Recent Invoices</Text>
-                        
+
                         {isLoadingInvoices ? (
                           <View style={styles.noInvoicesContainer}>
                             <MaterialCommunityIcons name="progress-clock" size={32} color={COLORS.border} />
@@ -2589,7 +3591,9 @@ export default function AppointmentsScreen({ navigation, route }) {
                                   invoiceData: invoice,
                                   clientName: user?.name,
                                   returnToAppointmentModal: true,
-                                  appointmentId: selectedAppointment?.id
+                                  appointmentId: selectedAppointment?.id,
+                                  appointmentTab: activeTab,
+                                  appointmentModalType: 'details',
                                 });
                               }, 300);
                             }}
@@ -2654,14 +3658,10 @@ export default function AppointmentsScreen({ navigation, route }) {
                             </View>
                           </TouchableWeb>
                         ) : (
-                          <TouchableWeb
-                            style={styles.noInvoicesContainer}
-                            onPress={() => handleViewInvoice(selectedAppointment)}
-                            activeOpacity={0.7}
-                          >
+                          <View style={styles.noInvoicesContainer}>
+                            <MaterialCommunityIcons name="receipt-text-outline" size={32} color={COLORS.border} />
                             <Text style={styles.noInvoicesText}>No invoices generated yet</Text>
-                            <Text style={styles.noInvoicesSubText}>Tap to generate and view invoice</Text>
-                          </TouchableWeb>
+                          </View>
                         )}
                       </View>
                     )}
@@ -3257,6 +4257,8 @@ export default function AppointmentsScreen({ navigation, route }) {
               clientName: user?.name,
               returnToAppointmentModal: true,
               appointmentId: selectedAppointment?.id,
+              appointmentTab: activeTab,
+              appointmentModalType: 'recurring',
             });
           }, 300);
         }}
@@ -3396,6 +4398,11 @@ export default function AppointmentsScreen({ navigation, route }) {
     backgroundColor: COLORS.success + '10',
     borderLeftWidth: 4,
     borderLeftColor: COLORS.success,
+  },
+  cardClockedIn: {
+    borderColor: COLORS.success,
+    backgroundColor: COLORS.success + '10',
+    borderWidth: 2,
   },
   appointmentHeader: {
     flexDirection: 'row',

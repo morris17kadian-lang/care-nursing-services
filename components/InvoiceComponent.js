@@ -57,7 +57,7 @@ const InvoiceComponent = ({ invoice, onClose, onPrint, onShare }) => {
   const handleShare = async () => {
     try {
       const shareContent = `
-CARE NURSING SERVICES - INVOICE
+876NURSES - INVOICE
 
 Invoice #: ${invoice.invoiceNumber}
 Date: ${invoice.date}

@@ -17,7 +17,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useAuth } from '../context/AuthContext';
 import InvoiceService from '../services/InvoiceService';
 
-const ORDERS_STORAGE_KEY = '@care_store_orders';
+const ORDERS_STORAGE_KEY = '@876_store_orders';
 
 export default function PatientStoreOrdersScreen({ navigation, route }) {
   const insets = useSafeAreaInsets();
@@ -81,7 +81,7 @@ export default function PatientStoreOrdersScreen({ navigation, route }) {
 
   const loadInvoiceForOrder = async (orderId) => {
     try {
-      const invoicesJson = await AsyncStorage.getItem('@care_invoices');
+      const invoicesJson = await AsyncStorage.getItem('@876_invoices');
       if (invoicesJson) {
         const invoices = JSON.parse(invoicesJson);
         const orderInvoice = invoices.find(inv => inv.relatedOrderId === orderId);

@@ -2,6 +2,7 @@
   "expo": {
     "name": "876Nurses",
     "slug": "876nurses",
+    "scheme": "nurses876",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/Images/Nurses-icon.png",

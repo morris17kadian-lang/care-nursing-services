@@ -71,6 +71,38 @@ export default function NurseProfileScreen({ navigation, route }) {
       try {
         if (!user?.id) return;
 
+        const buildPayslipIdentity = (p) => {
+          if (!p) return '';
+          const explicit = p.id || p.payslipNumber || p.mongoId;
+          if (explicit) return String(explicit);
+          const staff = p.staffId || p.employeeId || p.nurseCode || p.code || p.staffName || 'unknown';
+          const periodStart = p.periodStart || '';
+          const periodEnd = p.periodEnd || '';
+          const amount = p.netPay ?? '';
+          return `${staff}-${periodStart}-${periodEnd}-${amount}`;
+        };
+
+        const dedupePayslips = (list) => {
+          if (!Array.isArray(list)) return [];
+          const map = new Map();
+          list.forEach((p) => {
+            const key = buildPayslipIdentity(p);
+            if (!key) return;
+            // Keep the most recently paid/created item for a given identity.
+            const existing = map.get(key);
+            if (!existing) {
+              map.set(key, p);
+              return;
+            }
+            const existingDate = new Date(existing?.paidDate || existing?.createdAt || 0).getTime();
+            const nextDate = new Date(p?.paidDate || p?.createdAt || 0).getTime();
+            if (nextDate >= existingDate) {
+              map.set(key, p);
+            }
+          });
+          return Array.from(map.values());
+        };
+
         const userKeyCandidates = [
           user.id,
           user.nurseCode,
@@ -99,13 +131,14 @@ export default function NurseProfileScreen({ navigation, route }) {
             });
 
             if (filtered.length > 0) {
-              filtered.sort((a, b) => new Date(b.paidDate || b.createdAt) - new Date(a.paidDate || a.createdAt));
-              setNursePayslips(filtered);
+              const deduped = dedupePayslips(filtered);
+              deduped.sort((a, b) => new Date(b.paidDate || b.createdAt) - new Date(a.paidDate || a.createdAt));
+              setNursePayslips(deduped);
 
               // Cache to local storage for offline access
               const payslipsJson = (await AsyncStorage.getItem('nursePayslips')) || '{}';
               const allPayslips = JSON.parse(payslipsJson);
-              allPayslips[user.id] = filtered;
+              allPayslips[user.id] = deduped;
               await AsyncStorage.setItem('nursePayslips', JSON.stringify(allPayslips));
               return;
             }
@@ -119,7 +152,7 @@ export default function NurseProfileScreen({ navigation, route }) {
         const payslipsJson = await AsyncStorage.getItem('nursePayslips');
         if (payslipsJson) {
           const allPayslips = JSON.parse(payslipsJson);
-          const myPayslips = allPayslips[user.id] || [];
+          const myPayslips = dedupePayslips(allPayslips[user.id] || []);
           // Sort by paid date, most recent first
           myPayslips.sort((a, b) => new Date(b.paidDate) - new Date(a.paidDate));
           setNursePayslips(myPayslips);
@@ -662,20 +695,7 @@ export default function NurseProfileScreen({ navigation, route }) {
           activeOpacity={0.7}
         >
           <View style={styles.sectionHeaderRow}>
-            <MaterialCommunityIcons name="receipt-text" size={24} color={COLORS.primary} />
             <Text style={styles.sectionTitle}>My Payslips</Text>
-            <View style={styles.payslipBadgeContainer}>
-              {nursePayslips.length > 0 && (
-                <View style={styles.payslipBadge}>
-                  <Text style={styles.payslipBadgeText}>{nursePayslips.length}</Text>
-                </View>
-              )}
-              <MaterialCommunityIcons
-                name={payslipsExpanded ? 'chevron-up' : 'chevron-down'}
-                size={24}
-                color={COLORS.textLight}
-              />
-            </View>
           </View>
           
           {nursePayslips.length === 0 ? (
@@ -685,28 +705,31 @@ export default function NurseProfileScreen({ navigation, route }) {
             </View>
           ) : (
             <View style={styles.payslipsPreview}>
-              <Text style={styles.payslipsPreviewText}>
-                Latest: {nursePayslips[0]?.periodStart || 'N/A'} - {nursePayslips[0]?.periodEnd || 'N/A'}
-              </Text>
-              <Text style={styles.payslipsPreviewAmount}>
-                ${parseFloat(nursePayslips[0]?.netPay || 0).toLocaleString()}
-              </Text>
+              <View style={styles.latestPayslipPreviewCard}>
+                <View style={styles.latestPayslipPreviewRow}>
+                  <Text style={[styles.payslipsPreviewText, { flex: 1 }]}>
+                    Latest: {nursePayslips[0]?.periodStart || 'N/A'} - {nursePayslips[0]?.periodEnd || 'N/A'}
+                  </Text>
+                  <MaterialCommunityIcons
+                    name={payslipsExpanded ? 'chevron-up' : 'chevron-down'}
+                    size={22}
+                    color={COLORS.textLight}
+                  />
+                </View>
+              </View>
             </View>
           )}
 
           {payslipsExpanded && nursePayslips.length > 0 && (
             <View style={styles.payslipsInlineList}>
-              {nursePayslips.map((payslip, index) => (
-                <View key={payslip?.id || `${payslip?.paidDate || payslip?.createdAt || 'payslip'}-${index}`} style={styles.payslipCard}>
-                  {/* Company Header */}
-                  <View style={styles.payslipCompanyHeader}>
-                    <View style={styles.payslipCompanyInfo}>
-                      <MaterialCommunityIcons name="receipt-text" size={24} color={COLORS.primary} />
-                      <Text style={styles.payslipCompanyName}>Care Nursing Services</Text>
-                    </View>
-                    <Text style={styles.payslipNumber}>Payslip #{payslip.id || index + 1}</Text>
-                  </View>
-
+              {(() => {
+                const payslip = nursePayslips[0];
+                const index = 0;
+                return (
+                  <View
+                    key={`${payslip?.id || payslip?.mongoId || payslip?.payslipNumber || payslip?.paidDate || payslip?.createdAt || 'payslip'}-${index}`}
+                    style={styles.payslipCard}
+                  >
                   {/* Period Section */}
                   <View style={styles.payslipPeriodSection}>
                     <Text style={styles.payslipSectionLabel}>PAY PERIOD</Text>
@@ -785,8 +808,9 @@ export default function NurseProfileScreen({ navigation, route }) {
                       <Text style={styles.payslipFinalTotalValue}>${parseFloat(payslip.netPay || 0).toLocaleString()}</Text>
                     </View>
                   </View>
-                </View>
-              ))}
+                  </View>
+                );
+              })()}
             </View>
           )}
         </TouchableWeb>
@@ -1348,6 +1372,24 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: COLORS.border,
     marginTop: 12,
+  },
+  latestPayslipPreviewCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    padding: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    shadowColor: COLORS.shadow,
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.06,
+    shadowRadius: 4,
+    elevation: 1,
+  },
+  latestPayslipPreviewRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
   },
   modalOverlay: {
     flex: 1,

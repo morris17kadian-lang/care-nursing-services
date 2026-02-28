@@ -15,9 +15,9 @@ import {
 import { doc, onSnapshot } from 'firebase/firestore';
 import { auth, db } from '../config/firebase';
 import FirebaseService from '../services/FirebaseService';
-import EmailService from '../services/EmailService';
 import PushNotificationService from '../services/PushNotificationService';
 import { clearAllSequenceCache } from '../clear-sequence-cache';
+import { queueWelcomeEmail } from '../services/welcomeEmail';
 
 export const AuthContext = createContext();
 
@@ -394,20 +394,34 @@ export const AuthProvider = ({ children }) => {
       const createResult = await FirebaseService.createUser(firebaseUser.uid, userData);
 
       if (createResult.success) {
-        // Send welcome email
+        // Keep the newly created user signed in.
+        // This prevents a confusing flash to the app (logged-in) followed by a forced logout
+        // back to the SplashScreen.
+        setUser({
+          id: firebaseUser.uid,
+          email: firebaseUser.email,
+          ...userData,
+        });
+
         try {
-          await EmailService.sendWelcomeEmail({ 
-            email, 
-            name: username 
-          });
-        } catch (emailError) {
-          console.warn('Failed to send welcome email:', emailError);
-          // Don't fail signup if email fails
+          await AsyncStorage.setItem('user', JSON.stringify({ id: firebaseUser.uid, email: firebaseUser.email, ...userData }));
+          await AsyncStorage.setItem('authToken', firebaseUser.accessToken);
+        } catch (e) {
+          // Non-fatal if local persistence fails.
         }
 
-        // Sign out the newly created user (require them to sign in)
-        await signOut(auth);
-        return { success: true, requiresSignin: true };
+        // Best-effort: register push token (do not block signup).
+        await registerPushToken(firebaseUser.uid);
+
+        // Queue welcome email with HTML styling via Firestore mail queue.
+        try {
+          await queueWelcomeEmail(firebaseUser);
+        } catch (emailError) {
+          // Non-fatal if email queuing fails.
+          console.warn('Failed to queue welcome email:', emailError);
+        }
+
+        return { success: true };
       } else {
         // Delete the Firebase Auth user if Firestore creation failed
         await firebaseUser.delete();
@@ -453,20 +467,6 @@ export const AuthProvider = ({ children }) => {
     try {
       // Send Firebase password reset email
       await sendPasswordResetEmail(auth, email);
-      
-      // Also send our custom email notification
-      try {
-        // Get user info for personalized email
-        const userInfo = await FirebaseService.getUserByEmail(email);
-        
-        await EmailService.sendPasswordReset({
-          to: email,
-          resetLink: `Reset via Firebase Authentication`, // Firebase handles the actual link
-          userName: userInfo?.fullName || userInfo?.name || userInfo?.username
-        });
-      } catch (emailError) {
-        console.warn('Custom reset email failed, but Firebase email sent:', emailError);
-      }
       
       return { success: true };
     } catch (error) {

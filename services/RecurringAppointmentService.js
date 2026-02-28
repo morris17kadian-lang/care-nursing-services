@@ -9,15 +9,15 @@ import ApiService from './ApiService';
  * - Manages recurring appointment series
  */
 class RecurringAppointmentService {
-  static STORAGE_KEY = '@care_recurring_appointments';
+  static STORAGE_KEY = '@876_recurring_appointments';
   static getAppointmentsStorageKey(patientId) {
-    return `@care_appointments_${patientId || 'guest'}`;
+    return `@876_appointments_${patientId || 'guest'}`;
   }
 
   static async getAllAppointmentStorageKeys() {
     try {
       const keys = await AsyncStorage.getAllKeys();
-      return keys.filter(key => key.startsWith('@care_appointments_'));
+      return keys.filter(key => key.startsWith('@876_appointments_'));
     } catch (error) {
       // console.error('Error listing appointment storage keys:', error);
       return [];

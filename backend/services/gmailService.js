@@ -250,20 +250,13 @@ class GmailService {
       console.warn('Could not load logo image:', error.message);
     }
 
-    const heroImageBuffer = getWelcomeBannerPngBuffer();
-    const heroAttachment = heroImageBuffer
-      ? {
-          filename: 'welcome-banner.png',
-          contentType: 'image/png',
-          content: heroImageBuffer,
-          cid: 'welcome-banner-image'
-        }
-      : null;
+    const logoBlock = logoAttachment
+      ? '<img src="cid:nurses-logo" alt="876 Nurses Home Care Services" style="display:block;width:86px;height:auto;border:none;outline:none;" />'
+      : '<div style="font-size:18px;font-weight:800;color:#14213d;letter-spacing:0.2px;">876 Nurses</div>';
 
     const trimmedName = (name || '').trim();
     const firstName = trimmedName ? trimmedName.split(' ')[0] : 'there';
     const subject = 'Welcome to 876 Nurses!';
-    const heroSource = heroAttachment ? 'cid:welcome-banner-image' : WELCOME_BANNER_DATA_URI;
     const html = `
       <!DOCTYPE html>
       <html>
@@ -274,131 +267,70 @@ class GmailService {
           <style>
             @media only screen and (max-width: 600px) {
               .container { width: 100% !important; border-radius: 0 !important; }
-              .hero { padding: 40px 20px !important; }
-              .content { padding: 30px 20px !important; }
-              .step-table { width: 100% !important; }
-              .step-text { width: 100% !important; padding: 0 0 20px 0 !important; display: block !important; text-align: center !important; }
-              .step-image { width: 100% !important; display: block !important; text-align: center !important; }
+              .pad { padding-left: 22px !important; padding-right: 22px !important; }
+              .h1 { font-size: 30px !important; }
             }
           </style>
         </head>
-        <body style="margin:0;padding:0;background-color:#f8f9fa;font-family:'Helvetica Neue', Helvetica, Arial, sans-serif;color:#243046;">
-          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#f8f9fa;padding:20px 0;">
+        <body style="margin:0;padding:0;background-color:#2f62d7;font-family:Arial, sans-serif;color:#1f2a44;">
+          <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background-color:#2f62d7;padding:40px 0;">
             <tr>
               <td align="center">
                 <!-- Main Card -->
-                <table width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px; background-color:#ffffff; border-radius:24px; overflow:hidden; box-shadow:0 15px 45px rgba(0,0,0,0.07);" class="container">
-                  <!-- Hero Section with confetti artwork -->
+                <table width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px; background-color:#ffffff; border-radius:18px; overflow:hidden; box-shadow:0 14px 40px rgba(0,0,0,0.12);" class="container">
                   <tr>
-                    <td align="center" style="padding:0;background-color:#2196F3;">
-                      <img src="${heroSource}" alt="WELCOME confetti celebration banner" style="display:block;width:100%;max-width:600px;border:none;outline:none;height:auto;" />
+                    <td align="center" style="padding:36px 40px 14px 40px;" class="pad">
+                      ${logoBlock}
                     </td>
                   </tr>
 
-                  <!-- Greeting Block -->
                   <tr>
-                    <td align="center" style="background-color:#2196F3;padding:45px 40px 60px 40px;">
-                      <h1 style="margin:0 0 12px 0; font-size:34px; color:#ffffff; font-weight:800;">Hi ${firstName},</h1>
-                      <h2 style="margin:0 0 18px 0; font-size:26px; color:#f5f7ff; font-weight:700; letter-spacing:0.5px; text-transform:uppercase;">Welcome to 876 Nurses!</h2>
-                      <p style="margin:0; font-size:18px; color:#d9e6ff; font-weight:400; max-width:480px;">
-                        Thank you for joining our care community. We are thrilled to celebrate you with the same energy as this confetti banner!
+                    <td align="center" style="padding:0 40px 22px 40px;" class="pad">
+                      <h1 class="h1" style="margin:0;font-size:34px;line-height:1.15;font-weight:800;color:#14213d;">Welcome to 876 Nurses!</h1>
+                    </td>
+                  </tr>
+
+                  <tr>
+                    <td style="padding:0 40px 10px 40px;" class="pad">
+                      <p style="margin:0 0 14px 0;font-size:16px;line-height:1.65;">Hi ${firstName},</p>
+                      <p style="margin:0 0 14px 0;font-size:16px;line-height:1.65;">
+                        We’re so glad you found us, and we’re confident this is the start of a long-lasting friendship.
+                        Our team is here to support you every step of the way.
+                      </p>
+                      <p style="margin:0 0 18px 0;font-size:16px;line-height:1.65;">
+                        If you’re feeling a little nervous getting started, don’t worry — we’ll be with you throughout your care journey.
                       </p>
                     </td>
                   </tr>
 
-                  <!-- Body Copy -->
                   <tr>
-                    <td style="padding:50px 45px 10px 45px;">
-                      <p style="margin:0 0 20px 0; font-size:17px; line-height:1.7; color:#4e5975;">
-                        Thank you for joining <strong>876 Nurses Home Care Services.</strong> We’re honored to be a part of your care journey and can’t wait for you to experience the dedicated support of our nursing team.
-                      </p>
-                      <div style="background:#f4f6ff; border-radius:20px; padding:28px; margin:30px 0;">
-                        <p style="margin:0; font-size:16px; color:#4e5975; line-height:1.8;">
-                          • Explore personalized care plans and scheduling.<br/>
-                          • Chat securely with our nurses and care coordinators.<br/>
-                          • Track appointments, reminders, invoices, and notifications in one place.
-                        </p>
-                      </div>
+                    <td style="padding:0 40px 26px 40px;" class="pad">
+                      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="background:#e9f0ff;border-radius:14px;">
+                        <tr>
+                          <td style="padding:18px;">
+                            <div style="font-size:16px;font-weight:800;color:#1f2a44;margin:0 0 6px 0;">Quick Tip</div>
+                            <div style="font-size:14px;line-height:1.6;color:#2a3558;">
+                              Turn on notifications so you never miss appointment updates and care reminders.
+                            </div>
+                          </td>
+                        </tr>
+                      </table>
                     </td>
                   </tr>
 
-                  <!-- Login Steps Section -->
                   <tr>
-                    <td style="padding:40px 45px;">
-                      <h3 style="margin:0 0 40px 0; font-size:22px; color:#243046; text-align:center; font-weight:800; letter-spacing:-0.5px;">How to Log In</h3>
-                      
-                      <!-- Step 1 -->
-                      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:40px;" class="step-table">
-                        <tr>
-                          <td width="65%" style="vertical-align:middle; padding-right:20px;" class="step-text">
-                            <h4 style="margin:0 0 8px 0; font-size:19px; color:#0066cc; font-weight:700;">Step 1: Launch the App</h4>
-                            <p style="margin:0; font-size:15px; line-height:1.6; color:#4e5975;">Open the 876 Nurses app on your mobile device or visit our website to get started.</p>
-                          </td>
-                          <td width="35%" align="right" class="step-image">
-                            <div style="background-color:#e3f2fd; width:100px; height:100px; line-height:100px; border-radius:24px; text-align:center; font-size:45px;">📱</div>
-                          </td>
-                        </tr>
-                      </table>
-
-                      <!-- Step 2 -->
-                      <table width="100%" cellpadding="0" cellspacing="0" border="0" style="margin-bottom:40px;" class="step-table">
-                        <tr>
-                          <td width="35%" align="left" class="step-image">
-                            <div style="background-color:#E3F2FD; width:100px; height:100px; line-height:100px; border-radius:24px; text-align:center; font-size:45px;">🔑</div>
-                          </td>
-                          <td width="65%" style="vertical-align:middle; padding-left:20px;" class="step-text">
-                            <h4 style="margin:0 0 8px 0; font-size:19px; color:#0066cc; font-weight:700;">Step 2: Sign In</h4>
-                            <p style="margin:0; font-size:15px; line-height:1.6; color:#4e5975;">Enter your registered email address and the secure password you created during signup.</p>
-                          </td>
-                        </tr>
-                      </table>
-
-                      <!-- Step 3 -->
-                      <table width="100%" cellpadding="0" cellspacing="0" border="0" class="step-table">
-                        <tr>
-                          <td width="65%" style="vertical-align:middle; padding-right:20px;" class="step-text">
-                            <h4 style="margin:0 0 8px 0; font-size:19px; color:#0066cc; font-weight:700;">Step 3: Start Your Journey</h4>
-                            <p style="margin:0; font-size:15px; line-height:1.6; color:#4e5975;">Access your dashboard to book services, chat with nurses, and manage your care plan.</p>
-                          </td>
-                          <td width="35%" align="right" class="step-image">
-                            <div style="background-color:#E3F2FD; width:100px; height:100px; line-height:100px; border-radius:24px; text-align:center; font-size:45px;">🚀</div>
-                          </td>
-                        </tr>
-                      </table>
-
-                      <div style="text-align:center; margin-top:50px;">
-                        <a href="https://www.876nurses.com/login" style="display:inline-block; background:linear-gradient(135deg,#2196F3,#1976D2); color:#ffffff; text-decoration:none; padding:18px 45px; border-radius:14px; font-weight:700; font-size:16px; box-shadow: 0 10px 20px rgba(0,102,204,0.15);">Sign In Now</a>
-                      </div>
-                    </td>
-                  </tr>
-
-                  <!-- App Section -->
-                  <tr>
-                    <td align="center" style="background-color:#E3F2FD; padding:60px 40px;">
-                      <h3 style="margin:0 0 25px 0; font-size:22px; color:#243046; font-weight:800;">Get Our Mobile App</h3>
-                      <table cellpadding="0" cellspacing="0" border="0">
-                        <tr>
-                          <td style="padding:0 10px;">
-                            <a href="#"><img src="https://upload.wikimedia.org/wikipedia/commons/thumb/3/3c/Download_on_the_App_Store_Badge.svg/2560px-Download_on_the_App_Store_Badge.svg.png" alt="App Store" style="height:40px; width:auto;" /></a>
-                          </td>
-                          <td style="padding:0 10px;">
-                            <a href="#"><img src="https://upload.wikimedia.org/wikipedia/commons/thumb/7/78/Google_Play_Store_badge_EN.svg/2560px-Google_Play_Store_badge_EN.svg.png" alt="Google Play" style="height:40px; width:auto;" /></a>
-                          </td>
-                        </tr>
-                      </table>
+                    <td align="center" style="padding:0 40px 40px 40px;" class="pad">
+                      <a href="https://www.876nurses.com/login" style="display:inline-block;background:#2f62d7;color:#ffffff;text-decoration:none;padding:14px 22px;border-radius:12px;font-weight:800;font-size:15px;">Sign in</a>
                     </td>
                   </tr>
                 </table>
 
                 <!-- Footer -->
-                <table width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px; padding:50px 20px; text-align:center;">
+                <table width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px; max-width:600px; padding:18px 20px 0 20px; text-align:center;">
                   <tr>
-                    <td style="font-size:13px; color:#94a2c2; line-height:1.8; font-family: Arial, sans-serif;">
-                      If you have any questions, feel free to message us at <a href="mailto:support@876nurses.com" style="color:#0066cc; text-decoration:none; font-weight:bold;">support@876nurses.com</a>.<br />
-                      All rights reserved &copy; 2026 876 Nurses Home Care Services.<br /><br />
-                      <a href="#" style="color:#0066cc; text-decoration:none;">Update email preferences</a> &nbsp; | &nbsp; <a href="#" style="color:#0066cc; text-decoration:none;">Unsubscribe</a><br />
+                    <td style="font-size:12px; color:#d7e3ff; line-height:1.6; font-family: Arial, sans-serif;">
                       876 Nurses Home Care Services · Kingston, Jamaica<br />
-                      <a href="#" style="color:#0066cc; text-decoration:none;">Terms of use</a> &nbsp; | &nbsp; <a href="#" style="color:#0066cc; text-decoration:none;">Privacy Policy</a>
+                      Need help? Email <a href="mailto:support@876nurses.com" style="color:#ffffff; text-decoration:underline;">support@876nurses.com</a>
                     </td>
                   </tr>
                 </table>
@@ -410,7 +342,7 @@ class GmailService {
     `;
     const text = `Hi ${firstName},\n\nWelcome to 876 Nurses! We're honored to be a part of your care journey.\n\nHow to Log In:\n1. Launch the App: Open the 876 Nurses app or visit our website.\n2. Sign In: Enter your registered email and password.\n3. Start Your Journey: Access your dashboard and manage your care.\n\nDownload our mobile app on the App Store or Google Play.\n\nWith gratitude,\nThe 876 Nurses Team`;
 
-    const attachments = [heroAttachment, logoAttachment].filter(Boolean);
+    const attachments = [logoAttachment].filter(Boolean);
 
     return this.sendEmail({
       from: {

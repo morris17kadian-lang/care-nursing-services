@@ -10,8 +10,6 @@ require('dotenv').config();
 const { google } = require('googleapis');
 const http = require('http');
 const url = require('url');
-const fs = require('fs');
-const path = require('path');
 
 // Configuration
 const PORT = 3000;
@@ -76,13 +74,13 @@ const server = http.createServer(async (req, res) => {
         
         if (tokens.refresh_token) {
           console.log('✅ Copy the Refresh Token above and update your .env file:');
-          console.log(`GMAIL_REFRESH_TOKEN=REDACTED
-          
-          if (userInfo.email !== process.env.GMAIL_ACCOUNT) {
-             console.log('\n⚠️ WARNING: The authenticated email does not match GMAIL_ACCOUNT in .env!');
-             console.log(`Expected: ${process.env.GMAIL_ACCOUNT}`);
-             console.log(`Actual:   ${userInfo.email}`);
-             console.log('Please update GMAIL_ACCOUNT in .env to match, or re-run this script with the correct account.');
+          console.log(`GMAIL_REFRESH_TOKEN=${tokens.refresh_token}`);
+
+          if (process.env.GMAIL_ACCOUNT && userInfo.email !== process.env.GMAIL_ACCOUNT) {
+            console.log('\n⚠️ WARNING: The authenticated email does not match GMAIL_ACCOUNT in .env!');
+            console.log(`Expected: ${process.env.GMAIL_ACCOUNT}`);
+            console.log(`Actual:   ${userInfo.email}`);
+            console.log('Please update GMAIL_ACCOUNT in .env to match, or re-run this script with the correct account.');
           }
 
         } else {
@@ -108,10 +106,5 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, () => {
   console.log(`Listening on port ${PORT}...`);
-  // Try to open browser
-  import('open').then(openModule => {
-    openModule.default(authUrl);
-  }).catch(() => {
-    console.log('Please open the URL above manually.');
-  });
+  console.log('Please open the authorization URL above in your browser.');
 });

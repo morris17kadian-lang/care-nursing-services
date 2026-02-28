@@ -310,7 +310,7 @@ export default function BookScreen({ navigation, route }) {
   ];
 
   const handleAddressChange = (text) => {
-    setFormData({ ...formData, address: text });
+    setFormData((prev) => ({ ...prev, address: text }));
     if (text.length >= 2) {
       const suggestions = getAddressSuggestions(text);
       setAddressSuggestions(suggestions);
@@ -322,7 +322,7 @@ export default function BookScreen({ navigation, route }) {
   };
 
   const selectAddress = (address) => {
-    setFormData({ ...formData, address });
+    setFormData((prev) => ({ ...prev, address }));
     setShowSuggestions(false);
     setAddressSuggestions([]);
   };
@@ -775,7 +775,7 @@ export default function BookScreen({ navigation, route }) {
           day: '2-digit',
           year: 'numeric'
         });
-        setFormData({ ...formData, startDate: formattedDate });
+        setFormData((prev) => ({ ...prev, startDate: formattedDate }));
       }
     } else {
       if (date) {
@@ -794,7 +794,7 @@ export default function BookScreen({ navigation, route }) {
         const ampm = hours >= 12 ? 'PM' : 'AM';
         const displayHours = hours % 12 || 12;
         const formattedTime = `${displayHours}:${minutes.toString().padStart(2, '0')} ${ampm}`;
-        setFormData({ ...formData, startTime: formattedTime });
+        setFormData((prev) => ({ ...prev, startTime: formattedTime }));
       }
     } else {
       if (time) {
@@ -813,7 +813,7 @@ export default function BookScreen({ navigation, route }) {
           day: '2-digit',
           year: 'numeric'
         });
-        setFormData({ ...formData, endDate: formattedDate });
+        setFormData((prev) => ({ ...prev, endDate: formattedDate }));
       }
     } else {
       if (date) {
@@ -832,7 +832,7 @@ export default function BookScreen({ navigation, route }) {
         const ampm = hours >= 12 ? 'PM' : 'AM';
         const displayHours = hours % 12 || 12;
         const formattedTime = `${displayHours}:${minutes.toString().padStart(2, '0')} ${ampm}`;
-        setFormData({ ...formData, endTime: formattedTime });
+        setFormData((prev) => ({ ...prev, endTime: formattedTime }));
       }
     } else {
       if (time) {
@@ -847,7 +847,7 @@ export default function BookScreen({ navigation, route }) {
       day: '2-digit',
       year: 'numeric'
     });
-    setFormData({ ...formData, startDate: formattedDate });
+    setFormData((prev) => ({ ...prev, startDate: formattedDate }));
     setShowStartDatePicker(false);
   };
 
@@ -857,7 +857,7 @@ export default function BookScreen({ navigation, route }) {
     const ampm = hours >= 12 ? 'PM' : 'AM';
     const displayHours = hours % 12 || 12;
     const formattedTime = `${displayHours}:${minutes.toString().padStart(2, '0')} ${ampm}`;
-    setFormData({ ...formData, startTime: formattedTime });
+    setFormData((prev) => ({ ...prev, startTime: formattedTime }));
     setShowStartTimePicker(false);
   };
 
@@ -867,7 +867,7 @@ export default function BookScreen({ navigation, route }) {
       day: '2-digit',
       year: 'numeric'
     });
-    setFormData({ ...formData, endDate: formattedDate });
+    setFormData((prev) => ({ ...prev, endDate: formattedDate }));
     setShowEndDatePicker(false);
   };
 
@@ -877,7 +877,7 @@ export default function BookScreen({ navigation, route }) {
     const ampm = hours >= 12 ? 'PM' : 'AM';
     const displayHours = hours % 12 || 12;
     const formattedTime = `${displayHours}:${minutes.toString().padStart(2, '0')} ${ampm}`;
-    setFormData({ ...formData, endTime: formattedTime });
+    setFormData((prev) => ({ ...prev, endTime: formattedTime }));
     setShowEndTimePicker(false);
   };
 
@@ -939,7 +939,7 @@ export default function BookScreen({ navigation, route }) {
                 placeholder="Enter your full name"
                 placeholderTextColor={COLORS.textMuted}
                 value={formData.name}
-                onChangeText={(text) => setFormData({ ...formData, name: text })}
+                onChangeText={(text) => setFormData((prev) => ({ ...prev, name: text }))}
                 editable={isEditingUserDetails}
               />
               <MaterialCommunityIcons 
@@ -960,7 +960,7 @@ export default function BookScreen({ navigation, route }) {
                 placeholder="your.email@example.com"
                 placeholderTextColor={COLORS.textMuted}
                 value={formData.email}
-                onChangeText={(text) => setFormData({ ...formData, email: text })}
+                onChangeText={(text) => setFormData((prev) => ({ ...prev, email: text }))}
                 editable={isEditingUserDetails}
                 keyboardType="email-address"
                 autoCapitalize="none"
@@ -985,7 +985,7 @@ export default function BookScreen({ navigation, route }) {
                 placeholder="876-XXX-XXXX"
                 placeholderTextColor={COLORS.textMuted}
                 value={formData.phone}
-                onChangeText={(text) => setFormData({ ...formData, phone: text })}
+                onChangeText={(text) => setFormData((prev) => ({ ...prev, phone: text }))}
                 editable={isEditingUserDetails}
                 keyboardType="phone-pad"
               />
@@ -1045,10 +1045,14 @@ export default function BookScreen({ navigation, route }) {
                     key={`${service.id}-${service.title}`}
                     style={styles.serviceChipWrapper}
                     onPress={() => {
-                      const newServices = isSelected
-                        ? formData.services.filter(s => s !== service.title)
-                        : [...formData.services, service.title];
-                      setFormData({ ...formData, services: newServices });
+                      setFormData((prev) => {
+                        const currentServices = Array.isArray(prev?.services) ? prev.services : [];
+                        const currentlySelected = currentServices.includes(service.title);
+                        const newServices = currentlySelected
+                          ? currentServices.filter((s) => s !== service.title)
+                          : [...currentServices, service.title];
+                        return { ...prev, services: newServices };
+                      });
                     }}
                     activeOpacity={0.7}
                   >
@@ -1199,7 +1203,7 @@ export default function BookScreen({ navigation, route }) {
                   placeholder="Any special requirements or concerns..."
                   placeholderTextColor={COLORS.textMuted}
                   value={formData.notes}
-                  onChangeText={(text) => setFormData({ ...formData, notes: text })}
+                  onChangeText={(text) => setFormData((prev) => ({ ...prev, notes: text }))}
                   multiline
                   numberOfLines={2}
                 />
@@ -1218,7 +1222,7 @@ export default function BookScreen({ navigation, route }) {
                 <TouchableWeb
                   style={styles.notesActionButton}
                   onPress={() => {
-                    setFormData({ ...formData, notes: '' });
+                    setFormData((prev) => ({ ...prev, notes: '' }));
                   }}
                   activeOpacity={0.7}
                 >

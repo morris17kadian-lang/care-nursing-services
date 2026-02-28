@@ -233,7 +233,12 @@ const PriceListScreen = ({ navigation }) => {
             <MaterialCommunityIcons name="arrow-left" size={24} color={COLORS.white} />
           </TouchableOpacity>
           <Text style={styles.headerTitle}>Service Price List</Text>
-          <View style={{ width: 24 }} />
+          <TouchableOpacity
+            onPress={addNewService}
+            style={styles.backButton}
+          >
+            <MaterialCommunityIcons name="plus" size={24} color={COLORS.white} />
+          </TouchableOpacity>
         </View>
       </LinearGradient>
 
@@ -400,17 +405,25 @@ const PriceListScreen = ({ navigation }) => {
               )}
               
               <TouchableOpacity
-                style={[styles.modalButton, styles.saveButton, isAddingNew && styles.fullWidthButton]}
+                style={[styles.modalButton, styles.modalPrimaryButton, isAddingNew && styles.fullWidthButton]}
                 onPress={saveEditedService}
+                activeOpacity={0.85}
               >
-                <MaterialCommunityIcons 
-                  name={isAddingNew ? "plus" : "check"} 
-                  size={20} 
-                  color={COLORS.white} 
-                />
-                <Text style={styles.saveButtonText}>
-                  {isAddingNew ? 'Add Service' : 'Save Changes'}
-                </Text>
+                <LinearGradient
+                  colors={GRADIENTS.header}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={styles.modalPrimaryGradient}
+                >
+                  <MaterialCommunityIcons
+                    name={isAddingNew ? 'plus' : 'check'}
+                    size={20}
+                    color={COLORS.white}
+                  />
+                  <Text style={styles.modalPrimaryText}>
+                    {isAddingNew ? 'Add Service' : 'Save Changes'}
+                  </Text>
+                </LinearGradient>
               </TouchableOpacity>
             </View>
           </View>
@@ -607,7 +620,7 @@ const styles = StyleSheet.create({
   price: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: COLORS.primary,
+    color: GRADIENTS.header?.[0] || COLORS.primary,
     marginRight: 6,
   },
   duration: {
@@ -692,8 +705,18 @@ const styles = StyleSheet.create({
   deleteButton: {
     backgroundColor: COLORS.error,
   },
-  saveButton: {
-    backgroundColor: COLORS.primary,
+  modalPrimaryButton: {
+    overflow: 'hidden',
+    paddingVertical: 0,
+  },
+  modalPrimaryGradient: {
+    flex: 1,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    borderRadius: 8,
   },
   fullWidthButton: {
     flex: 2,
@@ -703,9 +726,10 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     marginLeft: 8,
   },
-  saveButtonText: {
-    color: COLORS.white,
+  modalPrimaryText: {
+    fontSize: 14,
     fontWeight: 'bold',
+    color: COLORS.white,
     marginLeft: 8,
   },
 });

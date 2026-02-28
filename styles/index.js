@@ -1,4 +1,4 @@
-// Centralized style exports for CARE mobile app
+// Centralized style exports for 876Nurses mobile app
 // Import these in your screens for consistent styling
 
 export { modalStyles } from './ModalStyles';
