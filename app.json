@@ -20,7 +20,13 @@
       "bundleIdentifier": "com.nurses876.home",
       "buildNumber": "1",
       "infoPlist": {
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "NSCameraUsageDescription": "Allow 876 Nurses to access your camera to take profile photos and share images in chat.",
+        "NSPhotoLibraryUsageDescription": "Allow 876 Nurses to access your photo library to choose and share images.",
+        "NSPhotoLibraryAddUsageDescription": "Allow 876 Nurses to save images to your photo library.",
+        "NSLocationWhenInUseUsageDescription": "Allow 876 Nurses to access your location to support appointment features (e.g., clock in/out location and sharing location in chat).",
+        "NSContactsUsageDescription": "Allow 876 Nurses to access your contacts so you can share a contact through chat.",
+        "NSFaceIDUsageDescription": "Allow 876 Nurses to use Face ID to help you sign in securely."
       }
     },
     "android": {
