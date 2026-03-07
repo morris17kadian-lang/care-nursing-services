@@ -110,15 +110,13 @@ export default function NurseProfileScreen({ navigation, route }) {
           formData?.nurseCode,
         ].filter(Boolean);
 
-        // Try to fetch from backend first
+        // Try to fetch from Firestore first
         try {
-          const response = await ApiService.makeRequest('/payslips', {
-            method: 'GET'
-          });
+          const allPayslips = await ApiService.getPayslips({});
           
-          if (response && response.success && Array.isArray(response.data)) {
-            // Some backends return all payslips; filter to only this nurse.
-            const filtered = response.data.filter((p) => {
+          if (allPayslips && Array.isArray(allPayslips)) {
+            // Filter to only this nurse
+            const filtered = allPayslips.filter((p) => {
               const payKeys = [
                 p?.staffId,
                 p?.nurseId,
@@ -142,10 +140,10 @@ export default function NurseProfileScreen({ navigation, route }) {
               await AsyncStorage.setItem('nursePayslips', JSON.stringify(allPayslips));
               return;
             }
-            // If backend returns nothing for this nurse, fall back to local storage without overwriting.
+            // If Firestore returns nothing for this nurse, fall back to local storage without overwriting.
           }
         } catch (backendError) {
-          // Backend unavailable, falling back to local storage
+          // Firestore unavailable, falling back to local storage
         }
         
         // Fallback to local storage if backend unavailable

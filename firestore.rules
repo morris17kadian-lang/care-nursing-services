@@ -100,10 +100,45 @@ service cloud.firestore {
       allow write: if isAdmin();
 
       // Allow nurses to CREATE invoices they generated from the mobile app.
+      // Also allow any authenticated user to create consultation invoices.
       // Updates/deletes remain admin-only to avoid tampering.
       allow create: if isAuthenticated() &&
         request.resource.data.createdByUid == request.auth.uid &&
-        (isNurse() || isAssignedNurseForShift(request.resource.data.shiftRequestId));
+        (
+          isNurse() ||
+          isAssignedNurseForShift(request.resource.data.shiftRequestId) ||
+          request.resource.data.isConsultation == true
+        );
+      allow update, delete: if isAdmin();
+    }
+
+    // Consultation Requests collection (paid/scheduled consult calls)
+    match /consultationRequests/{requestId} {
+      // Allow admins to view all. Allow authenticated users to view their own (by patientAuthUid).
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.patientAuthUid == request.auth.uid);
+
+      // Allow any authenticated user to create a request.
+      // patientAuthUid, if present, must either be null or match the caller's UID.
+      allow create: if isAuthenticated() && (
+        !request.resource.data.keys().hasAny(['patientAuthUid']) ||
+        request.resource.data.patientAuthUid == null ||
+        request.resource.data.patientAuthUid == request.auth.uid
+      );
+
+      // Only admins can modify or delete requests.
+      allow update, delete: if isAdmin();
+    }
+
+    // Medical Report Requests collection (paid report requests)
+    match /medicalReportRequests/{requestId} {
+      // Allow admins to view all. Allow authenticated users to view their own (by patientAuthUid).
+      allow read: if isAdmin() || (isAuthenticated() && resource.data.patientAuthUid == request.auth.uid);
+
+      // Allow any authenticated user to create a request.
+      // The patientAuthUid must match the authenticated user.
+      allow create: if isAuthenticated() && request.resource.data.patientAuthUid == request.auth.uid;
+
+      // Only admins can modify or delete requests.
       allow update, delete: if isAdmin();
     }
 
@@ -128,15 +163,21 @@ service cloud.firestore {
     
     // Notifications collection
     match /notifications/{notificationId} {
-      // Allow users to read/list notifications where userId matches their auth UID
-      // For queries, we trust that the client is filtering by userId == request.auth.uid
+      // Allow authenticated users to read their own notifications
       allow read, list: if isAuthenticated();
-      allow create, delete: if isAdmin();
+      // Allow any authenticated user to create notifications (e.g. booking/consultation events notifying admin)
+      allow create: if isAuthenticated();
+      allow delete: if isAdmin();
       // Allow admins full update access
       allow update: if isAdmin();
-      // Allow users to mark their own notifications as read (only updating read/isRead/readAt fields)
+      // Allow users to mark their own notifications as read
+      // Check userId field exists and matches, or allow if notification was just created for this user
       allow update: if isAuthenticated() && 
-        resource.data.userId == request.auth.uid &&
+        (
+          (resource.data.keys().hasAny(['userId']) && resource.data.userId == request.auth.uid) ||
+          (resource.data.keys().hasAny(['recipientId']) && resource.data.recipientId == request.auth.uid) ||
+          (resource.data.keys().hasAny(['uid']) && resource.data.uid == request.auth.uid)
+        ) &&
         request.resource.data.diff(resource.data).affectedKeys().hasOnly(['read', 'isRead', 'readAt']);
     }
     
@@ -176,6 +217,12 @@ service cloud.firestore {
     match /paymentSettings/{settingId} {
       allow read: if isAuthenticated();
       allow write: if isAdmin();
+    }
+
+    // Privacy settings collection
+    match /privacySettings/{userId} {
+      allow read: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
+      allow write: if isAuthenticated() && (request.auth.uid == userId || isAdmin());
     }
 
     // Mail queue (processed by Firebase Cloud Functions)

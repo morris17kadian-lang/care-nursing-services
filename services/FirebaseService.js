@@ -26,6 +26,8 @@ const USERS_COLLECTION = 'users';
 const APPOINTMENTS_COLLECTION = 'appointments';
 const INVOICES_COLLECTION = 'invoices';
 const SHIFT_REQUESTS_COLLECTION = 'shiftRequests';
+const CONSULTATION_REQUESTS_COLLECTION = 'consultationRequests';
+const MEDICAL_REPORT_REQUESTS_COLLECTION = 'medicalReportRequests';
 const PAYSLIPS_COLLECTION = 'payslips';
 const ENABLE_USERNAME_LOOKUP_DEBUG = false;
 const logUsernameLookupWarning = (...args) => {
@@ -134,7 +136,14 @@ class FirebaseService {
 
       // Derive a better content type from the uri extension (fallback to jpeg)
       const extension = (uri.split('.').pop() || '').toLowerCase();
-      const contentType = extension === 'png' ? 'image/png' : extension === 'webp' ? 'image/webp' : 'image/jpeg';
+      const contentType =
+        extension === 'pdf'
+          ? 'application/pdf'
+          : extension === 'png'
+            ? 'image/png'
+            : extension === 'webp'
+              ? 'image/webp'
+              : 'image/jpeg';
 
       // Convert URI to Blob with a resilient fetch/XHR fallback (Expo/React Native friendly)
       const buildBlob = async () => {
@@ -322,6 +331,10 @@ class FirebaseService {
 
       return { success: false, error: 'User not found in any collection' };
     } catch (error) {
+      // Silently handle offline errors to prevent app crashes
+      if (error?.code === 'unavailable' || error?.message?.includes('offline')) {
+        return { success: false, error: 'offline', offline: true };
+      }
       console.error('Error getting user:', error);
       return { success: false, error: error.message };
     }
@@ -408,6 +421,10 @@ class FirebaseService {
 
       return { success: true };
     } catch (error) {
+      // Silently handle offline errors to prevent app crashes
+      if (error?.code === 'unavailable' || error?.message?.includes('offline')) {
+        return { success: false, error: 'offline', offline: true };
+      }
       console.error('Error updating user:', error);
       return { success: false, error: error.message };
     }
@@ -770,6 +787,201 @@ class FirebaseService {
   }
 
   // ==================== SHIFT REQUEST OPERATIONS ====================
+
+  // ==================== CONSULTATION REQUEST OPERATIONS ====================
+
+  /**
+   * Create a paid/scheduled consultation request (patient-facing).
+   */
+  static async createConsultationRequest(requestData) {
+    try {
+      const colRef = collection(db, CONSULTATION_REQUESTS_COLLECTION);
+      const docRef = doc(colRef);
+
+      const sanitized = FirebaseService.sanitizeFirestoreData(requestData || {}) || {};
+      const payload = {
+        id: docRef.id,
+        status: sanitized.status || 'pending',
+        ...sanitized,
+        createdAt: Timestamp.now(),
+        updatedAt: Timestamp.now(),
+      };
+
+      await setDoc(docRef, payload);
+      return { success: true, id: docRef.id, request: payload };
+    } catch (error) {
+      console.error('Error creating consultation request:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Get upcoming consultation requests for a patient.
+   * @param {string} patientAuthUid - The Firebase Auth UID of the patient
+   */
+  static async getUpcomingConsultationRequestsForPatient(patientAuthUid, limitCount = 1) {
+    try {
+      if (!patientAuthUid) {
+        return { success: true, requests: [] };
+      }
+
+      const colRef = collection(db, CONSULTATION_REQUESTS_COLLECTION);
+      // Query by patientAuthUid to match Firestore security rules
+      const q = query(colRef, where('patientAuthUid', '==', patientAuthUid), limit(50));
+
+      const snapshot = await getDocs(q);
+      const now = Date.now();
+
+      const toMillis = (v) => {
+        try {
+          if (!v) return null;
+          if (typeof v?.toDate === 'function') return v.toDate().getTime();
+          if (v?.seconds != null) return v.seconds * 1000;
+          const d = new Date(v);
+          const ms = d.getTime();
+          return Number.isNaN(ms) ? null : ms;
+        } catch (_) {
+          return null;
+        }
+      };
+
+      const all = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      const upcoming = all
+        .map((r) => ({ r, ms: toMillis(r.scheduledFor || r.scheduledForIso) }))
+        .filter((x) => typeof x.ms === 'number' && x.ms >= now)
+        .sort((a, b) => a.ms - b.ms)
+        .slice(0, Math.max(1, Number(limitCount) || 1))
+        .map((x) => x.r);
+
+      return { success: true, requests: upcoming };
+    } catch (error) {
+      console.error('Error fetching upcoming consultation requests:', error);
+      return { success: false, error: error.message, requests: [] };
+    }
+  }
+
+  /**
+   * Admin: Get newest pending consultation requests.
+   */
+  static async getPendingConsultationRequests(limitCount = 50) {
+    try {
+      const colRef = collection(db, CONSULTATION_REQUESTS_COLLECTION);
+      // Avoid composite index requirements by ordering only, then filtering client-side.
+      const q = query(colRef, orderBy('createdAt', 'desc'), limit(Math.max(1, Number(limitCount) || 50)));
+
+      const snapshot = await getDocs(q);
+      const all = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      // Filter out completed and called requests
+      const requests = all.filter((r) => {
+        const status = String(r?.status || '').toLowerCase();
+        return status === 'pending' || status === 'call_requested';
+      });
+      return { success: true, requests };
+    } catch (error) {
+      // Silently handle permission errors - user may need to log out/in after admin role update
+      // Only log in dev mode for debugging
+      if (__DEV__ && !error.message?.includes('permissions')) {
+        console.error('Error fetching pending consultation requests:', error);
+      }
+      return { success: false, error: error.message, requests: [] };
+    }
+  }
+
+  /**
+   * Admin: Update a consultation request.
+   */
+  static async updateConsultationRequest(requestId, updates) {
+    try {
+      if (!requestId) {
+        return { success: false, error: 'Request ID is required' };
+      }
+
+      const requestRef = doc(db, CONSULTATION_REQUESTS_COLLECTION, requestId);
+      const sanitized = FirebaseService.sanitizeFirestoreData(updates || {}) || {};
+      await updateDoc(requestRef, {
+        ...sanitized,
+        updatedAt: Timestamp.now(),
+      });
+      return { success: true };
+    } catch (error) {
+      console.error('Error updating consultation request:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  // ==================== MEDICAL REPORT REQUEST OPERATIONS ====================
+
+  /**
+   * Create a paid medical report request (patient-facing).
+   */
+  static async createMedicalReportRequest(requestData) {
+    try {
+      const colRef = collection(db, MEDICAL_REPORT_REQUESTS_COLLECTION);
+      const docRef = doc(colRef);
+
+      const sanitized = FirebaseService.sanitizeFirestoreData(requestData || {}) || {};
+      const payload = {
+        id: docRef.id,
+        status: sanitized.status || 'pending',
+        ...sanitized,
+        createdAt: Timestamp.now(),
+        updatedAt: Timestamp.now(),
+      };
+
+      console.log('💾 FirebaseService: Creating medical report request:', { docId: docRef.id, payload });
+      await setDoc(docRef, payload);
+      console.log('✅ FirebaseService: Medical report request created successfully');
+      return { success: true, id: docRef.id, request: payload };
+    } catch (error) {
+      console.error('❌ FirebaseService: Error creating medical report request:', error);
+      return { success: false, error: error.message };
+    }
+  }
+
+  /**
+   * Admin: Get newest pending medical report requests.
+   */
+  static async getPendingMedicalReportRequests(limitCount = 50) {
+    try {
+      console.log('🔍 FirebaseService: getPendingMedicalReportRequests called');
+      const colRef = collection(db, MEDICAL_REPORT_REQUESTS_COLLECTION);
+      // Avoid composite index requirements by ordering only, then filtering client-side.
+      const q = query(colRef, orderBy('createdAt', 'desc'), limit(Math.max(1, Number(limitCount) || 50)));
+
+      const snapshot = await getDocs(q);
+      const all = snapshot.docs.map((d) => ({ id: d.id, ...d.data() }));
+      console.log('📋 FirebaseService: All medical report requests:', { total: all.length, all });
+      const requests = all.filter((r) => String(r?.status || '').toLowerCase() === 'pending');
+      console.log('📋 FirebaseService: Filtered pending requests:', { count: requests.length, requests });
+      return { success: true, requests };
+    } catch (error) {
+      console.error('❌ FirebaseService: Error fetching pending medical report requests:', {
+        message: error.message,
+        code: error.code,
+        isPermissionError: error.message?.toLowerCase().includes('permission')
+      });
+      return { success: false, error: error.message, requests: [] };
+    }
+  }
+
+  static async updateMedicalReportRequest(requestId, updates) {
+    try {
+      if (!requestId) {
+        return { success: false, error: 'Request ID is required' };
+      }
+
+      const requestRef = doc(db, MEDICAL_REPORT_REQUESTS_COLLECTION, requestId);
+      const sanitized = FirebaseService.sanitizeFirestoreData(updates || {}) || {};
+      await updateDoc(requestRef, {
+        ...sanitized,
+        updatedAt: Timestamp.now(),
+      });
+      return { success: true };
+    } catch (error) {
+      console.error('Error updating medical report request:', error);
+      return { success: false, error: error.message };
+    }
+  }
 
   static async createShiftRequest(shiftId, shiftData) {
     try {

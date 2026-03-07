@@ -140,6 +140,25 @@ export const resolveNurseDetails = (candidate, nursesRoster) => {
     rosterMatch?.nurseSpecialty
   );
 
+  const resolvedQualifications = pickFirstMeaningful(
+    candidateObj?.qualifications,
+    candidateObj?.qualification,
+    candidateObj?.certifications,
+    candidateObj?.certification,
+    candidateObj?.licenses,
+    candidateObj?.license,
+    candidateObj?.training,
+    candidateObj?.education,
+    rosterMatch?.qualifications,
+    rosterMatch?.qualification,
+    rosterMatch?.certifications,
+    rosterMatch?.certification,
+    rosterMatch?.licenses,
+    rosterMatch?.license,
+    rosterMatch?.training,
+    rosterMatch?.education
+  );
+
   return {
     ...merged,
     fullName: resolvedName || merged.fullName || merged.name || 'Unknown Nurse',
@@ -147,6 +166,15 @@ export const resolveNurseDetails = (candidate, nursesRoster) => {
     nurseCode: resolvedCode || merged.nurseCode || merged.code || merged.username,
     specialization: resolvedSpecialty || merged.specialization || merged.specialty,
     specialty: resolvedSpecialty || merged.specialty || merged.specialization,
+    qualifications:
+      resolvedQualifications ||
+      merged.qualifications ||
+      merged.certifications ||
+      merged.qualification ||
+      merged.certification ||
+      merged.licenses ||
+      merged.license ||
+      null,
     email: resolvedEmail || null,
     phone: resolvedPhone || null,
   };

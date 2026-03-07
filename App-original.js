@@ -26,11 +26,10 @@ import { ProfileEditProvider } from './context/ProfileEditContext';
 import ErrorBoundary from './components/ErrorBoundary';
 import AppOnboarding, { checkOnboardingStatusForUser } from './components/AppOnboarding';
 import SplashScreen from './screens/SplashScreen';
-import LoginScreen from './screens/LoginScreen';
-import SignupScreen from './screens/SignupScreen';
 import HomeScreen from './screens/HomeScreen';
 import AppointmentsScreen from './screens/AppointmentsScreen';
 import BookScreen from './screens/BookScreen';
+import StoreComingSoonScreen from './screens/StoreComingSoonScreen';
 import SettingsScreen from './screens/SettingsScreen';
 import NotificationsScreen from './screens/NotificationsScreen';
 import ProfileScreen from './screens/ProfileScreen';
@@ -56,10 +55,11 @@ import AdminPaymentsScreen from './screens/AdminPaymentsScreen';
 import AdminRecurringShiftScreen from './screens/AdminRecurringShiftScreen';
 import InvoiceManagementScreen from './screens/InvoiceManagementScreen';
 import InvoiceScreen from './screens/InvoiceScreen';
+import PaymentWebviewScreen from './screens/PaymentWebviewScreen';
 import TransactionDetailsScreen from './screens/TransactionDetailsScreen';
 import PriceListScreen from './screens/PriceListScreen';
 import InventoryManagementScreen from './screens/InventoryManagementScreen';
-import CareStoreScreen from './screens/CareStoreScreen';
+import CareStoreScreen from './screens/876NursesStoreScreen';
 import PatientStoreOrdersScreen from './screens/PatientStoreOrdersScreen';
 import AdminStoreOrdersScreen from './screens/AdminStoreOrdersScreen';
 import RecentTransactionsScreen from './screens/RecentTransactionsScreen';
@@ -84,14 +84,46 @@ const linking = {
   },
 };
 
-function AuthStack() {
-  return (
-    <Stack.Navigator screenOptions={{ headerShown: false }}>
-      <Stack.Screen name="Login" component={LoginScreen} />
-      <Stack.Screen name="Signup" component={SignupScreen} />
-    </Stack.Navigator>
-  );
-}
+const BookTabBarButton = ({
+  onPress,
+  onLongPress,
+  accessibilityLabel,
+  testID,
+}) => (
+  <TouchableOpacity
+    style={{
+      top: -20,
+      justifyContent: 'center',
+      alignItems: 'center',
+    }}
+    onPress={onPress}
+    onLongPress={onLongPress}
+    accessibilityLabel={accessibilityLabel}
+    testID={testID}
+    activeOpacity={0.85}
+  >
+    <LinearGradient
+      colors={GRADIENTS.header}
+      start={{ x: 0, y: 0 }}
+      end={{ x: 0, y: 1 }}
+      style={{
+        width: 60,
+        height: 60,
+        borderRadius: 30,
+        overflow: 'hidden',
+        justifyContent: 'center',
+        alignItems: 'center',
+        shadowColor: COLORS.primary,
+        shadowOffset: { width: 0, height: 4 },
+        shadowOpacity: 0.3,
+        shadowRadius: 8,
+        elevation: 5,
+      }}
+    >
+      <MaterialCommunityIcons name="calendar-plus" size={30} color={COLORS.white} />
+    </LinearGradient>
+  </TouchableOpacity>
+);
 
 function MainTabs() {
   const insets = useSafeAreaInsets();
@@ -111,6 +143,8 @@ function MainTabs() {
                   iconName = focused ? 'calendar-clock' : 'calendar-clock';
                 } else if (route.name === 'Book') {
                   iconName = focused ? 'calendar-check' : 'calendar-check-outline';
+                } else if (route.name === 'Store') {
+                  iconName = focused ? 'storefront' : 'storefront-outline';
                 } else if (route.name === 'Settings') {
                   iconName = focused ? 'cog' : 'cog-outline';
                 }
@@ -142,7 +176,16 @@ function MainTabs() {
           >
             <Tab.Screen name="Home" component={HomeScreen} />
             <Tab.Screen name="Appointments" component={AppointmentsScreen} />
-            <Tab.Screen name="Book" component={BookScreen} />
+            <Tab.Screen
+              name="Book"
+              component={BookScreen}
+              options={{
+                tabBarButton: (props) => <BookTabBarButton {...props} />,
+                tabBarLabel: () => null,
+                tabBarIcon: () => null,
+              }}
+            />
+            <Tab.Screen name="Store" component={StoreComingSoonScreen} />
             <Tab.Screen name="Settings" component={SettingsScreen} />
           </Tab.Navigator>
         )}
@@ -152,6 +195,7 @@ function MainTabs() {
       <Stack.Screen name="CareStore" component={CareStoreScreen} />
       <Stack.Screen name="PatientStoreOrders" component={PatientStoreOrdersScreen} />
       <Stack.Screen name="InvoiceDisplay" component={InvoiceScreen} />
+      <Stack.Screen name="PaymentWebview" component={PaymentWebviewScreen} />
       <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />
       <Stack.Screen name="PrivacySecurity" component={PrivacySecurityScreen} />
       <Stack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
@@ -229,6 +273,7 @@ function NurseNavigator() {
       </Stack.Screen>
       <Stack.Screen name="Notifications" component={NotificationsScreen} />
       <Stack.Screen name="Profile" component={NurseProfileScreen} />
+      <Stack.Screen name="PaymentWebview" component={PaymentWebviewScreen} />
       <Stack.Screen name="ChangePassword" component={ChangePasswordScreen} />
       <Stack.Screen name="PrivacySecurity" component={PrivacySecurityScreen} />
       <Stack.Screen name="NotificationSettings" component={NotificationSettingsScreen} />
@@ -343,6 +388,7 @@ function AdminDashboardNavigator() {
       <Stack.Screen name="Profile" component={ProfileScreen} />
       <Stack.Screen name="InvoiceManagement" component={InvoiceManagementScreen} />
       <Stack.Screen name="InvoiceDisplay" component={InvoiceScreen} />
+      <Stack.Screen name="PaymentWebview" component={PaymentWebviewScreen} />
       <Stack.Screen name="PriceList" component={PriceListScreen} />
       <Stack.Screen name="InventoryManagement" component={InventoryManagementScreen} />
       <Stack.Screen name="CareStore" component={CareStoreScreen} />

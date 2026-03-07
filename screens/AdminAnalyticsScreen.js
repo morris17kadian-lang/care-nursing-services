@@ -14,7 +14,7 @@ import FirebaseService from '../services/FirebaseService';
 import { clearAllAdminData, checkCurrentData } from '../utils/clearData';
 import BankAutocomplete from '../components/BankAutocomplete';
 
-export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = false, onAddPress }) {
+export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = false, onAddPress, searchQuery = '' }) {
   const { createNurseAccount, user } = useAuth();
   const { nurses, addNurse, updateNurse, updateNurseStatus, deleteNurse, getNursesByStatus } = useNurses();
   const insets = useSafeAreaInsets();
@@ -29,6 +29,7 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
   const [nurseEmail, setNurseEmail] = useState('');
   const [nursePhone, setNursePhone] = useState('');
   const [nurseSpecialization, setNurseSpecialization] = useState('');
+  const [nurseQualifications, setNurseQualifications] = useState('');
   const [nurseCode, setNurseCode] = useState('');
   const [nurseBankName, setNurseBankName] = useState('');
   const [nurseAccountNumber, setNurseAccountNumber] = useState('');
@@ -265,15 +266,56 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
 
   // Get nurses to display based on selection
   const getDisplayedNurses = () => {
+    const normalizedQuery = String(searchQuery || '').trim().toLowerCase();
+
+    const getNameKey = (nurse) =>
+      String(nurse?.name || nurse?.fullName || nurse?.displayName || '')
+        .trim()
+        .toLowerCase();
+
+    const matchesQuery = (nurse) => {
+      if (!normalizedQuery) return true;
+      const haystack = [
+        nurse?.name,
+        nurse?.fullName,
+        nurse?.displayName,
+        nurse?.email,
+        nurse?.phone,
+        nurse?.contactNumber,
+        nurse?.code,
+        nurse?.specialization,
+      ]
+        .filter(Boolean)
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(normalizedQuery);
+    };
+
+    let base = [];
+    const source = Array.isArray(nurses) ? nurses : [];
+
     switch (selectedCard) {
       case 'available':
-        return nurses.filter(nurse => nurse.status === 'available' && nurse.isActive === true);
+        base = source.filter((nurse) => nurse.status === 'available' && nurse.isActive === true);
+        break;
       case 'offline':
-        return nurses.filter(nurse => nurse.isActive === false);
+        base = source.filter((nurse) => nurse.isActive === false);
+        break;
       case 'total':
       default:
-        return nurses;
+        base = source;
+        break;
     }
+
+    const filtered = normalizedQuery ? base.filter(matchesQuery) : base;
+    return [...filtered].sort((a, b) => {
+      const aKey = getNameKey(a);
+      const bKey = getNameKey(b);
+      if (aKey && bKey) return aKey.localeCompare(bKey);
+      if (aKey) return -1;
+      if (bKey) return 1;
+      return 0;
+    });
   };
 
   const handleDeleteNurse = (nurse) => {
@@ -461,6 +503,7 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
     setNursePhone(nurse.phone);
     setNurseCode(nurse.code || nurse.nurseCode);
     setNurseSpecialization(nurse.specialization || 'General Nursing');
+    setNurseQualifications(nurse.qualifications || nurse.qualification || '');
     
     // Banking
     setNurseBankName(nurse.bankName || nurse.bankingDetails?.bankName || '');
@@ -507,6 +550,7 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
       email: nurseEmail,
       phone: nursePhone,
       specialization: nurseSpecialization || 'General Nursing',
+      qualifications: nurseQualifications || 'Not specified',
       nurseCode: upperCode,
       code: upperCode, // Add code field for admins
       role: role, // Explicitly set the role
@@ -580,6 +624,7 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
                 setNurseEmail('');
                 setNursePhone('');
                 setNurseSpecialization('');
+                setNurseQualifications('');
                 setNurseCode('');
                 setNurseBankName('');
                 setNurseAccountNumber('');
@@ -1065,6 +1110,19 @@ export default function AdminAnalyticsScreen({ navigation, route, isEmbedded = f
                 />
               </View>
 
+              <Text style={styles.formLabel}>Qualifications</Text>
+              <View style={styles.formInput}>
+                <MaterialCommunityIcons name="certificate" size={20} color={COLORS.textLight} />
+                <TextInput
+                  style={styles.input}
+                  placeholder="e.g. RN, BSN, MSN, ACLS Certified"
+                  placeholderTextColor={COLORS.textLight}
+                  value={nurseQualifications}
+                  onChangeText={setNurseQualifications}
+                  multiline
+                />
+              </View>
+
               {/* Staff Role Selection - Simple Toggle */}
               <Text style={styles.formLabel}>Staff Role</Text>
               <View style={styles.roleToggleContainer}>
@@ -1368,7 +1426,7 @@ const styles = StyleSheet.create({
     gap: 8,
     paddingHorizontal: 20,
     marginTop: 16,
-    marginBottom: 20,
+    marginBottom: 8,
   },
   statCard: {
     flex: 1,

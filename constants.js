@@ -37,6 +37,10 @@ export const COLORS = {
   shadow: 'rgba(33, 150, 243, 0.15)',
 };
 
+// Debug flags
+// Set to true temporarily when you need verbose console logging.
+export const ENABLE_DEBUG_LOGS = false;
+
 export const GRADIENTS = {
   primary: ['#2196F3', '#1976D2'],
   accent: ['#00BCD4', '#4DD0E1'],

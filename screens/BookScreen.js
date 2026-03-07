@@ -17,9 +17,11 @@ import {
   Linking,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
+import { Timestamp } from 'firebase/firestore';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { COLORS, GRADIENTS, SPACING } from '../constants';
 import { useServices } from '../context/ServicesContext';
 import { getAddressSuggestions } from '../utils/addressData';
@@ -30,7 +32,7 @@ import InvoiceService from '../services/InvoiceService';
 import FygaroPaymentService from '../services/FygaroPaymentService';
 import FirebaseService from '../services/FirebaseService';
 import ApiService from '../services/ApiService';
-import offlineNurses from '../876Nursesdatabase/care_database.nurses.json';
+import PushNotificationService from '../services/PushNotificationService';
 
 const DAYS_OF_WEEK = [
   { label: 'Sun', value: 0 },
@@ -40,6 +42,53 @@ const DAYS_OF_WEEK = [
   { label: 'Thu', value: 4 },
   { label: 'Fri', value: 5 },
   { label: 'Sat', value: 6 },
+];
+
+const CONSULTATION_SERVICE_TITLE = 'Consultation Call (Phone Advice)';
+const CONSULTATION_FEE_JMD = 1500;
+const CONSULTATION_PHONE_NUMBER = '8766189876';
+const CONSULTATION_SCHEDULE_HOURS = [9, 10, 11, 12, 13, 14, 15, 16, 17];
+
+const ALLERGY_GROUPS = [
+  { title: 'Basics', options: ['None'] },
+  {
+    title: 'Medications',
+    options: [
+      'Penicillin',
+      'Amoxicillin',
+      'Cephalosporins',
+      'Sulfa (Sulfonamides)',
+      'Aspirin',
+      'NSAIDs (Ibuprofen/Naproxen)',
+      'Opioids (Morphine/Codeine)',
+      'Anesthesia',
+      'Iodine / Contrast Dye',
+    ],
+  },
+  {
+    title: 'Foods',
+    options: [
+      'Shellfish',
+      'Fish',
+      'Seafood',
+      'Peanuts',
+      'Tree Nuts',
+      'Sesame',
+      'Dairy / Milk',
+      'Eggs',
+      'Soy',
+      'Wheat / Gluten',
+    ],
+  },
+  {
+    title: 'Environmental',
+    options: ['Pollen', 'Dust Mites', 'Pet Dander', 'Mold', 'Insect Stings (Bee/Wasp)'],
+  },
+  {
+    title: 'Contact / Topical',
+    options: ['Latex', 'Adhesive / Tape', 'Chlorhexidine', 'Fragrances / Perfume', 'Nickel'],
+  },
+  { title: 'Other', options: ['Other'] },
 ];
 
 export default function BookScreen({ navigation, route }) {
@@ -80,6 +129,17 @@ export default function BookScreen({ navigation, route }) {
     endDate: '',
     endTime: '',
     notes: '',
+    patientAlerts: {
+      allergies: [],
+      allergyOther: '',
+      vitals: {
+        bpSystolic: '',
+        bpDiastolic: '',
+        heartRate: '',
+        temperature: '',
+        oxygenSaturation: '',
+      },
+    },
     subscriptionPlan: '',
     preferredNurseId: null,
     preferredNurseName: '',
@@ -88,8 +148,19 @@ export default function BookScreen({ navigation, route }) {
   });
   const [showDepositModal, setShowDepositModal] = useState(false);
   const [depositAmount, setDepositAmount] = useState(0);
+  const [depositRequiredSetting, setDepositRequiredSetting] = useState(true);
+  const [depositPercentSetting, setDepositPercentSetting] = useState(20);
   const [totalAmount, setTotalAmount] = useState(0);
   const [processingPayment, setProcessingPayment] = useState(false);
+  const [processingConsultationPayment, setProcessingConsultationPayment] = useState(false);
+  const [consultationModalVisible, setConsultationModalVisible] = useState(false);
+  const [consultationScheduledDate, setConsultationScheduledDate] = useState(null);
+  const [consultationScheduledHour, setConsultationScheduledHour] = useState(null);
+  const [consultationScheduledMinute, setConsultationScheduledMinute] = useState(null);
+  const [showConsultationDatePicker, setShowConsultationDatePicker] = useState(false);
+  const [showConsultationTimePicker, setShowConsultationTimePicker] = useState(false);
+  const [consultationPickerDate, setConsultationPickerDate] = useState(new Date());
+  const [consultationPickerTime, setConsultationPickerTime] = useState(new Date());
   const [addressSuggestions, setAddressSuggestions] = useState([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [showSubscriptionDropdown, setShowSubscriptionDropdown] = useState(false);
@@ -104,6 +175,75 @@ export default function BookScreen({ navigation, route }) {
   const [recurringDuration, setRecurringDuration] = useState(1);
   const [selectedDays, setSelectedDays] = useState([]);
   const [autoEmailInvoices, setAutoEmailInvoices] = useState(false);
+  const [showAllergyPicker, setShowAllergyPicker] = useState(false);
+  const [allergySearchQuery, setAllergySearchQuery] = useState('');
+
+  const filteredAllergyItems = useMemo(() => {
+    const q = String(allergySearchQuery || '').trim().toLowerCase();
+    const matches = (label) => {
+      if (!q) return true;
+      return String(label || '').toLowerCase().includes(q);
+    };
+
+    const items = [];
+    ALLERGY_GROUPS.forEach((group) => {
+      const visible = Array.isArray(group?.options) ? group.options.filter(matches) : [];
+      if (visible.length === 0) return;
+      items.push({ type: 'header', label: group.title });
+      visible.forEach((opt) => items.push({ type: 'option', label: opt }));
+    });
+
+    return items;
+  }, [allergySearchQuery]);
+
+  const toggleAllergy = (label) => {
+    const value = String(label || '').trim();
+    if (!value) return;
+
+    setFormData((prev) => {
+      const current = prev?.patientAlerts?.allergies;
+      const allergies = Array.isArray(current) ? current : [];
+
+      if (value === 'None') {
+        return {
+          ...prev,
+          patientAlerts: {
+            ...(prev.patientAlerts || {}),
+            allergies: [],
+            allergyOther: '',
+          },
+        };
+      }
+
+      const next = allergies.includes(value)
+        ? allergies.filter((a) => a !== value)
+        : [...allergies.filter((a) => a !== 'None'), value];
+
+      const shouldClearOther = value === 'Other' ? false : next.includes('Other') === false;
+
+      return {
+        ...prev,
+        patientAlerts: {
+          ...(prev.patientAlerts || {}),
+          allergies: next,
+          allergyOther: shouldClearOther ? '' : (prev?.patientAlerts?.allergyOther || ''),
+        },
+      };
+    });
+  };
+
+  const setVitalField = (key, value) => {
+    setFormData((prev) => ({
+      ...prev,
+      patientAlerts: {
+        ...(prev.patientAlerts || {}),
+        vitals: {
+          ...((prev.patientAlerts && prev.patientAlerts.vitals) || {}),
+          [key]: value,
+        },
+      },
+    }));
+  };
   const [isEditingUserDetails, setIsEditingUserDetails] = useState(false);
 
   // Nurse selection
@@ -214,6 +354,32 @@ export default function BookScreen({ navigation, route }) {
     }
   }, [user?.email, user?.phone, user?.address, isEditingUserDetails]);
 
+  // Load admin-configured deposit defaults
+  useEffect(() => {
+    let isMounted = true;
+    const loadDepositPolicy = async () => {
+      try {
+        const raw = await AsyncStorage.getItem('adminPaymentGeneralSettings');
+        if (!raw) return;
+        const parsed = JSON.parse(raw);
+
+        if (typeof parsed?.depositRequired === 'boolean' && isMounted) {
+          setDepositRequiredSetting(parsed.depositRequired);
+        }
+        if (Number.isFinite(parsed?.depositPercent) && isMounted) {
+          const pct = Math.max(0, Math.min(100, Number(parsed.depositPercent)));
+          setDepositPercentSetting(pct);
+        }
+      } catch (error) {
+        console.error('Error loading deposit settings:', error);
+      }
+    };
+    loadDepositPolicy();
+    return () => {
+      isMounted = false;
+    };
+  }, []);
+
   // Calculate total amount whenever services change
   useEffect(() => {
     if (formData.services.length > 0) {
@@ -231,18 +397,20 @@ export default function BookScreen({ navigation, route }) {
         const numOccurrences = recurringFrequency === 'weekly' ? recurringDuration : recurringDuration;
         const recurringTotal = total * numOccurrences;
         setTotalAmount(recurringTotal);
-        setDepositAmount(recurringTotal * 0.2); // 20% deposit on total recurring amount
+        const depositRate = depositRequiredSetting ? (depositPercentSetting / 100) : 0;
+        setDepositAmount(recurringTotal * depositRate);
       } else {
         setTotalAmount(total);
-        setDepositAmount(total * 0.2); // 20% deposit on single appointment
+        const depositRate = depositRequiredSetting ? (depositPercentSetting / 100) : 0;
+        setDepositAmount(total * depositRate);
       }
     } else {
       setTotalAmount(0);
       setDepositAmount(0);
     }
-  }, [formData.services, services, isRecurring, recurringFrequency, recurringDuration]);
+  }, [formData.services, services, isRecurring, recurringFrequency, recurringDuration, depositRequiredSetting, depositPercentSetting]);
 
-  // Load nurses (Firebase first, offline fallback)
+  // Load nurses from Firebase
   useEffect(() => {
     let isMounted = true;
 
@@ -262,6 +430,15 @@ export default function BookScreen({ navigation, route }) {
         email: n?.email || '',
         phone: n?.phone || n?.phoneNumber || '',
         specialization: n?.specialization || n?.specialty || '',
+        qualifications:
+          n?.qualifications ||
+          n?.qualification ||
+          n?.certifications ||
+          n?.certification ||
+          n?.licenses ||
+          n?.license ||
+          '',
+        nurseIdPhoto: n?.nurseIdPhoto || null,
         photoUrl: n?.profilePhoto || n?.profileImage || n?.photoUrl || n?.photo || n?.avatar || '',
         isActive: n?.isActive !== false,
       };
@@ -272,7 +449,7 @@ export default function BookScreen({ navigation, route }) {
       try {
         const result = await FirebaseService.getAllNurses();
         const fromFirebase = result?.success && Array.isArray(result.nurses) ? result.nurses : [];
-        const source = fromFirebase.length > 0 ? fromFirebase : (Array.isArray(offlineNurses) ? offlineNurses : []);
+        const source = fromFirebase;
 
         const normalized = source
           .map(normalizeNurse)
@@ -286,11 +463,7 @@ export default function BookScreen({ navigation, route }) {
         const finalList = Array.from(map.values()).sort((a, b) => a.name.localeCompare(b.name));
         if (isMounted) setNurses(finalList);
       } catch (e) {
-        const fallback = (Array.isArray(offlineNurses) ? offlineNurses : [])
-          .map(normalizeNurse)
-          .filter((n) => n?.id && n?.name && n?.isActive)
-          .sort((a, b) => a.name.localeCompare(b.name));
-        if (isMounted) setNurses(fallback);
+        if (isMounted) setNurses([]);
       } finally {
         if (isMounted) setLoadingNurses(false);
       }
@@ -369,10 +542,9 @@ export default function BookScreen({ navigation, route }) {
       return;
     }
 
-    // TEMPORARILY DISABLED - Skip deposit payment modal for testing
-    // For non-recurring appointments, book directly without payment
+    // For non-recurring appointments, show deposit payment modal
     if (!isRecurring) {
-      await bookAppointmentWithoutPayment();
+      setShowDepositModal(true);
       return;
     }
 
@@ -397,6 +569,7 @@ export default function BookScreen({ navigation, route }) {
       endDate: formData.endDate || formData.startDate,
       endTime: formData.endTime || formData.startTime,
       notes: formData.notes,
+      patientAlerts: formData.patientAlerts || null,
       subscriptionPlan: formData.subscriptionPlan,
       preferredNurseId: formData.preferredNurseId,
       preferredNurseName: formData.preferredNurseName || null,
@@ -443,6 +616,7 @@ export default function BookScreen({ navigation, route }) {
       endDate: formData.endDate,
       endTime: formData.endTime,
       notes: formData.notes,
+      patientAlerts: formData.patientAlerts || null,
       subscriptionPlan: formData.subscriptionPlan,
       preferredNurseId: formData.preferredNurseId,
       preferredNurseName: formData.preferredNurseName || null,
@@ -508,6 +682,7 @@ export default function BookScreen({ navigation, route }) {
 
         // Metadata
         notes: formData.notes,
+        patientAlerts: formData.patientAlerts || null,
         requestedBy: user?.id || user?.uid || formData.email,
         requestedAt: nowIso,
         requestDate: nowIso,
@@ -530,14 +705,270 @@ export default function BookScreen({ navigation, route }) {
     }
   };
 
-  const handleDepositPayment = async () => {
-    // TEMPORARILY DISABLED - Fygaro payment functionality
-    Alert.alert('Payment Temporarily Disabled', 'Online payment processing is currently being updated. Please contact us for alternative payment arrangements.');
-    return;
+  const openConsultationDialer = async () => {
+    try {
+      const telUrl = `tel:${CONSULTATION_PHONE_NUMBER}`;
+      const supported = await Linking.canOpenURL(telUrl);
+      if (!supported) {
+        Alert.alert('Call Unavailable', 'Your device cannot place phone calls.');
+        return;
+      }
+      await Linking.openURL(telUrl);
+    } catch (error) {
+      Alert.alert('Call Failed', 'Unable to open the phone dialer.');
+    }
   };
 
-  /* DISABLED FUNCTION - handleDepositPayment original code
-  const handleDepositPayment_DISABLED = async () => {
+  const resetConsultationSchedule = () => {
+    setConsultationScheduledDate(null);
+    setConsultationScheduledHour(null);
+    setConsultationScheduledMinute(null);
+    setShowConsultationDatePicker(false);
+    setShowConsultationTimePicker(false);
+  };
+
+  const formatConsultationHourLabel = (hour, minute = 0) => {
+    if (hour == null) return '';
+    const h = Number(hour);
+    const m = Number(minute || 0);
+    if (Number.isNaN(h)) return '';
+    const ampm = h >= 12 ? 'PM' : 'AM';
+    const display = h % 12 || 12;
+    const paddedMinute = String(m).padStart(2, '0');
+    return `${display}:${paddedMinute} ${ampm}`;
+  };
+
+  const buildConsultationScheduledFor = () => {
+    if (!consultationScheduledDate || consultationScheduledHour == null) return null;
+    const d = new Date(consultationScheduledDate);
+    const minute = consultationScheduledMinute != null ? Number(consultationScheduledMinute) : 0;
+    d.setHours(Number(consultationScheduledHour), minute, 0, 0);
+    if (Number.isNaN(d.getTime())) return null;
+    return d;
+  };
+
+  const openConsultationDatePicker = () => {
+    const base = consultationScheduledDate ? new Date(consultationScheduledDate) : new Date();
+    setConsultationPickerDate(base);
+    setShowConsultationDatePicker(true);
+  };
+
+  const openConsultationTimePicker = () => {
+    const base = consultationScheduledDate ? new Date(consultationScheduledDate) : new Date();
+    const pickerBase = new Date(base);
+    // Default to 9 AM if no time selected yet, otherwise use the stored hour
+    const hour = consultationScheduledHour == null ? 9 : Number(consultationScheduledHour);
+    const safeHour = Number.isNaN(hour) ? 9 : Math.min(Math.max(hour, 9), 17);
+    pickerBase.setHours(safeHour, 0, 0, 0);
+    setConsultationPickerTime(pickerBase);
+    setShowConsultationTimePicker(true);
+  };
+
+  const onConsultationDateChange = (event, date) => {
+    if (Platform.OS === 'android') {
+      setShowConsultationDatePicker(false);
+      if (event?.type === 'dismissed') return;
+      const chosen = date || consultationPickerDate;
+      if (!chosen || Number.isNaN(new Date(chosen).getTime())) return;
+      setConsultationPickerDate(new Date(chosen));
+      setConsultationScheduledDate(new Date(chosen));
+      return;
+    }
+
+    if (date && !Number.isNaN(new Date(date).getTime())) {
+      setConsultationPickerDate(new Date(date));
+    }
+  };
+
+  const confirmConsultationDateSelection = () => {
+    if (!consultationPickerDate || Number.isNaN(new Date(consultationPickerDate).getTime())) {
+      setShowConsultationDatePicker(false);
+      return;
+    }
+    setConsultationScheduledDate(new Date(consultationPickerDate));
+    setShowConsultationDatePicker(false);
+  };
+
+  const onConsultationTimeChange = (event, date) => {
+    if (Platform.OS === 'android') {
+      setShowConsultationTimePicker(false);
+      if (event?.type === 'dismissed') return;
+      const chosen = date || consultationPickerTime;
+      if (!chosen || Number.isNaN(new Date(chosen).getTime())) return;
+      const d = new Date(chosen);
+      const clampedHour = Math.min(Math.max(d.getHours(), 9), 17);
+      d.setHours(clampedHour, 0, 0, 0);
+      setConsultationPickerTime(d);
+      setConsultationScheduledHour(clampedHour);
+      return;
+    }
+
+    // For iOS: only track the selection, don't update state until user confirms (Done)
+    // Updating consultationPickerTime during onChange interferes with the picker
+    if (date && !Number.isNaN(new Date(date).getTime())) {
+      setConsultationPickerTime(new Date(date));
+    }
+  };
+
+  const confirmConsultationTimeSelection = () => {
+    if (!consultationPickerTime || Number.isNaN(new Date(consultationPickerTime).getTime())) {
+      setShowConsultationTimePicker(false);
+      return;
+    }
+    const d = new Date(consultationPickerTime);
+    const clampedHour = Math.min(Math.max(d.getHours(), 9), 17);
+    const minute = d.getMinutes();
+    setConsultationScheduledHour(clampedHour);
+    setConsultationScheduledMinute(minute);
+    setShowConsultationTimePicker(false);
+  };
+
+  const startPaidConsultationPayment = async () => {
+    if (processingConsultationPayment) return;
+
+    const scheduledFor = buildConsultationScheduledFor();
+    const scheduledHour = consultationScheduledHour;
+    const scheduledDate = consultationScheduledDate;
+    const attemptingSchedule = Boolean(consultationScheduledDate || consultationScheduledHour != null);
+
+    if (attemptingSchedule && !scheduledFor) {
+      Alert.alert('Missing Schedule', 'Please select both a date and a time slot (9am–5pm), or clear the schedule to call now.');
+      return;
+    }
+    if (scheduledFor && scheduledFor.getTime() <= Date.now()) {
+      Alert.alert('Invalid Time', 'Please choose a future date and time for your scheduled consultation call.');
+      return;
+    }
+
+    const email = String(formData?.email || '').trim();
+    const name = String(formData?.name || '').trim();
+
+    if (!name || !email) {
+      Alert.alert('Missing Info', 'Please enter your name and email address before scheduling a consultation.');
+      return;
+    }
+
+    setProcessingConsultationPayment(true);
+    try {
+      const patientId = user?.id || user?.uid || email;
+      const isScheduled = Boolean(scheduledFor);
+
+      // Save consultation request directly to Firebase (no payment required)
+      await FirebaseService.createConsultationRequest({
+        patientId,
+        patientAuthUid: user?.uid || null,
+        patientName: name,
+        patientEmail: email,
+        patientPhone: formData?.phone || '',
+        address: formData?.address || '',
+        consultationFeeJmd: CONSULTATION_FEE_JMD,
+        currency: 'JMD',
+        consultationPhone: CONSULTATION_PHONE_NUMBER,
+        scheduledFor: isScheduled ? Timestamp.fromDate(scheduledFor) : null,
+        scheduledForIso: isScheduled ? scheduledFor.toISOString() : null,
+        scheduledHour: scheduledHour ?? null,
+        scheduledDate: scheduledDate ? new Date(scheduledDate).toISOString() : null,
+        createdByUid: user?.uid || undefined,
+        status: isScheduled ? 'pending' : 'call_requested',
+        source: 'BookScreen',
+        preferredNurseId: formData?.preferredNurseId || null,
+        preferredNurseName: formData?.preferredNurseName || null,
+        preferredNurseCode: formData?.preferredNurseCode || null,
+      });
+
+      // If scheduled: add a local push notification reminder + save to AsyncStorage for the patient's reminder list
+      if (isScheduled) {
+        try {
+          const reminderTime = new Date(scheduledFor.getTime() - 30 * 60 * 1000); // 30 min before
+          const notifyAt = reminderTime > new Date() ? reminderTime : scheduledFor;
+          const reminderBody = `Your consultation call with 876 Nurses is scheduled for ${scheduledFor.toLocaleDateString('en-US', { month: 'short', day: 'numeric' })} at ${formatConsultationHourLabel(scheduledHour, consultationScheduledMinute)}.`;
+
+          let notificationId = null;
+          try {
+            notificationId = await PushNotificationService.scheduleNotification(
+              'Consultation Reminder',
+              reminderBody,
+              notifyAt,
+              { type: 'consultation_reminder', screen: 'Appointments' }
+            );
+          } catch (_) {
+            // Push notification may fail in Expo Go — still save the reminder
+          }
+
+          // Save reminder to AsyncStorage so it appears in the Home screen reminder list
+          if (user?.id) {
+            try {
+              const storageKey = `@876_home_reminders_${user.id}`;
+              const existing = await AsyncStorage.getItem(storageKey);
+              const reminders = existing ? JSON.parse(existing) : [];
+              const newReminder = {
+                id: Date.now(),
+                text: reminderBody,
+                date: scheduledFor.toLocaleDateString('en-US', { month: '2-digit', day: '2-digit', year: 'numeric' }),
+                time: formatConsultationHourLabel(scheduledHour, consultationScheduledMinute),
+                completed: false,
+                notificationId,
+                scheduledDateTime: notifyAt.toISOString(),
+                type: 'consultation',
+              };
+              await AsyncStorage.setItem(storageKey, JSON.stringify([...reminders, newReminder]));
+            } catch (_) {
+              // Non-critical
+            }
+          }
+        } catch (_) {
+          // Non-critical — don't block the flow
+        }
+      }
+
+      // Notify admin via Firestore notification
+      try {
+        await ApiService.createNotification({
+          userId: 'admin',
+          type: 'consultation_request',
+          title: isScheduled ? 'New Scheduled Consultation' : 'New Consultation Call Request',
+          body: isScheduled
+            ? `${name} has scheduled a consultation call for ${scheduledFor.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} at ${formatConsultationHourLabel(scheduledHour, consultationScheduledMinute)}.`
+            : `${name} is requesting a consultation call now. Phone: ${formData?.phone || 'N/A'}.`,
+          patientId,
+          patientName: name,
+          patientEmail: email,
+          patientPhone: formData?.phone || '',
+          scheduledFor: isScheduled ? scheduledFor.toISOString() : null,
+          screen: 'AdminConsultations',
+        });
+      } catch (_) {
+        // Non-critical — don't block the flow if admin notification fails
+      }
+
+      setConsultationModalVisible(false);
+      resetConsultationSchedule();
+
+      setTimeout(() => {
+        if (isScheduled) {
+          Alert.alert(
+            'Consultation Scheduled',
+            `Your consultation call is scheduled for ${scheduledFor.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })} at ${formatConsultationHourLabel(scheduledHour, consultationScheduledMinute)}. We will call you at that time.`
+          );
+        } else {
+          Alert.alert(
+            'Request Received',
+            'Your consultation request has been submitted. A nurse will call you shortly.',
+            [
+              { text: 'Call Now', onPress: openConsultationDialer },
+              { text: 'OK' },
+            ]
+          );
+        }
+      }, 250);
+    } catch (error) {
+      Alert.alert('Consultation Request Failed', error?.message || 'Unable to submit your consultation request. Please try again.');
+    } finally {
+      setProcessingConsultationPayment(false);
+    }
+  };
+
+  const handleDepositPayment = async () => {
     setProcessingPayment(true);
     
     try {
@@ -686,6 +1117,7 @@ export default function BookScreen({ navigation, route }) {
         endDate: formData.endDate,
         endTime: formData.endTime,
         notes: formData.notes,
+        patientAlerts: formData.patientAlerts || null,
         subscriptionPlan: formData.subscriptionPlan,
         isRecurring: false,
         patientId: user?.id || formData.email,
@@ -734,7 +1166,6 @@ export default function BookScreen({ navigation, route }) {
       setShowDepositModal(false);
     }
   };
-  */ // End of DISABLED handleDepositPayment function
 
   const resetForm = () => {
     setFormData({
@@ -748,6 +1179,17 @@ export default function BookScreen({ navigation, route }) {
       endDate: '',
       endTime: '',
       notes: '',
+      patientAlerts: {
+        allergies: [],
+        allergyOther: '',
+        vitals: {
+          bpSystolic: '',
+          bpDiastolic: '',
+          heartRate: '',
+          temperature: '',
+          oxygenSaturation: '',
+        },
+      },
       subscriptionPlan: '',
       preferredNurseId: null,
       preferredNurseName: '',
@@ -911,20 +1353,45 @@ export default function BookScreen({ navigation, route }) {
           {/* Contact Information Header */}
           <View style={styles.contactHeader}>
             <Text style={styles.contactHeaderTitle}>Contact Information</Text>
-            <TouchableWeb
-              style={styles.editButton}
-              onPress={() => setIsEditingUserDetails(!isEditingUserDetails)}
-              activeOpacity={0.7}
-            >
-              <MaterialCommunityIcons 
-                name={isEditingUserDetails ? "check" : "pencil"} 
-                size={18} 
-                color={COLORS.white} 
-              />
-              <Text style={styles.editButtonText}>
-                {isEditingUserDetails ? "Save" : "Edit"}
-              </Text>
-            </TouchableWeb>
+            <View style={styles.contactHeaderActions}>
+              <TouchableWeb
+                style={styles.pillButton}
+                onPress={() => setConsultationModalVisible(true)}
+                activeOpacity={0.7}
+              >
+                <LinearGradient
+                  colors={GRADIENTS.header}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={styles.pillButtonGradient}
+                >
+                  <MaterialCommunityIcons name="phone-in-talk" size={18} color={COLORS.white} />
+                  <Text style={styles.pillButtonText}>Consult</Text>
+                </LinearGradient>
+              </TouchableWeb>
+
+              <TouchableWeb
+                style={styles.pillButton}
+                onPress={() => setIsEditingUserDetails(!isEditingUserDetails)}
+                activeOpacity={0.7}
+              >
+                <LinearGradient
+                  colors={GRADIENTS.header}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={styles.pillButtonGradient}
+                >
+                  <MaterialCommunityIcons
+                    name={isEditingUserDetails ? 'check' : 'pencil'}
+                    size={18}
+                    color={COLORS.white}
+                  />
+                  <Text style={styles.pillButtonText}>
+                    {isEditingUserDetails ? 'Save' : 'Edit'}
+                  </Text>
+                </LinearGradient>
+              </TouchableWeb>
+            </View>
           </View>
 
           {/* Name Input */}
@@ -1026,6 +1493,8 @@ export default function BookScreen({ navigation, route }) {
             </View>
           </View>
 
+          {/* Consultation button moved to top beside Edit */}
+
           {/* Service Selection - Multiple */}
           <View style={styles.inputGroup}>
             <Text style={styles.label}>
@@ -1098,12 +1567,14 @@ export default function BookScreen({ navigation, route }) {
                     J${totalAmount.toLocaleString()}
                   </Text>
                 </View>
-                <View style={styles.depositInfoRow}>
-                  <MaterialCommunityIcons name="information" size={16} color="#EF4444" />
-                  <Text style={styles.depositInfoText}>
-                    20% deposit (J${depositAmount.toLocaleString()}) required to confirm booking
-                  </Text>
-                </View>
+                {depositRequiredSetting && depositPercentSetting > 0 && depositAmount > 0 && (
+                  <View style={styles.depositInfoRow}>
+                    <MaterialCommunityIcons name="information" size={16} color="#EF4444" />
+                    <Text style={styles.depositInfoText}>
+                      {depositPercentSetting}% deposit (J${depositAmount.toLocaleString()}) required to confirm booking
+                    </Text>
+                  </View>
+                )}
               </View>
             )}
 
@@ -1192,12 +1663,352 @@ export default function BookScreen({ navigation, route }) {
             )}
           </View>
 
+          {/* Patient Alerts (Allergies + Vitals) */}
+          <View style={styles.section}>
+            <Text style={styles.sectionTitle}>Patient Alerts (Optional)</Text>
+
+            <View style={styles.inputGroup}>
+              <View style={styles.allergyHeaderRow}>
+                <View style={{ flex: 1 }}>
+                  <Text style={styles.label}>Allergies</Text>
+                </View>
+
+                <TouchableWeb
+                  style={styles.allergyAddButton}
+                  activeOpacity={0.8}
+                  onPress={() => {
+                    setAllergySearchQuery('');
+                    setShowAllergyPicker(true);
+                  }}
+                >
+                  <LinearGradient
+                    colors={GRADIENTS.header}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 0, y: 1 }}
+                    style={styles.allergyAddButtonGradient}
+                  >
+                    <MaterialCommunityIcons name="plus" size={16} color={COLORS.white} />
+                    <Text style={styles.allergyAddButtonText}>Add</Text>
+                  </LinearGradient>
+                </TouchableWeb>
+              </View>
+
+              {(() => {
+                const allergies = Array.isArray(formData?.patientAlerts?.allergies)
+                  ? formData.patientAlerts.allergies
+                  : [];
+                const otherText = String(formData?.patientAlerts?.allergyOther || '').trim();
+                const hasAny = allergies.length > 0 || Boolean(otherText);
+                if (!hasAny) return null;
+
+                const pills = [];
+                allergies.forEach((label) => {
+                  const l = String(label || '').trim();
+                  if (!l) return;
+                  if (l === 'Other') return;
+                  pills.push(l);
+                });
+                if (otherText) {
+                  pills.push(otherText);
+                } else if (allergies.includes('Other')) {
+                  pills.push('Other');
+                }
+
+                if (pills.length === 0) return null;
+
+                return (
+                  <ScrollView
+                    horizontal
+                    showsHorizontalScrollIndicator={false}
+                    style={{ marginTop: 10 }}
+                  >
+                    <View style={styles.allergySelectedChipsRow}>
+                      {pills.map((label, index) => {
+                        const isOtherText = otherText && label === otherText;
+                        const isOther = label === 'Other' || isOtherText;
+
+                        return (
+                          <TouchableWeb
+                            key={`${label}-${index}`}
+                            activeOpacity={0.8}
+                            style={styles.allergyOptionChip}
+                            onPress={() => {
+                              if (isOther) {
+                                toggleAllergy('Other');
+                                return;
+                              }
+                              toggleAllergy(label);
+                            }}
+                          >
+                            <LinearGradient
+                              colors={GRADIENTS.header}
+                              start={{ x: 0, y: 0 }}
+                              end={{ x: 0, y: 1 }}
+                              style={styles.allergyOptionChipGradient}
+                            >
+                              <Text
+                                style={styles.allergyOptionChipTextSelected}
+                                numberOfLines={1}
+                                ellipsizeMode="tail"
+                              >
+                                {label}
+                              </Text>
+                              <MaterialCommunityIcons name="close" size={14} color={COLORS.white} />
+                            </LinearGradient>
+                          </TouchableWeb>
+                        );
+                      })}
+                    </View>
+                  </ScrollView>
+                );
+              })()}
+
+              {Array.isArray(formData?.patientAlerts?.allergies) && formData.patientAlerts.allergies.includes('Other') && (
+                <View style={[styles.inputContainer, { marginTop: 10 }]}>
+                  <TextInput
+                    style={styles.input}
+                    placeholder="Describe allergy (e.g., iodine, adhesive)..."
+                    placeholderTextColor={COLORS.textMuted}
+                    value={formData?.patientAlerts?.allergyOther || ''}
+                    onChangeText={(text) =>
+                      setFormData((prev) => ({
+                        ...prev,
+                        patientAlerts: {
+                          ...(prev.patientAlerts || {}),
+                          allergyOther: text,
+                        },
+                      }))
+                    }
+                    autoCorrect={false}
+                    autoCapitalize="sentences"
+                  />
+                </View>
+              )}
+            </View>
+
+            <View style={styles.inputGroup}>
+              <Text style={styles.label}>Vitals</Text>
+              <Text style={styles.subtitle}>If available (leave blank if unknown)</Text>
+
+              <View style={styles.vitalsRow}>
+                <View style={[styles.vitalField, { flex: 1 }]}>
+                  <Text style={styles.vitalLabel}>BP (Sys)</Text>
+                  <View style={styles.inputContainer}>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="120"
+                      placeholderTextColor={COLORS.textMuted}
+                      value={formData?.patientAlerts?.vitals?.bpSystolic || ''}
+                      onChangeText={(t) => setVitalField('bpSystolic', t)}
+                      keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
+                      returnKeyType="done"
+                    />
+                  </View>
+                </View>
+
+                <View style={[styles.vitalField, { flex: 1 }]}>
+                  <Text style={styles.vitalLabel}>BP (Dia)</Text>
+                  <View style={styles.inputContainer}>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="80"
+                      placeholderTextColor={COLORS.textMuted}
+                      value={formData?.patientAlerts?.vitals?.bpDiastolic || ''}
+                      onChangeText={(t) => setVitalField('bpDiastolic', t)}
+                      keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
+                      returnKeyType="done"
+                    />
+                  </View>
+                </View>
+              </View>
+
+              <View style={styles.vitalsRow}>
+                <View style={[styles.vitalField, { flex: 1 }]}>
+                  <Text style={styles.vitalLabel}>HR</Text>
+                  <View style={styles.inputContainer}>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="72"
+                      placeholderTextColor={COLORS.textMuted}
+                      value={formData?.patientAlerts?.vitals?.heartRate || ''}
+                      onChangeText={(t) => setVitalField('heartRate', t)}
+                      keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
+                      returnKeyType="done"
+                    />
+                  </View>
+                </View>
+
+                <View style={[styles.vitalField, { flex: 1 }]}>
+                  <Text style={styles.vitalLabel}>Temp</Text>
+                  <View style={styles.inputContainer}>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="98.6"
+                      placeholderTextColor={COLORS.textMuted}
+                      value={formData?.patientAlerts?.vitals?.temperature || ''}
+                      onChangeText={(t) => setVitalField('temperature', t)}
+                      keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
+                      returnKeyType="done"
+                    />
+                  </View>
+                </View>
+              </View>
+
+              <View style={styles.vitalsRow}>
+                <View style={[styles.vitalField, { flex: 1 }]}>
+                  <Text style={styles.vitalLabel}>SpO₂ %</Text>
+                  <View style={styles.inputContainer}>
+                    <TextInput
+                      style={styles.input}
+                      placeholder="98"
+                      placeholderTextColor={COLORS.textMuted}
+                      value={formData?.patientAlerts?.vitals?.oxygenSaturation || ''}
+                      onChangeText={(t) => setVitalField('oxygenSaturation', t)}
+                      keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
+                      returnKeyType="done"
+                    />
+                  </View>
+                </View>
+                <View style={[styles.vitalField, { flex: 1 }]} />
+              </View>
+            </View>
+          </View>
+
+          {/* Allergy Picker Modal (Dropdown) */}
+          <Modal
+            transparent
+            animationType="fade"
+            visible={showAllergyPicker}
+            onRequestClose={() => setShowAllergyPicker(false)}
+          >
+            <Pressable style={styles.allergyModalOverlay} onPress={() => setShowAllergyPicker(false)}>
+              <Pressable style={styles.allergyModalCard} onPress={(e) => e.stopPropagation()}>
+                <View style={styles.allergyModalHeader}>
+                  <Text style={styles.allergyModalTitle}>Select Allergies</Text>
+                  <TouchableWeb
+                    style={styles.allergyModalClose}
+                    activeOpacity={0.8}
+                    onPress={() => setShowAllergyPicker(false)}
+                  >
+                    <MaterialCommunityIcons name="close" size={22} color={COLORS.text} />
+                  </TouchableWeb>
+                </View>
+
+                <View style={styles.allergyModalSearchRow}>
+                  <MaterialCommunityIcons name="magnify" size={20} color={COLORS.textMuted} />
+                  <TextInput
+                    style={styles.allergyModalSearchInput}
+                    placeholder="Search allergies..."
+                    placeholderTextColor={COLORS.textMuted}
+                    value={allergySearchQuery}
+                    onChangeText={setAllergySearchQuery}
+                    autoCorrect={false}
+                    autoCapitalize="none"
+                    returnKeyType="search"
+                  />
+                  {String(allergySearchQuery || '').length > 0 && (
+                    <TouchableWeb
+                      style={styles.allergyModalClearSearch}
+                      activeOpacity={0.8}
+                      onPress={() => setAllergySearchQuery('')}
+                    >
+                      <MaterialCommunityIcons name="close" size={18} color={COLORS.textMuted} />
+                    </TouchableWeb>
+                  )}
+                </View>
+
+                <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 340 }}>
+                  {filteredAllergyItems.map((item) => {
+                    if (item?.type === 'header') {
+                      return (
+                        <View key={`header-${item.label}`} style={styles.allergyModalSectionHeader}>
+                          <Text style={styles.allergyModalSectionHeaderText}>{item.label}</Text>
+                        </View>
+                      );
+                    }
+
+                    const label = item?.label;
+                    const allergies = Array.isArray(formData?.patientAlerts?.allergies)
+                      ? formData.patientAlerts.allergies
+                      : [];
+                    const otherText = String(formData?.patientAlerts?.allergyOther || '').trim();
+
+                    const selected =
+                      label === 'None'
+                        ? allergies.length === 0 && !otherText
+                        : allergies.includes(label);
+
+                    return (
+                      <TouchableWeb
+                        key={`option-${label}`}
+                        activeOpacity={0.75}
+                        style={styles.allergyModalOptionRow}
+                        onPress={() => {
+                          toggleAllergy(label);
+                          if (label === 'None') {
+                            setShowAllergyPicker(false);
+                          }
+                        }}
+                      >
+                        <MaterialCommunityIcons
+                          name={selected ? 'checkbox-marked' : 'checkbox-blank-outline'}
+                          size={20}
+                          color={selected ? COLORS.primary : COLORS.textMuted}
+                        />
+                        <Text style={styles.allergyModalOptionText}>{label}</Text>
+                      </TouchableWeb>
+                    );
+                  })}
+                </ScrollView>
+
+                {Array.isArray(formData?.patientAlerts?.allergies) && formData.patientAlerts.allergies.includes('Other') && (
+                  <View style={{ marginTop: 12 }}>
+                    <Text style={styles.vitalLabel}>Other (describe)</Text>
+                    <View style={styles.inputContainer}>
+                      <TextInput
+                        style={styles.input}
+                        placeholder="Describe allergy (e.g., iodine, adhesive)..."
+                        placeholderTextColor={COLORS.textMuted}
+                        value={formData?.patientAlerts?.allergyOther || ''}
+                        onChangeText={(text) =>
+                          setFormData((prev) => ({
+                            ...prev,
+                            patientAlerts: {
+                              ...(prev.patientAlerts || {}),
+                              allergyOther: text,
+                            },
+                          }))
+                        }
+                        autoCorrect={false}
+                        autoCapitalize="sentences"
+                      />
+                    </View>
+                  </View>
+                )}
+
+                <TouchableWeb
+                  style={[styles.pickerConfirmButton, { marginTop: 14 }]}
+                  activeOpacity={0.8}
+                  onPress={() => setShowAllergyPicker(false)}
+                >
+                  <LinearGradient
+                    colors={GRADIENTS.header}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 0, y: 1 }}
+                    style={styles.pickerConfirmGradient}
+                  >
+                    <Text style={styles.pickerConfirmText}>Done</Text>
+                  </LinearGradient>
+                </TouchableWeb>
+              </Pressable>
+            </Pressable>
+          </Modal>
+
           {/* Notes Input - Compact */}
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Additional Notes</Text>
             <View style={styles.notesContainer}>
               <View style={styles.inputContainer}>
-                <MaterialCommunityIcons name="text" size={20} color={COLORS.primary} />
                 <TextInput
                   style={[styles.input, styles.notesInput]}
                   placeholder="Any special requirements or concerns..."
@@ -1675,6 +2486,227 @@ export default function BookScreen({ navigation, route }) {
         />
       )}
 
+      {/* Consultation Details Modal */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={consultationModalVisible}
+        onRequestClose={() => {
+          if (processingConsultationPayment) return;
+          resetConsultationSchedule();
+          setConsultationModalVisible(false);
+        }}
+      >
+        <Pressable
+          style={styles.modalOverlay}
+          onPress={() => {
+            if (processingConsultationPayment) return;
+            resetConsultationSchedule();
+            setConsultationModalVisible(false);
+          }}
+        >
+          <Pressable
+            onPress={(e) => e.stopPropagation()}
+            style={styles.consultationModalContainer}
+          >
+            <ScrollView
+              style={styles.consultationModalBody}
+              contentContainerStyle={styles.consultationModalBodyContent}
+              showsVerticalScrollIndicator={false}
+            >
+              <Text style={styles.consultationRequestText}>
+                {`You are requesting a non-refundable consultation call for a cost of J$${CONSULTATION_FEE_JMD.toLocaleString()}.`}
+              </Text>
+
+              <View style={styles.consultationScheduleSection}>
+                <Text style={styles.consultationScheduleTitle}>Schedule a time (optional)</Text>
+
+                <View style={[styles.rowContainer, styles.consultationPickerRow]}>
+                  <View style={[styles.inputGroup, styles.consultationPickerGroup, { flex: 1 }]}>
+                    <Text style={styles.label}>Select Date</Text>
+                    <TouchableWeb
+                      style={styles.inputContainer}
+                      onPress={openConsultationDatePicker}
+                      activeOpacity={0.7}
+                    >
+                      <MaterialCommunityIcons name="calendar" size={20} color={COLORS.primary} />
+                      <Text
+                        style={[
+                          styles.input,
+                          { color: consultationScheduledDate ? COLORS.text : COLORS.textMuted },
+                        ]}
+                        numberOfLines={1}
+                        ellipsizeMode="tail"
+                      >
+                        {consultationScheduledDate
+                          ? new Date(consultationScheduledDate).toLocaleDateString('en-US', {
+                              month: 'short',
+                              day: 'numeric',
+                              year: 'numeric',
+                            })
+                          : 'Select'}
+                      </Text>
+                    </TouchableWeb>
+                  </View>
+
+                  <View style={[styles.inputGroup, styles.consultationPickerGroup, { flex: 1 }]}>
+                    <Text style={styles.label}>Select Time</Text>
+                    <TouchableWeb
+                      style={styles.inputContainer}
+                      onPress={openConsultationTimePicker}
+                      activeOpacity={0.7}
+                    >
+                      <MaterialCommunityIcons name="clock" size={20} color={COLORS.primary} />
+                      <Text
+                        style={[
+                          styles.input,
+                          { color: consultationScheduledHour != null ? COLORS.text : COLORS.textMuted },
+                        ]}
+                        numberOfLines={1}
+                        ellipsizeMode="tail"
+                      >
+                        {consultationScheduledHour != null ? formatConsultationHourLabel(consultationScheduledHour, consultationScheduledMinute) : 'Select'}
+                      </Text>
+                    </TouchableWeb>
+                  </View>
+                </View>
+
+                <Text style={styles.consultationScheduleHint}>Available slots: 9:00 AM – 5:00 PM</Text>
+              </View>
+
+              <View style={{ height: 14 }} />
+
+              <TouchableWeb
+                style={styles.consultationButton}
+                onPress={startPaidConsultationPayment}
+                disabled={processingConsultationPayment}
+                activeOpacity={0.85}
+              >
+                <LinearGradient
+                  colors={processingConsultationPayment ? [COLORS.lightGray, COLORS.gray] : GRADIENTS.header}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={styles.consultationButtonGradient}
+                >
+                  {processingConsultationPayment ? (
+                    <ActivityIndicator size="small" color={COLORS.white} />
+                  ) : (
+                    <>
+                      <MaterialCommunityIcons
+                        name={buildConsultationScheduledFor() ? 'calendar-clock' : 'phone'}
+                        size={16}
+                        color={COLORS.white}
+                      />
+                      <Text style={styles.consultationButtonText}>
+                        {buildConsultationScheduledFor() ? 'Schedule Consultation' : 'Request Call'}
+                      </Text>
+                    </>
+                  )}
+                </LinearGradient>
+              </TouchableWeb>
+
+              <View style={{ height: 12 }} />
+            </ScrollView>
+          </Pressable>
+
+          {/* Consultation Date Picker - iOS */}
+          {showConsultationDatePicker && Platform.OS === 'ios' && (
+            <View style={styles.pickerOverlay}>
+              <View style={styles.pickerContainer}>
+                <View style={styles.pickerHeader}>
+                  <Text style={styles.pickerTitle}>Select Date</Text>
+                  <TouchableWeb
+                    onPress={() => setShowConsultationDatePicker(false)}
+                    style={styles.pickerCloseButton}
+                  >
+                    <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
+                  </TouchableWeb>
+                </View>
+                <DateTimePicker
+                  value={consultationPickerDate}
+                  mode="date"
+                  display="spinner"
+                  onChange={onConsultationDateChange}
+                  minimumDate={new Date()}
+                  textColor={COLORS.text}
+                />
+                <TouchableWeb
+                  style={styles.pickerConfirmButton}
+                  onPress={confirmConsultationDateSelection}
+                >
+                  <LinearGradient
+                    colors={GRADIENTS.header}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 0, y: 1 }}
+                    style={styles.pickerConfirmGradient}
+                  >
+                    <Text style={styles.pickerConfirmText}>Done</Text>
+                  </LinearGradient>
+                </TouchableWeb>
+              </View>
+            </View>
+          )}
+
+          {/* Consultation Date Picker - Android */}
+          {showConsultationDatePicker && Platform.OS === 'android' && (
+            <DateTimePicker
+              value={consultationPickerDate}
+              mode="date"
+              display="default"
+              onChange={onConsultationDateChange}
+              minimumDate={new Date()}
+            />
+          )}
+
+          {/* Consultation Time Picker - iOS */}
+          {showConsultationTimePicker && Platform.OS === 'ios' && (
+            <View style={styles.pickerOverlay}>
+              <View style={styles.pickerContainer}>
+                <View style={styles.pickerHeader}>
+                  <Text style={styles.pickerTitle}>Select Time</Text>
+                  <TouchableWeb
+                    onPress={() => setShowConsultationTimePicker(false)}
+                    style={styles.pickerCloseButton}
+                  >
+                    <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
+                  </TouchableWeb>
+                </View>
+                <DateTimePicker
+                  value={consultationPickerTime}
+                  mode="time"
+                  display="spinner"
+                  onChange={onConsultationTimeChange}
+                  textColor={COLORS.text}
+                />
+                <TouchableWeb
+                  style={styles.pickerConfirmButton}
+                  onPress={confirmConsultationTimeSelection}
+                >
+                  <LinearGradient
+                    colors={GRADIENTS.header}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 0, y: 1 }}
+                    style={styles.pickerConfirmGradient}
+                  >
+                    <Text style={styles.pickerConfirmText}>Done</Text>
+                  </LinearGradient>
+                </TouchableWeb>
+              </View>
+            </View>
+          )}
+
+          {/* Consultation Time Picker - Android */}
+          {showConsultationTimePicker && Platform.OS === 'android' && (
+            <DateTimePicker
+              value={consultationPickerTime}
+              mode="time"
+              display="default"
+              onChange={onConsultationTimeChange}
+            />
+          )}
+        </Pressable>
+      </Modal>
+
       {/* Nurse Selection Modal */}
       <Modal
         animationType="slide"
@@ -1789,7 +2821,7 @@ export default function BookScreen({ navigation, route }) {
         visible={nurseDetailsModalVisible}
         onClose={() => setNurseDetailsModalVisible(false)}
         nurse={selectedNurseDetails}
-        nursesRoster={offlineNurses}
+        nursesRoster={nurses}
         footer={
           <TouchableWeb
             style={styles.selectNurseButton}
@@ -1848,7 +2880,7 @@ export default function BookScreen({ navigation, route }) {
                 <MaterialCommunityIcons name="information-outline" size={24} color={COLORS.primary} />
                 <Text style={styles.depositInfoTitle}>Deposit Payment Required</Text>
                 <Text style={styles.depositInfoDescription}>
-                  A 20% deposit is required to confirm your appointment. The remaining balance will be due after service completion.
+                  A {depositPercentSetting}% deposit is required to confirm your appointment. The remaining balance will be due after service completion.
                 </Text>
                 <Text style={[styles.depositInfoDescription, { color: '#EF4444', marginTop: 8, fontFamily: 'Poppins_600SemiBold' }]}>
                   Note: Deposit is non-refundable if service is cancelled.
@@ -2111,6 +3143,208 @@ const styles = StyleSheet.create({
     backgroundColor: COLORS.white,
     borderRadius: 8,
   },
+  allergyOptionsWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 6,
+  },
+  allergyCheckboxList: {
+    marginTop: 6,
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+    rowGap: 10,
+    columnGap: 10,
+  },
+  allergyCheckboxRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 10,
+    paddingHorizontal: 12,
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    width: '48%',
+  },
+  allergyCheckboxLabel: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+    flex: 1,
+  },
+  allergyOptionChip: {
+    borderRadius: 18,
+    overflow: 'hidden',
+  },
+  allergyOptionChipInner: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 18,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  allergyOptionChipGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 18,
+  },
+  allergyOptionChipText: {
+    fontSize: 13,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+  },
+  allergyOptionChipTextSelected: {
+    fontSize: 13,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.white,
+  },
+  allergySelectedChipsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingRight: 6,
+  },
+  vitalsRow: {
+    flexDirection: 'row',
+    gap: SPACING.md,
+    marginTop: 10,
+  },
+  vitalField: {
+    flex: 1,
+  },
+  vitalLabel: {
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.textMuted,
+    marginBottom: 6,
+  },
+  allergyHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  allergyAddButton: {
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  allergyAddButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  allergyAddButtonText: {
+    fontSize: 12,
+    lineHeight: 14,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.white,
+    marginTop: 1,
+  },
+  allergySelectedText: {
+    marginTop: 10,
+    fontSize: 13,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textLight,
+  },
+  allergyModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  allergyModalCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    maxWidth: 520,
+    width: '100%',
+    alignSelf: 'center',
+  },
+  allergyModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  allergyModalTitle: {
+    fontSize: 16,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.text,
+    flex: 1,
+  },
+  allergyModalClose: {
+    padding: 6,
+    marginLeft: 10,
+  },
+  allergyModalSearchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  allergyModalSearchInput: {
+    flex: 1,
+    minHeight: 20,
+    fontSize: 14,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.text,
+    paddingVertical: 0,
+  },
+  allergyModalClearSearch: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.background,
+  },
+  allergyModalOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  allergyModalOptionText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+    flex: 1,
+  },
+  allergyModalSectionHeader: {
+    marginTop: 10,
+    paddingTop: 10,
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  allergyModalSectionHeaderText: {
+    fontSize: 12,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.textMuted,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
+  },
   preferredNurseAvatar: {
     width: 28,
     height: 28,
@@ -2195,27 +3429,218 @@ const styles = StyleSheet.create({
     marginBottom: 15,
     paddingHorizontal: 5,
   },
-  editButton: {
+  contactHeaderActions: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#007AFF',
-    paddingHorizontal: 12,
-    paddingVertical: 6,
-    borderRadius: 6,
+    gap: 8,
+  },
+  pillButton: {
+    borderRadius: 999,
+    overflow: 'hidden',
     elevation: 2,
     shadowColor: '#000',
-    shadowOffset: {
-      width: 0,
-      height: 1,
-    },
+    shadowOffset: { width: 0, height: 1 },
     shadowOpacity: 0.22,
     shadowRadius: 2.22,
   },
-  editButtonText: {
-    color: 'white',
+  pillButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    gap: 6,
+  },
+  pillButtonText: {
+    color: COLORS.white,
     fontSize: 12,
-    fontWeight: '600',
-    marginLeft: 4,
+    fontFamily: 'Poppins_600SemiBold',
+  },
+  consultationModalContainer: {
+    backgroundColor: COLORS.white,
+    borderRadius: 20,
+    width: '88%',
+    maxWidth: 360,
+    maxHeight: '70%',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    elevation: 10,
+    overflow: 'hidden',
+  },
+  consultationModalHeader: {
+    paddingHorizontal: 18,
+    paddingTop: 16,
+    paddingBottom: 14,
+  },
+  consultationModalHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  consultationModalTitle: {
+    fontSize: 18,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.white,
+  },
+  consultationModalSubtitle: {
+    marginTop: 6,
+    fontSize: 12,
+    fontFamily: 'Poppins_500Medium',
+    color: 'rgba(255,255,255,0.9)',
+  },
+  consultationModalBody: {
+    padding: 16,
+  },
+  consultationModalBodyContent: {
+    paddingBottom: 8,
+  },
+  consultationRequestText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+    lineHeight: 20,
+    marginBottom: 14,
+    textAlign: 'center',
+  },
+  consultationRequestSubtext: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textLight,
+    lineHeight: 17,
+    marginBottom: 6,
+    textAlign: 'center',
+  },
+  consultationScheduleSection: {
+    marginTop: 14,
+    marginBottom: 6,
+    alignItems: 'center',
+  },
+  consultationScheduleTitle: {
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+    marginBottom: 10,
+    textAlign: 'center',
+  },
+  consultationSchedulePill: {
+    borderRadius: 999,
+    overflow: 'hidden',
+    marginBottom: 10,
+  },
+  consultationPickerRow: {
+    alignSelf: 'stretch',
+    marginBottom: 8,
+  },
+  consultationPickerGroup: {
+    marginBottom: 0,
+  },
+  consultationScheduleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'stretch',
+    gap: 10,
+    marginBottom: 10,
+  },
+  consultationSchedulePillRow: {
+    marginBottom: 0,
+    minWidth: 140,
+    maxWidth: 160,
+  },
+  consultationSchedulePillGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    gap: 6,
+  },
+  consultationSchedulePillText: {
+    color: COLORS.white,
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+  },
+  consultationSlotWrap: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  consultationSlotScroll: {
+    flex: 1,
+  },
+  consultationSlotRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingVertical: 2,
+    paddingRight: 2,
+  },
+  consultationSlotPill: {
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  consultationSlotPillGradient: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 999,
+  },
+  consultationSlotPillText: {
+    color: COLORS.white,
+    fontSize: 11,
+    fontFamily: 'Poppins_600SemiBold',
+    textAlign: 'center',
+  },
+  consultationScheduleHint: {
+    fontSize: 11,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textLight,
+    textAlign: 'center',
+  },
+  consultationDetailCard: {
+    backgroundColor: COLORS.background,
+    borderRadius: 12,
+    padding: SPACING.md,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    marginBottom: SPACING.md,
+  },
+  consultationIntroText: {
+    fontSize: 13,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+    marginBottom: 12,
+    lineHeight: 18,
+  },
+  consultationDetailRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    marginBottom: 10,
+  },
+  consultationStepBadge: {
+    width: 22,
+    height: 22,
+    borderRadius: 11,
+    backgroundColor: COLORS.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginTop: 1,
+  },
+  consultationStepNumber: {
+    fontSize: 12,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.white,
+    lineHeight: 14,
+  },
+  consultationDetailText: {
+    flex: 1,
+    fontSize: 13,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.text,
+    lineHeight: 18,
   },
   editableInput: {
     backgroundColor: COLORS.white,
@@ -2302,6 +3727,65 @@ const styles = StyleSheet.create({
     color: COLORS.textMuted,
     textAlign: 'center',
     lineHeight: 18,
+  },
+  consultationCard: {
+    marginBottom: SPACING.lg,
+    padding: SPACING.md,
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  consultationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: SPACING.md,
+    marginBottom: SPACING.md,
+  },
+  consultationIconWrap: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: COLORS.infoLight,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  consultationTextWrap: {
+    flex: 1,
+    minWidth: 0,
+  },
+  consultationTitle: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+  },
+  consultationSubtitle: {
+    marginTop: 2,
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textLight,
+  },
+  consultationButton: {
+    borderRadius: 8,
+    overflow: 'hidden',
+    shadowColor: COLORS.primary,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 6,
+    elevation: 3,
+  },
+  consultationButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    gap: SPACING.sm,
+    paddingVertical: 10,
+    paddingHorizontal: SPACING.md,
+  },
+  consultationButtonText: {
+    fontSize: 13,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.white,
   },
   input: {
     flex: 1,

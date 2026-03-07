@@ -9,6 +9,7 @@ import {
   Modal,
   Image,
   TextInput,
+  Keyboard,
   Platform,
 } from 'react-native';
 import DateTimePicker from '@react-native-community/datetimepicker';
@@ -29,6 +30,7 @@ import RecurringShiftDetailsModal from '../components/RecurringShiftDetailsModal
 import InvoiceService from '../services/InvoiceService';
 import ApiService from '../services/ApiService';
 import FygaroPaymentService from '../services/FygaroPaymentService';
+import FirebaseService from '../services/FirebaseService';
 import { getNurseName, formatTimeTo12Hour } from '../utils/formatters';
 import NurseInfoCard from '../components/NurseInfoCard';
 import NotesAccordionList from '../components/NotesAccordionList';
@@ -42,6 +44,9 @@ export default function AppointmentsScreen({ navigation, route }) {
   const { services } = useServices();
   const insets = useSafeAreaInsets();
   const [activeTab, setActiveTab] = useState('upcoming');
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
+  const [searchQuery, setSearchQuery] = useState('');
+  const searchInputRef = useRef(null);
   const [refreshKey, setRefreshKey] = useState(0);
   const [detailsModalVisible, setDetailsModalVisible] = useState(false);
   const [recurringShiftDetailsModalVisible, setRecurringShiftDetailsModalVisible] = useState(false);
@@ -59,6 +64,11 @@ export default function AppointmentsScreen({ navigation, route }) {
   const [confidentialityAccepted, setConfidentialityAccepted] = useState(false);
   const [currentAppointmentForNotes, setCurrentAppointmentForNotes] = useState(null);
   const [shouldReopenDetailsAfterConfidentiality, setShouldReopenDetailsAfterConfidentiality] = useState(false);
+
+  // Medical Report Request (paid)
+  const [medicalReportModalVisible, setMedicalReportModalVisible] = useState(false);
+  const [medicalReportEmail, setMedicalReportEmail] = useState('');
+  const [medicalReportSubmitting, setMedicalReportSubmitting] = useState(false);
   
   // Date/Time Picker State
   const [showDatePicker, setShowDatePicker] = useState(false);
@@ -2038,6 +2048,219 @@ export default function AppointmentsScreen({ navigation, route }) {
     return items;
   }, [activeTab, displayedAppointments]);
 
+  const displayedAppointmentsSearched = useMemo(() => {
+    const rawQuery = String(searchQuery || '').trim().toLowerCase();
+    if (!rawQuery) return displayedAppointmentsSorted;
+
+    const terms = rawQuery.split(/\s+/).filter(Boolean);
+    if (terms.length === 0) return displayedAppointmentsSorted;
+
+    const safeText = (value) => {
+      if (value === null || value === undefined) return '';
+      return String(value);
+    };
+
+    const buildHaystack = (item) => {
+      const nurseCandidate =
+        item?.nurse ||
+        item?.nurseName ||
+        item?.assignedNurse ||
+        item?.requestedNurse ||
+        item?.selectedNurse ||
+        null;
+
+      const nurseText = getNurseName(nurseCandidate);
+      const serviceText = safeText(item?.service || item?.serviceName || item?.serviceTitle || item?.title);
+      const statusText = safeText(item?.status);
+      const dateText = safeText(item?.date || item?.appointmentDate || item?.scheduledDate || item?.startDate);
+      const timeText = safeText(item?.time || item?.startTime);
+      const endTimeText = safeText(item?.endTime);
+      const idText = safeText(item?.id || item?._id || item?.appointmentId || item?.shiftRequestId || item?.shiftId);
+
+      const locationText = safeText(
+        item?.location ||
+          item?.address ||
+          item?.parish ||
+          item?.city ||
+          item?.addressLine1 ||
+          item?.addressLine
+      );
+
+      const notesText = safeText(item?.notes || item?.reason || item?.description);
+
+      return `${serviceText} ${nurseText} ${statusText} ${dateText} ${timeText} ${endTimeText} ${locationText} ${notesText} ${idText}`
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim();
+    };
+
+    return displayedAppointmentsSorted.filter((item) => {
+      const haystack = buildHaystack(item);
+      if (!haystack) return false;
+      return terms.every((t) => haystack.includes(t));
+    });
+  }, [displayedAppointmentsSorted, searchQuery]);
+
+  const suggestionSearchResults = useMemo(() => {
+    const rawQuery = String(searchQuery || '').trim().toLowerCase();
+    if (!rawQuery) return [];
+
+    const terms = rawQuery.split(/\s+/).filter(Boolean);
+    if (terms.length === 0) return [];
+
+    const safeText = (value) => {
+      if (value === null || value === undefined) return '';
+      return String(value);
+    };
+
+    const buildHaystack = (item) => {
+      const nurseCandidate =
+        item?.nurse ||
+        item?.nurseName ||
+        item?.assignedNurse ||
+        item?.requestedNurse ||
+        item?.selectedNurse ||
+        null;
+
+      const nurseText = getNurseName(nurseCandidate);
+      const serviceText = safeText(item?.service || item?.serviceName || item?.serviceTitle || item?.title);
+      const statusText = safeText(item?.status);
+      const dateText = safeText(item?.date || item?.appointmentDate || item?.scheduledDate || item?.startDate);
+      const timeText = safeText(item?.time || item?.startTime);
+      const endTimeText = safeText(item?.endTime);
+      const idText = safeText(item?.id || item?._id || item?.appointmentId || item?.shiftRequestId || item?.shiftId);
+
+      const locationText = safeText(
+        item?.location ||
+          item?.address ||
+          item?.parish ||
+          item?.city ||
+          item?.addressLine1 ||
+          item?.addressLine
+      );
+
+      const notesText = safeText(item?.notes || item?.reason || item?.description);
+
+      return `${serviceText} ${nurseText} ${statusText} ${dateText} ${timeText} ${endTimeText} ${locationText} ${notesText} ${idText}`
+        .toLowerCase()
+        .replace(/\s+/g, ' ')
+        .trim();
+    };
+
+    const dedupe = new Set();
+    const results = [];
+    const pushAll = (items, tab) => {
+      if (!Array.isArray(items)) return;
+      for (const item of items) {
+        const id = item?.id || item?._id || item?.appointmentId || item?.shiftRequestId || item?.shiftId || null;
+        const key = id
+          ? String(id)
+          : `${String(item?.service || '')}-${String(item?.date || item?.appointmentDate || '')}-${String(item?.startTime || item?.time || '')}`;
+        if (dedupe.has(key)) continue;
+        const haystack = buildHaystack(item);
+        if (!haystack) continue;
+        if (!terms.every((t) => haystack.includes(t))) continue;
+        dedupe.add(key);
+        results.push({ item, tab, key });
+        if (results.length >= 8) return;
+      }
+    };
+
+    pushAll(allUpcomingAppointments, 'upcoming');
+    pushAll(allPendingItems, 'pending');
+    pushAll(allPastAppointments, 'past');
+
+    return results;
+  }, [allPastAppointments, allPendingItems, allUpcomingAppointments, getNurseName, searchQuery]);
+
+  const openAppointmentRecord = (record) => {
+    if (!record) return;
+    setSelectedAppointment(record);
+
+    const hasShiftRequestMarkers = Boolean(
+      record?.isShiftRequest ||
+        record?.shiftRequestId ||
+        record?.shiftId ||
+        record?.requestId ||
+        record?.assignmentId ||
+        record?.approvedAt ||
+        (Array.isArray(record?.coverageRequests) && record.coverageRequests.length > 0) ||
+        Boolean(record?.clockByNurse)
+    );
+
+    const hasShiftTimes = Boolean(
+      record?.startTime &&
+        record?.endTime &&
+        (
+          record.status === 'approved' ||
+          record.status === 'active' ||
+          record.status === 'clocked-in' ||
+          record.status === 'in-progress' ||
+          record.status === 'pending' ||
+          record.status === 'completed' ||
+          record.nurseId ||
+          record.nurseName
+        )
+    );
+
+    const isShift = Boolean(record?.isShift || hasShiftRequestMarkers || hasShiftTimes);
+    const isRecurring = Boolean(
+      record.isRecurring ||
+        record.isRecurringInstance ||
+        record.recurringScheduleId ||
+        record.recurringSchedule ||
+        record.recurringFrequency ||
+        record.seriesId ||
+        isShift
+    );
+
+    if (isRecurring) {
+      setRecurringShiftDetailsModalVisible(true);
+    } else {
+      setDetailsModalVisible(true);
+    }
+  };
+
+  const searchSuggestions = useMemo(() => {
+    const rawQuery = String(searchQuery || '').trim();
+    if (!rawQuery) return [];
+    if (!Array.isArray(suggestionSearchResults) || suggestionSearchResults.length === 0) return [];
+
+    const formatDate = (item) => String(item?.date || item?.appointmentDate || item?.scheduledDate || item?.startDate || '').trim();
+    const formatTime = (item) => {
+      const t = item?.time || item?.startTime || '';
+      return t ? formatTimeTo12Hour(t) : '';
+    };
+
+    const results = [];
+
+    for (const match of suggestionSearchResults) {
+      const item = match?.item;
+      if (!item) continue;
+
+      const serviceText = String(item?.service || item?.serviceName || item?.serviceTitle || 'Appointment');
+      const nurseCandidate =
+        item?.nurse || item?.nurseName || item?.assignedNurse || item?.requestedNurse || item?.selectedNurse || null;
+      const nurseText = getNurseName(nurseCandidate);
+      const dateText = formatDate(item);
+      const timeText = formatTime(item);
+      const statusText = String(item?.status || '').trim();
+
+      const subtitleParts = [dateText, timeText, nurseText, statusText].filter(Boolean);
+
+      results.push({
+        key: match.key,
+        item,
+        tab: match.tab,
+        title: serviceText,
+        subtitle: subtitleParts.join(' • '),
+      });
+      if (results.length >= 6) break;
+    }
+
+    return results;
+  }, [suggestionSearchResults, searchQuery, formatTimeTo12Hour, getNurseName]);
+
   // Helper to check if appointment is recurring
   const isRecurringAppointment = (appointment) => {
     if (!appointment) return false;
@@ -2520,12 +2743,77 @@ export default function AppointmentsScreen({ navigation, route }) {
       return;
     }
     
-    // Bypass payment and directly unlock notes
-    console.log('Unlocking nurse notes for appointment (bypassed payment):', selectedAppointment.id);
-    setNurseNotesUnlocked(prev => ({
-      ...prev,
-      [selectedAppointment.id]: true
-    }));
+    // Show payment confirmation
+    Alert.alert(
+      'Unlock Nurse Notes',
+      'Pay JMD $500 to unlock nurse notes for this completed appointment?',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        {
+          text: 'Pay Now',
+          onPress: async () => {
+            try {
+              const paymentResult = await FygaroPaymentService.initializePayment({
+                amount: 500,
+                currency: 'JMD',
+                appointmentId: selectedAppointment.id,
+                customerId: user?.id,
+                customerName: user?.fullName || user?.name,
+                customerEmail: user?.email,
+                customerPhone: user?.phone,
+                description: 'Nurse Notes Access Fee',
+                metadata: {
+                  type: 'nurse_notes',
+                  appointmentId: selectedAppointment.id,
+                }
+              });
+
+              if (paymentResult.success) {
+                // For web, open in new tab
+                if (Platform.OS === 'web') {
+                  window.open(paymentResult.paymentUrl, '_blank');
+                  Alert.alert(
+                    'Payment Window Opened',
+                    'Complete your payment in the new window. Once done, the nurse notes will be unlocked.',
+                    [{ text: 'OK' }]
+                  );
+                } else {
+                  // For mobile, navigate to payment webview
+                  navigation.navigate('PaymentWebview', {
+                    paymentUrl: paymentResult.paymentUrl,
+                    sessionId: paymentResult.sessionId,
+                    transactionId: paymentResult.transactionId,
+                    appointmentId: selectedAppointment.id,
+                    onSuccess: async () => {
+                      setNurseNotesUnlocked(prev => ({
+                        ...prev,
+                        [selectedAppointment.id]: true
+                      }));
+                      Alert.alert(
+                        'Success',
+                        'Payment successful! You now have access to the nurse notes.',
+                        [{ text: 'OK' }]
+                      );
+                    }
+                  });
+                }
+              } else {
+                Alert.alert(
+                  'Payment Error',
+                  paymentResult.error || 'Failed to initialize payment. Please try again.'
+                );
+              }
+            } catch (error) {
+              console.error('Payment Error:', error);
+              Alert.alert(
+                'Payment Error',
+                'An error occurred while processing your payment. Please try again.'
+              );
+            }
+          },
+        },
+      ],
+    );
   };
 
   const handleCloseConfidentialityModal = (reopenDetails = true) => {
@@ -2553,6 +2841,166 @@ export default function AppointmentsScreen({ navigation, route }) {
     }, 100);
   };
 
+  const openMedicalReportRequestModal = () => {
+    setMedicalReportEmail((user?.email || '').trim());
+    setMedicalReportModalVisible(true);
+  };
+
+  const closeMedicalReportRequestModal = () => {
+    if (medicalReportSubmitting) return;
+    setMedicalReportModalVisible(false);
+  };
+
+  const createMedicalReportRequest = async ({ transactionId, sessionId }) => {
+    const email = String(medicalReportEmail || '').trim();
+    if (!email) {
+      throw new Error('Email address is required');
+    }
+
+    const payload = {
+      patientId: user?.id || email,
+      patientAuthUid: user?.id || null,
+      patientName: user?.fullName || user?.displayName || user?.name || 
+        (user?.firstName || user?.lastName ? `${user?.firstName || ''} ${user?.lastName || ''}`.trim() : null) || 
+        'Patient',
+      patientEmail: email,
+      currency: 'JMD',
+      amountJmd: 500,
+      paymentTransactionId: transactionId || null,
+      paymentSessionId: sessionId || null,
+      paymentProvider: 'fygaro',
+      paymentStatus: transactionId ? 'paid' : 'not_collected',
+      status: 'pending',
+      source: 'AppointmentsScreen',
+    };
+
+    const res = await FirebaseService.createMedicalReportRequest(payload);
+    console.log('✅ Medical report request created:', { success: res?.success, id: res?.id, payload });
+    if (!res?.success) {
+      throw new Error(res?.error || 'Failed to save request');
+    }
+    return res;
+  };
+
+  const handlePayAndSubmitMedicalReportRequest = async () => {
+    if (medicalReportSubmitting) return;
+
+    const email = String(medicalReportEmail || '').trim();
+    if (!email) {
+      Alert.alert('Email Required', 'Please enter the email address to receive the medical report.');
+      return;
+    }
+
+    setMedicalReportSubmitting(true);
+    try {
+      const initResult = await FygaroPaymentService.initializePayment({
+        amount: 500,
+        currency: 'JMD',
+        appointmentId: null,
+        customerId: user?.id || email,
+        customerName: user?.name || 'Patient',
+        customerEmail: email,
+        customerPhone: user?.phone || '',
+        description: 'Medical Report Request',
+        metadata: {
+          type: 'medical_report',
+          patientAuthUid: user?.id || null,
+        },
+      });
+
+      // If Fygaro is disabled, still submit the request (no payment captured).
+      if (!initResult?.success && String(initResult?.error || '').toLowerCase().includes('temporarily disabled')) {
+        closeMedicalReportRequestModal();
+        await createMedicalReportRequest({ transactionId: null, sessionId: null });
+        setTimeout(() => {
+          Alert.alert('Request Submitted', 'Your medical report request has been submitted.');
+        }, 250);
+        return;
+      }
+
+      if (!initResult?.success || !initResult?.paymentUrl) {
+        throw new Error(initResult?.error || 'Failed to initialize payment');
+      }
+
+      closeMedicalReportRequestModal();
+
+      if (Platform.OS === 'web') {
+        try {
+          window.open(initResult.paymentUrl, '_blank');
+        } catch (_) {
+          // ignore
+        }
+
+        Alert.alert(
+          'Payment Opened',
+          'Complete payment in the new tab. Then return here and tap “Verify Payment” to submit your request.',
+          [
+            {
+              text: 'Verify Payment',
+              onPress: async () => {
+                try {
+                  const verification = await FygaroPaymentService.verifyPayment(initResult.transactionId);
+                  if (!verification?.success) {
+                    throw new Error(verification?.error || 'Payment verification failed');
+                  }
+                  await createMedicalReportRequest({
+                    transactionId: verification.transactionId || initResult.transactionId,
+                    sessionId: initResult.sessionId,
+                  });
+                  Alert.alert('Request Submitted', 'Your medical report request has been submitted.');
+                } catch (e) {
+                  Alert.alert('Verification Error', e?.message || 'Failed to verify payment.');
+                }
+              },
+            },
+            { text: 'OK' },
+          ]
+        );
+        return;
+      }
+
+      navigation.navigate('PaymentWebview', {
+        paymentUrl: initResult.paymentUrl,
+        sessionId: initResult.sessionId,
+        transactionId: initResult.transactionId,
+        onSuccess: async (verificationResult) => {
+          try {
+            await createMedicalReportRequest({
+              transactionId: verificationResult?.transactionId || initResult.transactionId,
+              sessionId: initResult.sessionId,
+            });
+            setTimeout(() => {
+              Alert.alert('Request Submitted', 'Your medical report request has been submitted.');
+            }, 250);
+          } catch (e) {
+            setTimeout(() => {
+              Alert.alert('Request Error', 'Payment succeeded, but we could not save your request. Please contact support.');
+            }, 250);
+          }
+        },
+        onPaymentSuccess: async (verificationResult) => {
+          try {
+            await createMedicalReportRequest({
+              transactionId: verificationResult?.transactionId || initResult.transactionId,
+              sessionId: initResult.sessionId,
+            });
+            setTimeout(() => {
+              Alert.alert('Request Submitted', 'Your medical report request has been submitted.');
+            }, 250);
+          } catch (e) {
+            setTimeout(() => {
+              Alert.alert('Request Error', 'Payment succeeded, but we could not save your request. Please contact support.');
+            }, 250);
+          }
+        },
+      });
+    } catch (error) {
+      Alert.alert('Payment Error', error?.message || 'Failed to process payment');
+    } finally {
+      setMedicalReportSubmitting(false);
+    }
+  };
+
   return (
     <SafeAreaView style={styles.container} edges={[]}>
       {/* Header */}
@@ -2563,11 +3011,190 @@ export default function AppointmentsScreen({ navigation, route }) {
         style={[styles.header, { paddingTop: insets.top + 20 }]}
       >
         <View style={styles.headerRow}>
-          <View style={{ width: 44 }} />
+          <TouchableWeb
+            style={styles.clearButton}
+            activeOpacity={0.8}
+            onPress={openMedicalReportRequestModal}
+          >
+            <MaterialCommunityIcons
+              name="file-document-outline"
+              size={22}
+              color={COLORS.white}
+            />
+          </TouchableWeb>
           <Text style={styles.welcomeText}>My Appointments</Text>
-          <View style={{ width: 44 }} />
+          <TouchableWeb
+            style={styles.clearButton}
+            activeOpacity={0.8}
+            onPress={() => {
+              setIsSearchOpen((prev) => {
+                const next = !prev;
+                if (!next) {
+                  Keyboard.dismiss();
+                  setSearchQuery('');
+                } else {
+                  setTimeout(() => {
+                    try {
+                      searchInputRef.current?.focus?.();
+                    } catch (e) {}
+                  }, 0);
+                }
+                return next;
+              });
+            }}
+          >
+            <MaterialCommunityIcons
+              name={isSearchOpen ? 'close' : 'magnify'}
+              size={22}
+              color={COLORS.white}
+            />
+          </TouchableWeb>
         </View>
+
+        {isSearchOpen && (
+          <>
+            <View style={styles.headerSearchBar}>
+              <TextInput
+                ref={searchInputRef}
+                style={styles.headerSearchInput}
+                placeholder="Search appointments..."
+                value={searchQuery}
+                onChangeText={setSearchQuery}
+                placeholderTextColor={COLORS.white + '80'}
+                autoCorrect={false}
+                autoCapitalize="none"
+                returnKeyType="search"
+              />
+              {String(searchQuery || '').length > 0 && (
+                <TouchableWeb onPress={() => setSearchQuery('')} style={styles.clearSearchButton} activeOpacity={0.8}>
+                  <MaterialCommunityIcons name="close" size={20} color={COLORS.white} />
+                </TouchableWeb>
+              )}
+            </View>
+
+            {searchSuggestions.length > 0 && (
+              <View style={styles.headerSuggestionsContainer}>
+                {searchSuggestions.map((s) => (
+                  <TouchableWeb
+                    key={s.key}
+                    activeOpacity={0.75}
+                    style={styles.headerSuggestionItem}
+                    onPress={() => {
+                      Keyboard.dismiss();
+                      setSearchQuery('');
+                      setIsSearchOpen(false);
+                      if (s.tab === 'pending' || s.tab === 'upcoming' || s.tab === 'past') {
+                        setActiveTab(s.tab);
+                      }
+                      setTimeout(() => {
+                        openAppointmentRecord(s.item);
+                      }, 0);
+                    }}
+                  >
+                    <View style={styles.headerSuggestionTextWrap}>
+                      <Text style={styles.headerSuggestionTitle} numberOfLines={1}>
+                        {s.title}
+                      </Text>
+                      <Text style={styles.headerSuggestionSubtitle} numberOfLines={1}>
+                        {s.subtitle}
+                      </Text>
+                    </View>
+                    <MaterialCommunityIcons name="chevron-right" size={20} color={COLORS.white} />
+                  </TouchableWeb>
+                ))}
+              </View>
+            )}
+          </>
+        )}
       </LinearGradient>
+
+      {/* Medical Report Request Modal */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        visible={medicalReportModalVisible}
+        presentationStyle="overFullScreen"
+        onRequestClose={closeMedicalReportRequestModal}
+      >
+        <View style={styles.detailsModalOverlay}>
+          <TouchableWeb
+            style={styles.modalOverlayTouchable}
+            activeOpacity={1}
+            onPress={closeMedicalReportRequestModal}
+          />
+          <View style={styles.detailsModalContainer}>
+            <View style={styles.detailsModalHeader}>
+              <Text style={styles.detailsModalTitle}>Medical Report</Text>
+              <TouchableWeb onPress={closeMedicalReportRequestModal} disabled={medicalReportSubmitting}>
+                <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
+              </TouchableWeb>
+            </View>
+
+            <ScrollView
+              style={styles.detailsModalContent}
+              showsVerticalScrollIndicator={false}
+              nestedScrollEnabled={true}
+              removeClippedSubviews={false}
+              scrollEventThrottle={16}
+              keyboardShouldPersistTaps="handled"
+            >
+              <View style={styles.confidentialityContent}>
+                <View style={styles.confidentialityIconContainer}>
+                  <MaterialCommunityIcons name="file-document" size={60} color={COLORS.primary} />
+                </View>
+
+                <Text style={styles.confidentialityTitle}>Request a Medical Report</Text>
+                <Text style={styles.confidentialityText}>
+                  A one-time fee of JMD $1.00 applies. Enter the email address where you want to receive the report.
+                </Text>
+
+                <Text style={[styles.formLabel, { marginTop: 6 }]}>Email</Text>
+                <View style={styles.formInput}>
+                  <MaterialCommunityIcons name="email-outline" size={18} color={COLORS.textLight} />
+                  <TextInput
+                    style={styles.input}
+                    value={medicalReportEmail}
+                    onChangeText={setMedicalReportEmail}
+                    placeholder="you@example.com"
+                    placeholderTextColor={COLORS.textLight}
+                    keyboardType="email-address"
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    editable={!medicalReportSubmitting}
+                  />
+                </View>
+              </View>
+            </ScrollView>
+
+            <View style={styles.modalFooter}>
+              <TouchableWeb
+                style={styles.modalCancelButton}
+                onPress={closeMedicalReportRequestModal}
+                disabled={medicalReportSubmitting}
+              >
+                <Text style={styles.modalCancelButtonText}>Cancel</Text>
+              </TouchableWeb>
+              <TouchableWeb
+                style={[styles.modalRescheduleButton, medicalReportSubmitting && styles.buttonDisabled]}
+                onPress={handlePayAndSubmitMedicalReportRequest}
+                disabled={medicalReportSubmitting}
+              >
+                <LinearGradient
+                  colors={['#10b981', '#059669']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={styles.modalRescheduleButtonGradient}
+                >
+                  <MaterialCommunityIcons name="cash" size={18} color={COLORS.white} />
+                  <Text style={styles.modalRescheduleButtonText}>
+                    {medicalReportSubmitting ? 'Processing…' : 'Pay J$1.00'}
+                  </Text>
+                </LinearGradient>
+              </TouchableWeb>
+            </View>
+          </View>
+        </View>
+      </Modal>
 
       {/* Watermark Logo */}
       <Image
@@ -2653,20 +3280,36 @@ export default function AppointmentsScreen({ navigation, route }) {
       </View>
 
       <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false}>
-        {displayedAppointmentsSorted.length === 0 ? (
+        {displayedAppointmentsSearched.length === 0 ? (
           <View style={styles.emptyState}>
             <MaterialCommunityIcons name="calendar-blank" size={80} color={COLORS.border} />
             <Text style={styles.emptyTitle}>
-              No {activeTab === 'pending' ? 'pending' : activeTab} appointments
+              {String(searchQuery || '').trim().length > 0
+                ? 'No matching appointments'
+                : `No ${activeTab === 'pending' ? 'pending' : activeTab} appointments`}
             </Text>
             <Text style={styles.emptyText}>
-              {activeTab === 'upcoming'
+              {String(searchQuery || '').trim().length > 0
+                ? 'Try a different search or clear it.'
+                : activeTab === 'upcoming'
                 ? 'Book a service to get started'
                 : activeTab === 'pending'
                 ? 'No appointments waiting for your confirmation'
                 : 'Your completed appointments will appear here'}
             </Text>
-            {(activeTab === 'upcoming' || activeTab === 'pending') && (
+            {String(searchQuery || '').trim().length > 0 ? (
+              <TouchableWeb style={styles.bookButton} onPress={() => setSearchQuery('')} activeOpacity={0.8}>
+                <LinearGradient
+                  colors={GRADIENTS.header}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 0, y: 1 }}
+                  style={styles.bookButtonGradient}
+                >
+                  <MaterialCommunityIcons name="close" size={20} color={COLORS.white} />
+                  <Text style={styles.bookButtonText}>Clear Search</Text>
+                </LinearGradient>
+              </TouchableWeb>
+            ) : (activeTab === 'upcoming' || activeTab === 'pending') && (
               <TouchableWeb
                 style={styles.bookButton}
                 onPress={() => navigation.navigate('Book')}
@@ -2686,7 +3329,7 @@ export default function AppointmentsScreen({ navigation, route }) {
           </View>
         ) : (
           <View style={styles.appointmentsList}>
-            {displayedAppointmentsSorted.map((appointment, index) => {
+            {displayedAppointmentsSearched.map((appointment, index) => {
               // Enhanced shift detection: Check for shift-request indicators
               const hasShiftRequestMarkers = Boolean(
                 appointment?.isShiftRequest ||
@@ -2865,6 +3508,106 @@ export default function AppointmentsScreen({ navigation, route }) {
             >
               {selectedAppointment && (
                 <>
+                  {(() => {
+                    const statusLower = String(selectedAppointment?.status || '').trim().toLowerCase();
+                    const isPendingModal =
+                      activeTab === 'pending' ||
+                      ['pending', 'requested', 'awaiting', 'unassigned', 'assigned'].includes(statusLower);
+                    
+                    if (!isPendingModal) return null;
+
+                    let patientAlerts =
+                      selectedAppointment?.patientAlerts ||
+                      selectedAppointment?.clinicalInfo ||
+                      selectedAppointment?.appointmentDetails?.patientAlerts ||
+                      selectedAppointment?.bookingDetails?.patientAlerts ||
+                      selectedAppointment?.requestDetails?.patientAlerts ||
+                      null;
+
+                    if (typeof patientAlerts === 'string') {
+                      try {
+                        patientAlerts = JSON.parse(patientAlerts);
+                      } catch (e) {
+                        patientAlerts = null;
+                      }
+                    }
+
+                    const allergiesRaw =
+                      patientAlerts?.allergies ||
+                      patientAlerts?.allergyList ||
+                      selectedAppointment?.allergies ||
+                      selectedAppointment?.allergyList ||
+                      null;
+                    const allergies = Array.isArray(allergiesRaw)
+                      ? allergiesRaw.map((a) => String(a).trim()).filter(Boolean)
+                      : [];
+                    const allergyOther = String(
+                      patientAlerts?.allergyOther ||
+                        selectedAppointment?.allergyOther ||
+                        selectedAppointment?.allergyOtherText ||
+                        ''
+                    ).trim();
+
+                    let vitals =
+                      patientAlerts?.vitals ||
+                      patientAlerts?.vitalSigns ||
+                      selectedAppointment?.vitals ||
+                      selectedAppointment?.vitalSigns ||
+                      null;
+
+                    if (typeof vitals === 'string') {
+                      try {
+                        vitals = JSON.parse(vitals);
+                      } catch (e) {
+                        vitals = null;
+                      }
+                    }
+                    const bpSys = String(vitals?.bpSystolic || '').trim();
+                    const bpDia = String(vitals?.bpDiastolic || '').trim();
+                    const hr = String(vitals?.heartRate || '').trim();
+                    const temp = String(vitals?.temperature || '').trim();
+                    const spo2 = String(vitals?.oxygenSaturation || '').trim();
+
+                    const allergiesFiltered = allergies
+                      .map((a) => String(a).trim())
+                      .filter((a) => a && a.toLowerCase() !== 'none')
+                      .filter((a) => !(a === 'Other' && allergyOther));
+
+                    const hasAllergies = allergiesFiltered.length > 0 || Boolean(allergyOther);
+                    const hasVitals = Boolean(bpSys || bpDia || hr || temp || spo2);
+                    
+                    if (!hasAllergies && !hasVitals) return null;
+
+                    const allergyTextParts = [...allergiesFiltered];
+                    if (allergyOther && !allergyTextParts.includes(allergyOther)) allergyTextParts.push(allergyOther);
+                    const allergyText = allergyTextParts.length ? allergyTextParts.join(', ') : '';
+
+                    const vitalsParts = [];
+                    if (bpSys || bpDia) vitalsParts.push(`BP ${bpSys || '?'} / ${bpDia || '?'}`);
+                    if (hr) vitalsParts.push(`HR ${hr}`);
+                    if (temp) vitalsParts.push(`Temp ${temp}`);
+                    if (spo2) vitalsParts.push(`SpO₂ ${spo2}%`);
+                    const vitalsText = vitalsParts.join(' • ');
+
+                    return (
+                      <View style={styles.patientAlertsBanner}>
+                        <MaterialCommunityIcons name="alert-circle" size={18} color={COLORS.error} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.patientAlertsTitle}>Patient Alerts</Text>
+                          {hasAllergies ? (
+                            <Text style={styles.patientAlertsText} numberOfLines={3}>
+                              Patient is allergic to: {allergyText || '—'}
+                            </Text>
+                          ) : null}
+                          {hasVitals ? (
+                            <Text style={styles.patientAlertsText} numberOfLines={3}>
+                              Vitals are: {vitalsText}
+                            </Text>
+                          ) : null}
+                        </View>
+                      </View>
+                    );
+                  })()}
                   <View style={styles.detailsSection}>
                     <Text style={styles.sectionTitle}>Service Information</Text>
                     <View style={styles.detailItem}>
@@ -3166,6 +3909,7 @@ export default function AppointmentsScreen({ navigation, route }) {
                             nurse={requestedNurseForModal}
                             nursesRoster={nurses}
                             style={styles.assignedNurseCard}
+                            contextType="patient"
                           />
                         ) : (
                           <Text style={styles.assignedNurseEmptyText}>
@@ -3186,6 +3930,7 @@ export default function AppointmentsScreen({ navigation, route }) {
                               nurse={assignedNurseForModal}
                               nursesRoster={nurses}
                               style={styles.assignedNurseCard}
+                              contextType="patient"
                             />
                           ) : (
                             <Text style={styles.assignedNurseEmptyText}>
@@ -3461,6 +4206,7 @@ export default function AppointmentsScreen({ navigation, route }) {
                                         hideSpecialty
                                         hideCode
                                         style={isClockedIn ? styles.cardClockedIn : undefined}
+                                        contextType="patient"
                                       />
                                     </View>
                                   );
@@ -4135,12 +4881,8 @@ export default function AppointmentsScreen({ navigation, route }) {
                       {
                         text: 'Pay Now',
                         onPress: async () => {
-                          // TEMPORARILY DISABLED - Fygaro payment
-                          Alert.alert('Payment Temporarily Disabled', 'Online payment processing is currently being updated. Please contact us for alternative payment arrangements.');
-                          
-                          /* DISABLED CODE - Original payment flow
                           try {
-                            const paymentResult = await FygaroPaymentService.processNurseNotesPayment({
+                            const paymentResult = await FygaroPaymentService.initializePayment({
                               appointmentId: currentAppointmentForNotes.id,
                               patientId: user?.id,
                               patientName: user?.name,
@@ -4212,7 +4954,6 @@ export default function AppointmentsScreen({ navigation, route }) {
                               'An error occurred while processing your payment. Please try again.'
                             );
                           }
-                          */ // End of DISABLED payment code
                         },
                       },
                     ],
@@ -4294,6 +5035,28 @@ export default function AppointmentsScreen({ navigation, route }) {
     opacity: 0.05,
     zIndex: 0,
   },
+  patientAlertsBanner: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: COLORS.errorLight,
+    borderWidth: 1,
+    borderColor: COLORS.error,
+    marginBottom: 14,
+  },
+  patientAlertsTitle: {
+    fontSize: 13,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.error,
+    marginBottom: 2,
+  },
+  patientAlertsText: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.text,
+  },
   header: {
     paddingHorizontal: 20,
     paddingBottom: 20,
@@ -4304,6 +5067,63 @@ export default function AppointmentsScreen({ navigation, route }) {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+  },
+  headerSearchBar: {
+    marginTop: 12,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255, 255, 255, 0.18)',
+  },
+  headerSearchInput: {
+    flex: 1,
+    minHeight: 20,
+    color: COLORS.white,
+    fontSize: 14,
+    fontFamily: 'Poppins_400Regular',
+    paddingVertical: 0,
+  },
+  clearSearchButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    backgroundColor: 'rgba(255, 255, 255, 0.16)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  headerSuggestionsContainer: {
+    marginTop: 10,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255, 255, 255, 0.14)',
+    overflow: 'hidden',
+  },
+  headerSuggestionItem: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.white + '22',
+  },
+  headerSuggestionTextWrap: {
+    flex: 1,
+    marginRight: 10,
+  },
+  headerSuggestionTitle: {
+    color: COLORS.white,
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+  },
+  headerSuggestionSubtitle: {
+    marginTop: 2,
+    color: COLORS.white,
+    opacity: 0.9,
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
   },
   clearButton: {
     width: 44,
@@ -4735,6 +5555,30 @@ export default function AppointmentsScreen({ navigation, route }) {
     fontSize: 11,
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.white,
+  },
+  formLabel: {
+    fontSize: 13,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+    marginBottom: 8,
+    marginTop: 12,
+  },
+  formInput: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: COLORS.background,
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    gap: 10,
+  },
+  input: {
+    flex: 1,
+    paddingVertical: 12,
+    fontSize: 14,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.text,
   },
   // Details Modal Styles
   detailsModalOverlay: {

@@ -393,6 +393,8 @@ export function ShiftProvider({ children }) {
     try {
 
       // Transform data to match Firestore format
+      const isRecurring = safeRequestData.isRecurring === true ||
+        (Array.isArray(safeRequestData.daysOfWeek) && safeRequestData.daysOfWeek.length > 0);
       const apiData = sanitizeForFirestore({
         nurseId: safeRequestData.nurseId || user?.id || null,
         nurseName: safeRequestData.nurseName || `${user?.firstName || ''} ${user?.lastName || ''}`.trim() || 'Assigned Nurse',
@@ -406,8 +408,10 @@ export function ShiftProvider({ children }) {
         clientAddress: normalizedAddress,
         service: safeRequestData.service,
         appointmentType: safeRequestData.service,
-        date: safeRequestData.date,
-        scheduledDate: safeRequestData.date,
+        date: safeRequestData.startDate || safeRequestData.date,
+        startDate: safeRequestData.startDate || safeRequestData.date || null,
+        endDate: safeRequestData.endDate || null,
+        scheduledDate: safeRequestData.startDate || safeRequestData.date,
         scheduledTime: normalizedStartTime,
         startTime: normalizedStartTime,
         time: normalizedStartTime,
@@ -415,6 +419,9 @@ export function ShiftProvider({ children }) {
         totalHours: safeRequestData.totalHours || null,
         notes: safeRequestData.notes || null,
         backupNurses: sanitizedBackupNurses,
+        daysOfWeek: safeRequestData.daysOfWeek || [],
+        isRecurring: isRecurring,
+        recurringPattern: safeRequestData.recurringPattern || null,
         location: safeRequestData.location || { address: normalizedAddress },
         clientLocation: safeRequestData.clientLocation || safeRequestData.location?.address || normalizedAddress,
         locationDetails: safeRequestData.location || null,
@@ -422,7 +429,7 @@ export function ShiftProvider({ children }) {
         status: 'pending',
         requestDate: nowIso,
         isShift: true,
-        adminRecurring: false,
+        adminRecurring: safeRequestData.adminRecurring || false,
       });
       
 
@@ -788,22 +795,12 @@ export function ShiftProvider({ children }) {
       const response = await ApiService.denyShiftRequest(requestId, reason);
       
       if (response.success) {
-        // console.log('✅ Shift request denied successfully via API');
+        // console.log('✅ Shift request denied and deleted successfully via API');
         setIsOnline(true);
         
-        // Update local state
+        // Remove from local state
         setShiftRequests(prev => {
-          const updated = prev.map(request => 
-            request.id === requestId 
-              ? {
-                  ...request,
-                  status: 'denied',
-                  approvedBy: adminId,
-                  approvedAt: new Date().toISOString(),
-                  denialReason: reason
-                }
-              : request
-          );
+          const updated = prev.filter(request => request.id !== requestId);
           saveShiftRequests(updated);
           return updated;
         });
@@ -817,19 +814,9 @@ export function ShiftProvider({ children }) {
       setIsOnline(false);
     }
     
-    // Fallback to local storage
+    // Fallback to local storage - remove the request
     setShiftRequests(prev => {
-      const updated = prev.map(request => 
-        request.id === requestId 
-          ? {
-              ...request,
-              status: 'denied',
-              approvedBy: adminId,
-              approvedAt: new Date().toISOString(),
-              denialReason: reason
-            }
-          : request
-      );
+      const updated = prev.filter(request => request.id !== requestId);
       // Save to AsyncStorage
       saveShiftRequests(updated);
       return updated;
@@ -839,35 +826,25 @@ export function ShiftProvider({ children }) {
   // Nurse cancels their own pending shift request
   const cancelShiftRequest = async (requestId, reason = 'Cancelled by nurse') => {
     try {
-      const now = new Date().toISOString();
-      const updated = await ApiService.updateShiftRequest(requestId, {
-        status: 'cancelled',
-        cancelledAt: now,
-        cancellationReason: reason,
+      // Delete the shift request from database
+      await ApiService.deleteShiftRequest(requestId);
+      
+      setIsOnline(true);
+      setShiftRequests(prev => {
+        const next = prev.filter(req => req.id !== requestId);
+        saveShiftRequests(next);
+        return next;
       });
-
-      if (updated) {
-        setIsOnline(true);
-        setShiftRequests(prev => {
-          const next = prev.map(req => req.id === requestId ? { ...req, ...updated } : req);
-          saveShiftRequests(next);
-          return next;
-        });
-        await refreshShiftRequests();
-        return { success: true, shiftRequest: updated };
-      }
+      await refreshShiftRequests();
+      return { success: true };
     } catch (error) {
+      console.error('Error deleting shift request:', error);
       setIsOnline(false);
     }
 
-    // Fallback to local storage
-    const now = new Date().toISOString();
+    // Fallback to local storage - remove from local state
     setShiftRequests(prev => {
-      const updated = prev.map(req =>
-        req.id === requestId
-          ? { ...req, status: 'cancelled', cancelledAt: now, cancellationReason: reason }
-          : req
-      );
+      const updated = prev.filter(req => req.id !== requestId);
       saveShiftRequests(updated);
       return updated;
     });

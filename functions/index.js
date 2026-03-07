@@ -30,6 +30,26 @@ const GMAIL_APP_PASSWORD_SECRET = defineSecret('GMAIL_APP_PASSWORD');
 const GMAIL_FROM_EMAIL_PARAM = defineString('GMAIL_FROM_EMAIL', { default: '' });
 const GMAIL_FROM_NAME_PARAM = defineString('GMAIL_FROM_NAME', { default: '876 Nurses Home Care Services' });
 
+// Brand/contact info (kept non-secret, configurable via env)
+const COMPANY_LEGAL_NAME_PARAM = defineString('COMPANY_LEGAL_NAME', {
+  default: '876 Nurses Home Care Services Limited',
+});
+const COMPANY_ADDRESS_PARAM = defineString('COMPANY_ADDRESS', {
+  default: 'Kingston, Jamaica',
+});
+const COMPANY_WEBSITE_PARAM = defineString('COMPANY_WEBSITE', {
+  default: 'https://www.876nurses.com',
+});
+const COMPANY_INSTAGRAM_URL_PARAM = defineString('COMPANY_INSTAGRAM_URL', {
+  default: 'https://instagram.com/876_nurses',
+});
+const COMPANY_FACEBOOK_URL_PARAM = defineString('COMPANY_FACEBOOK_URL', {
+  default: 'https://facebook.com',
+});
+const COMPANY_WHATSAPP_URL_PARAM = defineString('COMPANY_WHATSAPP_URL', {
+  default: 'https://wa.me/8766189876',
+});
+
 admin.initializeApp();
 
 const ADMIN_NOTIFICATION_ROLES = {
@@ -129,7 +149,7 @@ const getSchedulingAdmins = async () => {
   return Array.from(byEmail.values());
 };
 
-const queueMailDoc = async ({ to, subject, html, text, meta }) => {
+const queueMailDoc = async ({ to, subject, html, text, meta, attachments }) => {
   const payload = {
     to: Array.isArray(to) ? to : [to],
     from: '876 Nurses <876nurses@gmail.com>',
@@ -137,7 +157,7 @@ const queueMailDoc = async ({ to, subject, html, text, meta }) => {
     subject,
     html,
     text,
-    attachments: [],
+    attachments: Array.isArray(attachments) ? attachments : [],
     meta: meta && typeof meta === 'object' ? meta : {},
     createdAt: admin.firestore.FieldValue.serverTimestamp(),
     status: 'queued',
@@ -147,7 +167,178 @@ const queueMailDoc = async ({ to, subject, html, text, meta }) => {
   return ref.id;
 };
 
+const getSocialIconAttachments = () => {
+  const attachments = [];
+  
+  const igPath = path.join(__dirname, 'assets', 'icon-instagram.png');
+  if (fs.existsSync(igPath)) {
+    attachments.push({
+      filename: 'icon-instagram.png',
+      path: igPath,
+      contentType: 'image/png',
+      cid: 'icon-instagram',
+    });
+  }
+
+  const fbPath = path.join(__dirname, 'assets', 'icon-facebook.png');
+  if (fs.existsSync(fbPath)) {
+    attachments.push({
+      filename: 'icon-facebook.png',
+      path: fbPath,
+      contentType: 'image/png',
+      cid: 'icon-facebook',
+    });
+  }
+
+  const waPath = path.join(__dirname, 'assets', 'icon-whatsapp.png');
+  if (fs.existsSync(waPath)) {
+    attachments.push({
+      filename: 'icon-whatsapp.png',
+      path: waPath,
+      contentType: 'image/png',
+      cid: 'icon-whatsapp',
+    });
+  }
+
+  return attachments;
+};
+
 const asArray = (v) => (Array.isArray(v) ? v : []);
+
+const isValidEmail = (email) => {
+  const value = String(email || '').trim();
+  if (!value) return false;
+  // Basic validation; Auth will do stricter validation.
+  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+};
+
+const extractFirstName = (name) => {
+  const value = String(name || '').trim();
+  if (!value) return '';
+  return value.split(/\s+/)[0] || '';
+};
+
+const lookupProfileNameByEmail = async (email) => {
+  const normalizedEmail = normalizeString(email);
+  if (!normalizedEmail) return '';
+
+  const tryCollection = async (collectionName) => {
+    try {
+      const snap = await admin
+        .firestore()
+        .collection(collectionName)
+        .where('email', '==', normalizedEmail)
+        .limit(1)
+        .get();
+      if (snap.empty) return '';
+      const data = snap.docs[0].data() || {};
+      return getDisplayName(data) || '';
+    } catch (_) {
+      return '';
+    }
+  };
+
+  // Prefer role-specific profiles.
+  const fromAdmins = await tryCollection('admins');
+  if (fromAdmins) return fromAdmins;
+
+  const fromNurses = await tryCollection('nurses');
+  if (fromNurses) return fromNurses;
+
+  const fromUsers = await tryCollection('users');
+  if (fromUsers) return fromUsers;
+
+  return '';
+};
+
+const buildPasswordResetEmail = ({ firstName, resetLink }) => {
+  const safeName = String(firstName || '').trim() || 'there';
+  const safeLink = String(resetLink || '').trim();
+
+  const companyLegalName =
+    process.env.COMPANY_LEGAL_NAME || COMPANY_LEGAL_NAME_PARAM.value() || '876 Nurses Home Care Services Limited';
+  const companyAddress = process.env.COMPANY_ADDRESS || COMPANY_ADDRESS_PARAM.value() || 'Kingston, Jamaica';
+  const companyWebsite = process.env.COMPANY_WEBSITE || COMPANY_WEBSITE_PARAM.value() || 'https://www.876nurses.com';
+  const instagramUrl =
+    process.env.COMPANY_INSTAGRAM_URL || COMPANY_INSTAGRAM_URL_PARAM.value() || 'https://instagram.com/876_nurses';
+  const facebookUrl = process.env.COMPANY_FACEBOOK_URL || COMPANY_FACEBOOK_URL_PARAM.value() || 'https://facebook.com';
+  const whatsAppUrl =
+    process.env.COMPANY_WHATSAPP_URL || COMPANY_WHATSAPP_URL_PARAM.value() || 'https://wa.me/8766189876';
+
+  // Use publicly hosted icon URLs
+  const instagramIconUrl = 'https://storage.googleapis.com/nurses-afb7e.firebasestorage.app/email-assets/icon-instagram.png';
+  const facebookIconUrl = 'https://storage.googleapis.com/nurses-afb7e.firebasestorage.app/email-assets/icon-facebook.png';
+  const whatsAppIconUrl = 'https://storage.googleapis.com/nurses-afb7e.firebasestorage.app/email-assets/icon-whatsapp.png';
+
+  const subject = 'Password Reset Request - 876 Nurses';
+  const html = `
+    <!DOCTYPE html>
+    <html>
+    <head>
+      <meta charset="UTF-8" />
+      <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+      <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; color: #1f2a44; margin:0; padding:0; background:#ffffff; }
+        .container { max-width: 600px; margin: 0 auto; padding: 32px 20px; }
+        a { text-decoration:underline; font-weight:700; }
+      </style>
+    </head>
+    <body>
+      <div class="container">
+        <p style="margin:0 0 12px 0;">Hi ${safeName},</p>
+        <p style="margin:0 0 12px 0;">We received a request to reset your password for your 876 Nurses account.</p>
+        <p style="margin:0 0 12px 0;"><a href="${safeLink}">Reset your password</a></p>
+        <p style="margin:0 0 12px 0;">If you didn't request this reset, please ignore this email.</p>
+
+        <!-- Footer with neutral styling -->
+        <div style="margin-top:26px;">
+          <div style="text-align:center;color:#9ca3af;font-size:11px;line-height:1.6;padding:10px 10px 0 10px;">
+            <span style="white-space:nowrap;">This email was sent by: ${companyLegalName}</span><br />
+            ${companyAddress}<br />
+            <a href="${companyWebsite}" style="color:#9ca3af;text-decoration:underline;font-weight:600;">${companyWebsite
+              .replace(/^https?:\/\//, '')
+              .replace(/\/$/, '')}</a>
+          </div>
+
+          <div style="border-top:1px solid #e5e7eb;margin:18px 0 16px 0;"></div>
+
+          <table role="presentation" align="center" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto;">
+            <tr>
+              <td align="center" style="padding:0 10px;">
+                <a href="${instagramUrl}" target="_blank" rel="noopener noreferrer"
+                   style="display:inline-block;width:28px;height:28px;text-decoration:none;">
+                  <img src="${instagramIconUrl}" width="28" height="28" alt="Instagram"
+                       style="display:block;width:28px;height:28px;border:0;outline:none;text-decoration:none;border-radius:14px;" />
+                </a>
+              </td>
+              <td align="center" style="padding:0 10px;">
+                <a href="${facebookUrl}" target="_blank" rel="noopener noreferrer"
+                   style="display:inline-block;width:28px;height:28px;text-decoration:none;">
+                  <img src="${facebookIconUrl}" width="28" height="28" alt="Facebook"
+                       style="display:block;width:28px;height:28px;border:0;outline:none;text-decoration:none;border-radius:14px;" />
+                </a>
+              </td>
+              <td align="center" style="padding:0 10px;">
+                <a href="${whatsAppUrl}" target="_blank" rel="noopener noreferrer"
+                   style="display:inline-block;width:28px;height:28px;text-decoration:none;">
+                  <img src="${whatsAppIconUrl}" width="28" height="28" alt="WhatsApp"
+                       style="display:block;width:28px;height:28px;border:0;outline:none;text-decoration:none;border-radius:14px;" />
+                </a>
+              </td>
+            </tr>
+          </table>
+        </div>
+      </div>
+    </body>
+    </html>
+  `;
+
+  // Do not include the raw Firebase reset URL in the plain-text body to avoid
+  // exposing the Firebase project-id link in email content.
+  const text = `Password Reset Request\n\nHi ${safeName},\n\nWe received a request to reset your password for your 876 Nurses account.\n\nTo reset your password, use the reset link in this email.\n\nIf you didn't request this reset, please ignore this email.\n\nThis email was sent by: ${companyLegalName}\n${companyAddress}\nWebsite: ${companyWebsite}\nInstagram: ${instagramUrl}\nWhatsApp: ${whatsAppUrl}`;
+
+  return { subject, html, text };
+};
 
 const normalizeCoverageStatus = (v) => String(v || '').trim().toLowerCase();
 
@@ -269,14 +460,63 @@ const buildCoverageEmail = async ({
     linesText.push('');
   }
 
+  // Get company details for footer
+  const companyLegalName =
+    process.env.COMPANY_LEGAL_NAME ||
+    COMPANY_LEGAL_NAME_PARAM.value() ||
+    '876 Nurses Home Care Services Limited';
+  const companyAddress =
+    process.env.COMPANY_ADDRESS ||
+    COMPANY_ADDRESS_PARAM.value() ||
+    '60 Knutsford Blvd, Panjam Building, 9th Floor - Regus, Kingston 5, Jamaica, West Indies';
+  const companyWebsite =
+    process.env.COMPANY_WEBSITE || COMPANY_WEBSITE_PARAM.value() || 'https://www.876nurses.com';
+  const instagramUrl =
+    process.env.COMPANY_INSTAGRAM_URL || COMPANY_INSTAGRAM_URL_PARAM.value() || 'https://instagram.com/876_nurses';
+  const facebookUrl =
+    process.env.COMPANY_FACEBOOK_URL || COMPANY_FACEBOOK_URL_PARAM.value() || 'https://facebook.com/876nurses';
+  const whatsAppUrl =
+    process.env.COMPANY_WHATSAPP_URL || COMPANY_WHATSAPP_URL_PARAM.value() || 'https://wa.me/8766189876';
+
+  // Use publicly hosted icon URLs
+  const instagramIconUrl = 'https://storage.googleapis.com/nurses-afb7e.firebasestorage.app/email-assets/icon-instagram.png';
+  const facebookIconUrl = 'https://storage.googleapis.com/nurses-afb7e.firebasestorage.app/email-assets/icon-facebook.png';
+  const whatsAppIconUrl = 'https://storage.googleapis.com/nurses-afb7e.firebasestorage.app/email-assets/icon-whatsapp.png';
+
   linesHtml.push(
-    '<div style="text-align:center;padding:18px 10px 0 10px;color:#9ca3af;font-size:12px;line-height:1.6;">' +
-      '876 Nurses Home Care Services · Kingston, Jamaica<br />' +
-      'Need help? Email <a href="mailto:876nurses@gmail.com" style="color:#6b7280;text-decoration:underline;">876nurses@gmail.com</a>' +
+    '<div style="margin-top:26px;">' +
+      '<div style="text-align:center;color:#9ca3af;font-size:11px;line-height:1.6;padding:10px 10px 0 10px;">' +
+        '<span style="white-space:nowrap;">This email was sent by: ' + companyLegalName + '</span><br />' +
+        companyAddress + '<br />' +
+        '<a href="' + companyWebsite + '" style="color:#9ca3af;text-decoration:underline;font-weight:600;">' +
+          companyWebsite.replace(/^https?:\/\//, '').replace(/\/$/, '') +
+        '</a>' +
+      '</div>' +
+      '<div style="border-top:1px solid #e5e7eb;margin:18px 0 16px 0;"></div>' +
+      '<table role="presentation" align="center" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto;">' +
+        '<tr>' +
+          '<td align="center" style="padding:0 10px;">' +
+            '<a href="' + instagramUrl + '" target="_blank" rel="noopener noreferrer" style="display:inline-block;width:28px;height:28px;text-decoration:none;">' +
+              '<img src="' + instagramIconUrl + '" width="28" height="28" alt="Instagram" style="display:block;width:28px;height:28px;border:0;outline:none;text-decoration:none;border-radius:14px;" />' +
+            '</a>' +
+          '</td>' +
+          '<td align="center" style="padding:0 10px;">' +
+            '<a href="' + facebookUrl + '" target="_blank" rel="noopener noreferrer" style="display:inline-block;width:28px;height:28px;text-decoration:none;">' +
+              '<img src="' + facebookIconUrl + '" width="28" height="28" alt="Facebook" style="display:block;width:28px;height:28px;border:0;outline:none;text-decoration:none;border-radius:14px;" />' +
+            '</a>' +
+          '</td>' +
+          '<td align="center" style="padding:0 10px;">' +
+            '<a href="' + whatsAppUrl + '" target="_blank" rel="noopener noreferrer" style="display:inline-block;width:28px;height:28px;text-decoration:none;">' +
+              '<img src="' + whatsAppIconUrl + '" width="28" height="28" alt="WhatsApp" style="display:block;width:28px;height:28px;border:0;outline:none;text-decoration:none;border-radius:14px;" />' +
+            '</a>' +
+          '</td>' +
+        '</tr>' +
+      '</table>' +
     '</div>'
   );
-  linesText.push('876 Nurses Home Care Services · Kingston, Jamaica');
-  linesText.push('Need help? Email 876nurses@gmail.com');
+  linesText.push('This email was sent by: ' + companyLegalName);
+  linesText.push(companyAddress);
+  linesText.push('Website: ' + companyWebsite);
 
   const html = `
     <div style="font-family: Arial, sans-serif; color:#1f2a44; line-height:1.7; max-width:600px; margin:0 auto; padding:24px 20px;">
@@ -356,12 +596,23 @@ const createTransporter = () => {
   });
 };
 
-const sendMail = async ({ to, subject, html, text, attachments = [] }) => {
-  const { fromEmail, fromName } = getGmailConfig();
+const sendMail = async ({
+  to,
+  subject,
+  html,
+  text,
+  attachments = [],
+  fromEmailOverride,
+  fromNameOverride,
+}) => {
+  const { fromEmail: defaultFromEmail, fromName: defaultFromName } = getGmailConfig();
   const transporter = createTransporter();
   if (!transporter) {
     throw new Error('Gmail config missing. Set env: GMAIL_USER and GMAIL_APP_PASSWORD');
   }
+
+  const fromEmail = String(fromEmailOverride || '').trim() || defaultFromEmail;
+  const fromName = String(fromNameOverride || '').trim() || defaultFromName;
 
   const toList = Array.isArray(to) ? to : [to];
   const cleanedTo = toList.map((v) => String(v || '').trim()).filter(Boolean);
@@ -386,12 +637,23 @@ const sendMail = async ({ to, subject, html, text, attachments = [] }) => {
   };
 };
 
-const sendMailWithAttachments = async ({ to, subject, html, text, attachments = [] }) => {
-  const { fromEmail, fromName } = getGmailConfig();
+const sendMailWithAttachments = async ({
+  to,
+  subject,
+  html,
+  text,
+  attachments = [],
+  fromEmailOverride,
+  fromNameOverride,
+}) => {
+  const { fromEmail: defaultFromEmail, fromName: defaultFromName } = getGmailConfig();
   const transporter = createTransporter();
   if (!transporter) {
     throw new Error('Gmail config missing. Set env: GMAIL_USER and GMAIL_APP_PASSWORD');
   }
+
+  const fromEmail = String(fromEmailOverride || '').trim() || defaultFromEmail;
+  const fromName = String(fromNameOverride || '').trim() || defaultFromName;
 
   const toList = Array.isArray(to) ? to : [to];
   const cleanedTo = toList.map((v) => String(v || '').trim()).filter(Boolean);
@@ -466,6 +728,16 @@ const sendWelcomeEmailOnAuthCreateHandler = async (user) => {
     ? '<img src="cid:nurses-logo" alt="876 Nurses Home Care Services" style="display:block;width:86px;height:auto;border:none;outline:none;" />'
     : '<div style="font-size:18px;font-weight:800;color:#14213d;letter-spacing:0.2px;">876 Nurses</div>';
 
+  const companyLegalName =
+    process.env.COMPANY_LEGAL_NAME || COMPANY_LEGAL_NAME_PARAM.value() || '876 Nurses Home Care Services Limited';
+  const companyAddress = process.env.COMPANY_ADDRESS || COMPANY_ADDRESS_PARAM.value() || 'Kingston, Jamaica';
+  const companyWebsite = process.env.COMPANY_WEBSITE || COMPANY_WEBSITE_PARAM.value() || 'https://www.876nurses.com';
+  const instagramUrl =
+    process.env.COMPANY_INSTAGRAM_URL || COMPANY_INSTAGRAM_URL_PARAM.value() || 'https://instagram.com/876_nurses';
+  const facebookUrl = process.env.COMPANY_FACEBOOK_URL || COMPANY_FACEBOOK_URL_PARAM.value() || 'https://facebook.com/876nurses';
+  const whatsAppUrl =
+    process.env.COMPANY_WHATSAPP_URL || COMPANY_WHATSAPP_URL_PARAM.value() || 'https://wa.me/8766189876';
+
   const html = `
     <!DOCTYPE html>
     <html>
@@ -523,9 +795,46 @@ const sendWelcomeEmailOnAuthCreateHandler = async (user) => {
               </table>
               <table width="600" cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:600px;">
                 <tr>
-                  <td align="center" style="padding:18px 10px 0 10px;color:#d7e3ff;font-size:12px;line-height:1.6;">
-                    876 Nurses Home Care Services · Kingston, Jamaica<br />
-                    Need help? Email <a href="mailto:support@876nurses.com" style="color:#ffffff;text-decoration:underline;">support@876nurses.com</a>
+                  <td align="center" style="padding:18px 16px 18px 16px;">
+                    <div style="text-align:center;color:#d7e3ff;font-size:12px;line-height:1.6;">
+                      This email was sent by: ${companyLegalName}<br />
+                      ${companyAddress}<br />
+                      <a href="${companyWebsite}" style="color:#d7e3ff;text-decoration:underline;font-weight:600;">${companyWebsite
+                        .replace(/^https?:\/\//, '')
+                        .replace(/\/$/, '')}</a>
+                    </div>
+
+                    <div style="border-top:1px solid rgba(255,255,255,0.25);margin:16px 0 14px 0;"></div>
+
+                    <table role="presentation" align="center" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto;">
+                      <tr>
+                        <td align="center" style="padding:0 10px;">
+                          <a href="${instagramUrl}" target="_blank" rel="noopener noreferrer"
+                             style="display:inline-block;width:28px;height:28px;text-decoration:none;">
+                            <img src="cid:icon-instagram" width="28" height="28" alt="Instagram"
+                                 style="display:block;width:28px;height:28px;border:0;outline:none;text-decoration:none;border-radius:14px;" />
+                          </a>
+                        </td>
+                        <td align="center" style="padding:0 10px;">
+                          <a href="${facebookUrl}" target="_blank" rel="noopener noreferrer"
+                             style="display:inline-block;width:28px;height:28px;text-decoration:none;">
+                            <img src="cid:icon-facebook" width="28" height="28" alt="Facebook"
+                                 style="display:block;width:28px;height:28px;border:0;outline:none;text-decoration:none;border-radius:14px;" />
+                          </a>
+                        </td>
+                        <td align="center" style="padding:0 10px;">
+                          <a href="${whatsAppUrl}" target="_blank" rel="noopener noreferrer"
+                             style="display:inline-block;width:28px;height:28px;text-decoration:none;">
+                            <img src="cid:icon-whatsapp" width="28" height="28" alt="WhatsApp"
+                                 style="display:block;width:28px;height:28px;border:0;outline:none;text-decoration:none;border-radius:14px;" />
+                          </a>
+                        </td>
+                      </tr>
+                    </table>
+
+                    <div style="margin-top:14px;color:#d7e3ff;font-size:12px;line-height:1.6;text-align:center;">
+                      Need help? Email <a href="mailto:support@876nurses.com" style="color:#ffffff;text-decoration:underline;">support@876nurses.com</a>
+                    </div>
                   </td>
                 </tr>
               </table>
@@ -536,7 +845,48 @@ const sendWelcomeEmailOnAuthCreateHandler = async (user) => {
     </html>
   `;
 
-  await sendMail({ to: user.email, subject, text, html, attachments: [logoAttachment].filter(Boolean) });
+  const attachments = [logoAttachment].filter(Boolean);
+
+  try {
+    const igPath = path.join(__dirname, 'assets', 'icon-instagram.png');
+    const igBuf = fs.readFileSync(igPath);
+    attachments.push({
+      filename: 'icon-instagram.png',
+      contentType: 'image/png',
+      content: igBuf,
+      cid: 'icon-instagram',
+    });
+  } catch (_) {
+    // optional
+  }
+
+  try {
+    const fbPath = path.join(__dirname, 'assets', 'icon-facebook.png');
+    const fbBuf = fs.readFileSync(fbPath);
+    attachments.push({
+      filename: 'icon-facebook.png',
+      contentType: 'image/png',
+      content: fbBuf,
+      cid: 'icon-facebook',
+    });
+  } catch (_) {
+    // optional
+  }
+
+  try {
+    const waPath = path.join(__dirname, 'assets', 'icon-whatsapp.png');
+    const waBuf = fs.readFileSync(waPath);
+    attachments.push({
+      filename: 'icon-whatsapp.png',
+      contentType: 'image/png',
+      content: waBuf,
+      cid: 'icon-whatsapp',
+    });
+  } catch (_) {
+    // optional
+  }
+
+  await sendMail({ to: user.email, subject, text, html, attachments });
   return null;
 };
 
@@ -606,23 +956,86 @@ exports.sendWelcomeEmailOnAuthCreate = functionsV1
   .runWith({ secrets: [GMAIL_USER_SECRET, GMAIL_APP_PASSWORD_SECRET] })
   .auth.user()
   .onCreate(async (user) => {
-    try {
-      await sendWelcomeEmailOnAuthCreateHandler(user);
-    } catch (err) {
-      console.error('Welcome email failed (non-blocking):', err);
-    }
     return null;
   });
 
 exports.sendTransactionalEmail = onCall(
-  { secrets: [GMAIL_USER_SECRET, GMAIL_APP_PASSWORD_SECRET] },
+  { 
+    region: 'us-central1',
+    secrets: [GMAIL_USER_SECRET, GMAIL_APP_PASSWORD_SECRET] 
+  },
   async (request) => {
     return sendTransactionalEmailHandler(request.data, { auth: request.auth });
   }
 );
 
+// 2b) Custom password reset email
+// Firebase Auth built-in templates cannot send from a custom mailbox like 876nurses.notify.
+// This callable generates a password reset link server-side and emails it using the same Gmail transport.
+exports.requestPasswordResetEmail = onCall(
+  {
+    region: 'us-central1',
+    serviceAccount: getRuntimeServiceAccountEmail(),
+    secrets: [GMAIL_USER_SECRET, GMAIL_APP_PASSWORD_SECRET],
+  },
+  async (request) => {
+    const email = String(request?.data?.email || '').trim().toLowerCase();
+
+    if (!isValidEmail(email)) {
+      throw new HttpsError('invalid-argument', 'A valid email address is required');
+    }
+
+    // Avoid user enumeration: always return success even if the user does not exist.
+    try {
+      let displayName = '';
+      try {
+        const userRecord = await admin.auth().getUserByEmail(email);
+        displayName = userRecord?.displayName || '';
+      } catch (_) {
+        // ignore
+      }
+
+      if (!displayName) {
+        displayName = await lookupProfileNameByEmail(email);
+      }
+
+      const firstName = extractFirstName(displayName) || 'there';
+
+      // NOTE: Link domain is controlled by Firebase Auth settings / custom domains.
+      // We keep the URL hidden behind link text in HTML to avoid showing project IDs in the email body.
+      const resetLink = await admin.auth().generatePasswordResetLink(email);
+
+      const { subject, html, text } = buildPasswordResetEmail({ firstName, resetLink });
+
+      const fromEmailOverride = process.env.PASSWORD_RESET_FROM_EMAIL || '';
+      const fromNameOverride = process.env.PASSWORD_RESET_FROM_NAME || '';
+
+      await sendMail({
+        to: email,
+        subject,
+        html,
+        text,
+        fromEmailOverride,
+        fromNameOverride,
+      });
+
+      console.log('Custom password reset email sent:', { to: email, subject });
+    } catch (err) {
+      console.error('Custom password reset email failed (non-blocking):', err);
+      // Still return success to avoid leaking details.
+    }
+
+    return { success: true };
+  }
+);
+
 exports.sendQueuedEmailOnCreate = onDocumentCreated(
-  { document: 'mail/{mailId}', secrets: [GMAIL_USER_SECRET, GMAIL_APP_PASSWORD_SECRET] },
+  {
+    document: 'mail/{mailId}',
+    region: 'us-central1',
+    serviceAccount: getRuntimeServiceAccountEmail(),
+    secrets: [GMAIL_USER_SECRET, GMAIL_APP_PASSWORD_SECRET],
+  },
   async (event) => {
     return sendQueuedEmailOnCreateHandler(event.data);
   }

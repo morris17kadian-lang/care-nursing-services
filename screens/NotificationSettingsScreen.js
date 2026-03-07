@@ -6,6 +6,7 @@ import {
   Switch,
   Alert,
   ScrollView,
+  Image,
 } from 'react-native';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -159,8 +160,8 @@ export default function NotificationSettingsScreen({ navigation }) {
       <Switch
         value={value}
         onValueChange={onToggle}
-        trackColor={{ false: COLORS.border, true: COLORS.primary + '40' }}
-        thumbColor={value ? COLORS.primary : COLORS.textLight}
+        trackColor={{ false: COLORS.border, true: COLORS.primary }}
+        thumbColor={COLORS.white}
       />
     </View>
   );
@@ -187,118 +188,109 @@ export default function NotificationSettingsScreen({ navigation }) {
         </View>
       </LinearGradient>
 
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+        pointerEvents="none"
+      />
+
       <ScrollView style={styles.content} showsVerticalScrollIndicator={false}>
         {/* Push Notifications Section */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Push Notifications</Text>
-          <Text style={styles.sectionSubtitle}>
-            Receive notifications even when the app is closed
-          </Text>
-          
-          <SettingRow
-            icon="bell-ring"
-            title="Push Notifications"
-            subtitle={
-              pushPermissionStatus === 'granted' 
-                ? "Enabled - you'll receive notifications on your device"
-                : pushPermissionStatus === 'denied'
-                ? "Disabled - enable in device settings"
-                : "Not configured - tap to enable"
-            }
-            value={settings.pushNotifications}
-            onToggle={handlePushNotificationToggle}
-            iconColor={COLORS.accent}
-          />
+
+          <View style={styles.settingsCard}>
+            <SettingRow
+              icon="bell-ring"
+              title="Push Notifications"
+              subtitle={
+                pushPermissionStatus === 'granted' 
+                  ? "Enabled - you'll receive notifications on your device"
+                  : pushPermissionStatus === 'denied'
+                  ? "Disabled - enable in device settings"
+                  : "Not configured - tap to enable"
+              }
+              value={settings.pushNotifications}
+              onToggle={handlePushNotificationToggle}
+              iconColor={COLORS.accent}
+            />
+            <View style={styles.divider} />
+          </View>
         </View>
 
         {/* Notification Types */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Notification Types</Text>
-          <Text style={styles.sectionSubtitle}>
-            Choose which types of notifications you want to receive
-          </Text>
 
           {/* Chat Messages Setting REMOVED */}
 
-          <SettingRow
-            icon="calendar-clock"
-            title="Appointments"
-            subtitle="Appointment reminders and updates"
-            value={settings.appointments}
-            onToggle={(value) => handleSettingToggle('appointments', value)}
-            iconColor={COLORS.primary}
-          />
-
-          {/* Medication Reminders - Only show for patients */}
-          {user?.role === 'patient' && (
+          <View style={styles.settingsCard}>
             <SettingRow
-              icon="pill"
-              title="Medication Reminders"
-              subtitle="Reminders to take medication"
-              value={settings.reminders}
-              onToggle={(value) => handleSettingToggle('reminders', value)}
-              iconColor={COLORS.accent}
+              icon="calendar-clock"
+              title="Appointments"
+              subtitle="Appointment reminders and updates"
+              value={settings.appointments}
+              onToggle={(value) => handleSettingToggle('appointments', value)}
+              iconColor={COLORS.primary}
             />
-          )}
 
-          <SettingRow
-            icon="medical-bag"
-            title="Service Updates"
-            subtitle="New healthcare services and updates"
-            value={settings.serviceUpdates}
-            onToggle={(value) => handleSettingToggle('serviceUpdates', value)}
-            iconColor="#95E1D3"
-          />
+            {/* Medication Reminders - Only show for patients */}
+            {user?.role === 'patient' && (
+              <>
+                <View style={styles.divider} />
+                <SettingRow
+                  icon="pill"
+                  title="Medication Reminders"
+                  subtitle="Reminders to take medication"
+                  value={settings.reminders}
+                  onToggle={(value) => handleSettingToggle('reminders', value)}
+                  iconColor={COLORS.accent}
+                />
+              </>
+            )}
 
-          <SettingRow
-            icon="information"
-            title="System Notifications"
-            subtitle="App updates and maintenance notices"
-            value={settings.systemNotifications}
-            onToggle={(value) => handleSettingToggle('systemNotifications', value)}
-            iconColor="#6C5CE7"
-          />
+            <View style={styles.divider} />
+            <SettingRow
+              icon="medical-bag"
+              title="Service Updates"
+              subtitle="New healthcare services and updates"
+              value={settings.serviceUpdates}
+              onToggle={(value) => handleSettingToggle('serviceUpdates', value)}
+              iconColor="#95E1D3"
+            />
+
+            <View style={styles.divider} />
+            <SettingRow
+              icon="information"
+              title="System Notifications"
+              subtitle="App updates and maintenance notices"
+              value={settings.systemNotifications}
+              onToggle={(value) => handleSettingToggle('systemNotifications', value)}
+              iconColor="#6C5CE7"
+            />
+            <View style={styles.divider} />
+          </View>
         </View>
 
         {/* Email Notifications */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Email Notifications</Text>
-          <Text style={styles.sectionSubtitle}>
-            Receive updates and notifications via email
-          </Text>
 
-          <SettingRow
-            icon="email-outline"
-            title="Email Updates"
-            subtitle="Receive appointment confirmations and updates via email"
-            value={settings.emailNotifications}
-            onToggle={(value) => handleSettingToggle('emailNotifications', value)}
-            iconColor="#FFA726"
-          />
-        </View>
-
-        {/* Status Info */}
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Status</Text>
-          <View style={styles.statusCard}>
-            <View style={styles.statusRow}>
-              <Text style={styles.statusLabel}>Permission Status:</Text>
-              <Text style={[
-                styles.statusValue,
-                { color: pushPermissionStatus === 'granted' ? COLORS.success : COLORS.error }
-              ]}>
-                {pushPermissionStatus === 'granted' ? 'Granted' : 
-                 pushPermissionStatus === 'denied' ? 'Denied' : 'Not Set'}
-              </Text>
-            </View>
-            {pushToken && (
-              <View style={styles.statusRow}>
-                <Text style={styles.statusLabel}>Device Registered:</Text>
-                <Text style={[styles.statusValue, { color: COLORS.success }]}>Yes</Text>
-              </View>
-            )}
+          <View style={styles.settingsCard}>
+            <SettingRow
+              icon="email-outline"
+              title="Email Updates"
+              subtitle="Receive appointment confirmations and updates via email"
+              value={settings.emailNotifications}
+              onToggle={(value) => handleSettingToggle('emailNotifications', value)}
+              iconColor="#FFA726"
+            />
+            <View style={styles.divider} />
           </View>
         </View>
+
       </ScrollView>
     </SafeAreaView>
   );
@@ -309,12 +301,22 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '40%',
+    opacity: 0.05,
+    zIndex: 0,
+  },
   header: {
     paddingHorizontal: 20,
     paddingTop: 60,
     paddingBottom: 20,
     borderBottomLeftRadius: 24,
     borderBottomRightRadius: 24,
+    zIndex: 1,
   },
   headerRow: {
     flexDirection: 'row',
@@ -336,6 +338,7 @@ const styles = StyleSheet.create({
   content: {
     flex: 1,
     padding: SPACING.md,
+    zIndex: 1,
   },
   section: {
     marginBottom: SPACING.xl,
@@ -353,20 +356,27 @@ const styles = StyleSheet.create({
     marginBottom: SPACING.lg,
     lineHeight: 20,
   },
-  settingRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'space-between',
+  settingsCard: {
     backgroundColor: COLORS.white,
-    paddingVertical: SPACING.sm,
-    paddingHorizontal: SPACING.md,
     borderRadius: 16,
-    marginBottom: SPACING.md,
+    overflow: 'hidden',
     shadowColor: COLORS.shadow,
     shadowOffset: { width: 0, height: 2 },
     shadowOpacity: 0.1,
     shadowRadius: 8,
     elevation: 3,
+  },
+  divider: {
+    height: 1,
+    backgroundColor: COLORS.border,
+    marginHorizontal: SPACING.md,
+  },
+  settingRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: SPACING.sm,
+    paddingHorizontal: SPACING.md,
   },
   settingLeft: {
     flexDirection: 'row',
@@ -395,30 +405,5 @@ const styles = StyleSheet.create({
     fontFamily: 'Poppins_400Regular',
     color: COLORS.textLight,
     lineHeight: 18,
-  },
-  statusCard: {
-    backgroundColor: COLORS.white,
-    padding: SPACING.lg,
-    borderRadius: 16,
-    shadowColor: COLORS.shadow,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  statusRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: SPACING.sm,
-  },
-  statusLabel: {
-    fontSize: 14,
-    fontFamily: 'Poppins_500Medium',
-    color: COLORS.text,
-  },
-  statusValue: {
-    fontSize: 14,
-    fontFamily: 'Poppins_600SemiBold',
   },
 });

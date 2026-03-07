@@ -23,6 +23,9 @@ import {
 import DateTimePicker from '@react-native-community/datetimepicker';
 import * as ImagePicker from 'expo-image-picker';
 import * as Location from 'expo-location';
+import * as Print from 'expo-print';
+import * as FileSystem from 'expo-file-system/legacy';
+import { Asset } from 'expo-asset';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -45,6 +48,8 @@ import NotesAccordionList from '../components/NotesAccordionList';
 import InvoiceService from '../services/InvoiceService';
 import ApiService from '../services/ApiService';
 import FirebaseService from '../services/FirebaseService';
+import PushNotificationService from '../services/PushNotificationService';
+import EmailService from '../services/EmailService';
 import RecurringAppointmentService from '../services/RecurringAppointmentService';
 import SmartLogger from '../utils/SmartLogger';
 import { getNurseName as formatNurseName } from '../utils/formatters';
@@ -526,13 +531,23 @@ const checkIsAcceptedCoverageForNurse = (coverageRequests, nurseId, nurseCode) =
 
 export default function AdminDashboardScreen({ navigation, route }) {
   const { user } = useAuth();
+  const isAdminUser = ['admin', 'superAdmin'].includes(user?.role);
   const { unreadCount, sendNotificationToUser, refreshNotifications } = useNotifications();
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
+  
+  const medicalReportModalHeight = useMemo(() => {
+    const base = Number.isFinite(windowHeight) && windowHeight > 0 ? windowHeight : 700;
+    const targetPercentage = Platform.OS === 'android' ? 0.93 : 0.85;
+    return Math.floor(base * targetPercentage);
+  }, [windowHeight]);
+  
   const { 
     appointments,
     getAppointmentsByNurse, 
     acceptAppointment, 
     declineAppointment,
+    cancelAppointment,
     completeAppointment,
     clearCompletedAppointments,
     updateNurseAvailability,
@@ -583,10 +598,40 @@ export default function AdminDashboardScreen({ navigation, route }) {
       seenIds.add(normalizedId);
       uniqueClients.push({
         id: normalizedId,
-        name: data.name || data.fullName || data.clientName || data.patientName || 'Unknown Client',
-        address: data.address || data.location || data.clientAddress || data.patientAddress || '',
-        email: data.email || data.clientEmail || data.patientEmail || '',
-        phone: data.phone || data.clientPhone || data.patientPhone || '',
+        name:
+          data.name ||
+          data.fullName ||
+          data.displayName ||
+          data.clientName ||
+          data.patientName ||
+          (data.firstName || data.lastName ? `${data.firstName || ''} ${data.lastName || ''}`.trim() : '') ||
+          'Unknown Client',
+        address:
+          data.address ||
+          data.location ||
+          data.clientAddress ||
+          data.patientAddress ||
+          data.streetAddress ||
+          data.homeAddress ||
+          data.addressLine1 ||
+          data.address1 ||
+          '',
+        email:
+          data.email ||
+          data.clientEmail ||
+          data.patientEmail ||
+          data.userEmail ||
+          data.contactEmail ||
+          '',
+        phone:
+          data.phone ||
+          data.phoneNumber ||
+          data.mobile ||
+          data.mobileNumber ||
+          data.contactNumber ||
+          data.clientPhone ||
+          data.patientPhone ||
+          '',
         profilePhoto:
           data.profilePhoto ||
           data.profileImage ||
@@ -695,6 +740,8 @@ export default function AdminDashboardScreen({ navigation, route }) {
   const [createNurseModalVisible, setCreateNurseModalVisible] = useState(false);
   const [appointmentDetailsModalVisible, setAppointmentDetailsModalVisible] = useState(false);
   const [nurseDetailsModalVisible, setNurseDetailsModalVisible] = useState(false);
+  const [shiftRequestInlineNurseDetailsVisible, setShiftRequestInlineNurseDetailsVisible] = useState(false);
+  const [shiftRequestInlineNurseDetails, setShiftRequestInlineNurseDetails] = useState(null);
   const [shiftRequestModalVisible, setShiftRequestModalVisible] = useState(false);
   const [clockDetailsModalVisible, setClockDetailsModalVisible] = useState(false);
   const [clockDetailsPayload, setClockDetailsPayload] = useState(null);
@@ -707,6 +754,8 @@ export default function AdminDashboardScreen({ navigation, route }) {
   const [appointmentShiftNotes, setAppointmentShiftNotes] = useState('');
   const [appointmentClockOutLocation, setAppointmentClockOutLocation] = useState(null);
   const [appointmentLoading, setAppointmentLoading] = useState(false);
+  const [notePhotoPreviewVisible, setNotePhotoPreviewVisible] = useState(false);
+  const [notePhotoPreviewUri, setNotePhotoPreviewUri] = useState(null);
   const [adminRecurringShiftModalVisible, setAdminRecurringShiftModalVisible] = useState(false);
   const [adminViewRecurringShiftModalVisible, setAdminViewRecurringShiftModalVisible] = useState(false);
   const [reassignNurseModalVisible, setReassignNurseModalVisible] = useState(false);
@@ -721,6 +770,19 @@ export default function AdminDashboardScreen({ navigation, route }) {
   const DEBUG_ADMIN_APPT_NOTES = __DEV__ === true;
   const adminApptNotesDebugLoggedRef = React.useRef(new Set());
   const autoFinalShiftInvoiceAttemptedRef = React.useRef(new Set());
+
+  const openNotePhotoPreview = useCallback((uri) => {
+    if (!uri) return;
+    const normalized = String(uri).trim();
+    if (!normalized) return;
+    setNotePhotoPreviewUri(normalized);
+    setNotePhotoPreviewVisible(true);
+  }, []);
+
+  const closeNotePhotoPreview = useCallback(() => {
+    setNotePhotoPreviewVisible(false);
+    setNotePhotoPreviewUri(null);
+  }, []);
 
   useEffect(() => {
     if (!DEBUG_ADMIN_APPT_NOTES) return;
@@ -822,6 +884,31 @@ export default function AdminDashboardScreen({ navigation, route }) {
   const [nurseIdPhoto, setNurseIdPhoto] = useState(null); // For nurse ID photo upload
   const [staffRole, setStaffRole] = useState('nurse'); // 'nurse' or 'admin'
   const [selectedCard, setSelectedCard] = useState(null);
+  const [pendingConsultationRequests, setPendingConsultationRequests] = useState([]);
+  const [nowTick, setNowTick] = useState(() => Date.now());
+  const [pendingMedicalReportRequests, setPendingMedicalReportRequests] = useState([]);
+  const [medicalReportRequestModalVisible, setMedicalReportRequestModalVisible] = useState(false);
+  const [selectedMedicalReportRequest, setSelectedMedicalReportRequest] = useState(null);
+  const [medicalReportToEmail, setMedicalReportToEmail] = useState('');
+  const [medicalReportSubject, setMedicalReportSubject] = useState('');
+  const [medicalReportBody, setMedicalReportBody] = useState('');
+  const [medicalReportPreviewVisible, setMedicalReportPreviewVisible] = useState(false);
+  const [medicalReportPatientName, setMedicalReportPatientName] = useState('');
+  const [medicalReportPatientEmail, setMedicalReportPatientEmail] = useState('');
+  const [medicalReportPatientPhone, setMedicalReportPatientPhone] = useState('');
+  const [medicalReportPatientAddress, setMedicalReportPatientAddress] = useState('');
+  const [medicalReportPatientDob, setMedicalReportPatientDob] = useState('');
+  const [medicalReportReportDate, setMedicalReportReportDate] = useState('');
+  const [medicalReportMedicalHistory, setMedicalReportMedicalHistory] = useState('');
+  const [medicalReportNurseNotes, setMedicalReportNurseNotes] = useState('');
+  const [medicalReportNurseSignature, setMedicalReportNurseSignature] = useState('');
+  const [medicalReportRecommendations, setMedicalReportRecommendations] = useState('');
+  const [medicalReportAllergies, setMedicalReportAllergies] = useState('');
+  const [medicalReportVitals, setMedicalReportVitals] = useState('');
+  const [medicalHistoryInputHeight, setMedicalHistoryInputHeight] = useState(120);
+  const [nurseNotesInputHeight, setNurseNotesInputHeight] = useState(120);
+  const [recommendationsInputHeight, setRecommendationsInputHeight] = useState(100);
+  const [sendingMedicalReport, setSendingMedicalReport] = useState(false);
   const [nurseSequence, setNurseSequence] = useState(1); // Sequential counter for nurses
   const [adminSequence, setAdminSequence] = useState(1); // Sequential counter for admins
   const [sequencesInitialized, setSequencesInitialized] = useState(false); // Flag to prevent multiple initializations
@@ -857,6 +944,784 @@ export default function AdminDashboardScreen({ navigation, route }) {
       console.log('Nurses updated in AdminDashboard:', nurses ? nurses.length : 'null');
     }
   }, [nurses]);
+
+  useEffect(() => {
+    let active = true;
+
+    const loadPendingConsultations = async () => {
+      try {
+        if (selectedCard !== 'pending') return;
+        // Only fetch if user has admin role to avoid permission errors
+        if (user?.role !== 'admin') return;
+        const res = await FirebaseService.getPendingConsultationRequests(50);
+        if (!active) return;
+        setPendingConsultationRequests(res?.success && Array.isArray(res.requests) ? res.requests : []);
+      } catch (e) {
+        if (!active) return;
+        setPendingConsultationRequests([]);
+      }
+    };
+
+    loadPendingConsultations();
+    return () => {
+      active = false;
+    };
+  }, [selectedCard, user?.role]);
+
+  // Keep a lightweight time tick so scheduled consult cards can flip Pending -> Call without a manual refresh.
+  useEffect(() => {
+    if (selectedCard !== 'pending') return;
+    const id = setInterval(() => setNowTick(Date.now()), 30000);
+    return () => clearInterval(id);
+  }, [selectedCard]);
+
+  const getConsultationScheduledDate = useCallback((req) => {
+    const v = req?.scheduledFor || req?.scheduledForIso || null;
+    try {
+      if (!v) return null;
+      if (typeof v?.toDate === 'function') return v.toDate();
+      if (v?.seconds != null) return new Date(v.seconds * 1000);
+      const d = new Date(v);
+      return Number.isNaN(d.getTime()) ? null : d;
+    } catch (_) {
+      return null;
+    }
+  }, []);
+
+  const openDialerForPhone = useCallback(async (rawPhone, consultRequestId = null, patientAuthUid = null) => {
+    try {
+      const phone = String(rawPhone || '').trim();
+      if (!phone) {
+        Alert.alert('Missing Phone', 'No patient phone number is available for this consultation request.');
+        return;
+      }
+      const url = `tel:${phone}`;
+      const supported = await Linking.canOpenURL(url);
+      if (!supported) {
+        Alert.alert('Cannot Call', 'This device cannot open the phone dialer.');
+        return;
+      }
+      await Linking.openURL(url);
+      
+      // Mark consultation request as completed after opening dialer
+      if (consultRequestId) {
+        try {
+          await FirebaseService.updateConsultationRequest(consultRequestId, {
+            status: 'completed',
+            completedAt: new Date().toISOString(),
+            completedBy: user?.id || 'admin'
+          });
+          
+          // Mark patient's home screen reminder as complete
+          if (patientAuthUid) {
+            try {
+              const storageKey = `@876_home_reminders_${patientAuthUid}`;
+              const existing = await AsyncStorage.getItem(storageKey);
+              if (existing) {
+                const reminders = JSON.parse(existing);
+                const updated = reminders.map(reminder => {
+                  if (reminder.type === 'consultation' && !reminder.completed) {
+                    return { ...reminder, completed: true };
+                  }
+                  return reminder;
+                });
+                await AsyncStorage.setItem(storageKey, JSON.stringify(updated));
+              }
+            } catch (reminderError) {
+              console.error('Failed to update patient reminder:', reminderError);
+            }
+          }
+          
+          // Refresh the consultation requests list to remove the completed card
+          setPendingConsultationRequests(prev => 
+            prev.filter(req => req.id !== consultRequestId)
+          );
+        } catch (updateError) {
+          console.error('Failed to mark consultation as completed:', updateError);
+        }
+      }
+    } catch (_) {
+      Alert.alert('Cannot Call', 'Unable to open the phone dialer.');
+    }
+  }, [user?.id]);
+
+  const scheduleAdminConsultReminders = useCallback(async (requests) => {
+    if (!user?.id) return;
+    if (!Array.isArray(requests) || requests.length === 0) return;
+
+    const storageKey = `@876_admin_consult_reminders_${user.id}`;
+    let existingMap = {};
+    try {
+      const raw = await AsyncStorage.getItem(storageKey);
+      existingMap = raw ? (JSON.parse(raw) || {}) : {};
+    } catch (_) {
+      existingMap = {};
+    }
+
+    const now = new Date();
+    let changed = false;
+
+    for (const req of requests) {
+      const requestId = req?.id;
+      if (!requestId || existingMap[requestId]) continue;
+
+      const scheduledDate = getConsultationScheduledDate(req);
+      if (!scheduledDate || Number.isNaN(scheduledDate.getTime())) continue;
+
+      const notifyAt = new Date(scheduledDate.getTime() - 5 * 60 * 1000);
+      if (notifyAt <= now) continue;
+
+      const displayName = req?.patientName || req?.clientName || req?.patientEmail || req?.email || 'Patient';
+      const timeLabel = scheduledDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      const dateLabel = scheduledDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+
+      try {
+        const notificationId = await PushNotificationService.scheduleNotification(
+          'Consultation Call Reminder',
+          `Call ${displayName} at ${timeLabel} (${dateLabel}).`,
+          notifyAt,
+          { type: 'admin_consultation_reminder', requestId, screen: 'AdminDashboard' }
+        );
+        existingMap[requestId] = notificationId || true;
+        changed = true;
+      } catch (_) {
+        // Non-critical (Expo Go / permissions) — don't block
+      }
+    }
+
+    if (changed) {
+      try {
+        await AsyncStorage.setItem(storageKey, JSON.stringify(existingMap));
+      } catch (_) {
+        // ignore
+      }
+    }
+  }, [getConsultationScheduledDate, user?.id]);
+
+  // When pending consultations load, schedule admin reminders 5 minutes before.
+  useEffect(() => {
+    if (selectedCard !== 'pending') return;
+    if (user?.role !== 'admin') return;
+    scheduleAdminConsultReminders(pendingConsultationRequests);
+  }, [pendingConsultationRequests, scheduleAdminConsultReminders, selectedCard, user?.role]);
+
+  useEffect(() => {
+    let active = true;
+
+    const loadPendingMedicalReports = async () => {
+      console.log('🔍 loadPendingMedicalReports called:', { selectedCard, userRole: user?.role, userName: user?.fullName });
+      try {
+        if (selectedCard !== 'pending') {
+          console.log('⏭️  Skipping medical reports: selectedCard is', selectedCard, 'not "pending"');
+          return;
+        }
+        if (user?.role !== 'admin' && user?.role !== 'superAdmin') {
+          console.log('⏭️  Skipping medical reports: user.role is', user?.role, '(need "admin" or "superAdmin")');
+          return;
+        }
+        console.log('✅ Fetching medical reports for admin:', user?.fullName || user?.email);
+        const res = await FirebaseService.getPendingMedicalReportRequests(50);
+        console.log('📋 Fetched medical report requests:', { success: res?.success, count: res?.requests?.length || 0, error: res?.error, requests: res?.requests });
+        if (!active) return;
+        setPendingMedicalReportRequests(res?.success && Array.isArray(res.requests) ? res.requests : []);
+      } catch (e) {
+        console.error('❌ Error loading medical report requests:', e);
+        if (!active) return;
+        setPendingMedicalReportRequests([]);
+      }
+    };
+
+    loadPendingMedicalReports();
+    return () => {
+      active = false;
+    };
+  }, [selectedCard, user?.role, user?.fullName, user?.email]);
+
+  const openMedicalReportRequestModal = (req) => {
+    const nextReq = req || null;
+    setSelectedMedicalReportRequest(nextReq);
+
+    const to = String(nextReq?.patientEmail || nextReq?.email || '').trim();
+    const patientName = String(nextReq?.patientName || '').trim();
+    const patientIdKey = String(nextReq?.patientId || nextReq?.patientAuthUid || '').trim();
+    const reqEmailLower = String(nextReq?.patientEmail || nextReq?.email || '').trim().toLowerCase();
+    const resolvedClient =
+      (patientIdKey ? clientsById.get(patientIdKey) : null) ||
+      (reqEmailLower ? clientsByEmailLower.get(reqEmailLower) : null) ||
+      null;
+
+    const resolvedName =
+      patientName ||
+      String(resolvedClient?.name || '').trim() ||
+      String(nextReq?.clientName || '').trim() ||
+      'N/A';
+
+    const resolvedEmail =
+      String(nextReq?.patientEmail || nextReq?.email || '').trim() ||
+      String(resolvedClient?.email || '').trim();
+
+    const resolvedPhone =
+      String(nextReq?.patientPhone || nextReq?.phone || '').trim() ||
+      String(resolvedClient?.phone || '').trim();
+
+    const resolvedAddress =
+      String(nextReq?.patientAddress || nextReq?.address || '').trim() ||
+      String(resolvedClient?.address || '').trim();
+
+    const resolvedDob =
+      String(resolvedClient?.dob || resolvedClient?.dateOfBirth || resolvedClient?.birthDate || '').trim();
+
+    const now = new Date();
+    const mm = String(now.getMonth() + 1).padStart(2, '0');
+    const dd = String(now.getDate()).padStart(2, '0');
+    const yyyy = String(now.getFullYear());
+    const defaultReportDate = `${mm}/${dd}/${yyyy}`;
+
+    setMedicalReportToEmail(to);
+    setMedicalReportSubject(`Medical Report${resolvedName && resolvedName !== 'N/A' ? ` - ${resolvedName}` : ''}`);
+    setMedicalReportBody('');
+    setMedicalReportPatientName(resolvedName);
+    setMedicalReportPatientEmail(resolvedEmail);
+    setMedicalReportPatientPhone(resolvedPhone);
+    setMedicalReportPatientAddress(resolvedAddress);
+    setMedicalReportPatientDob(resolvedDob);
+    setMedicalReportReportDate(defaultReportDate);
+    setMedicalReportMedicalHistory('');
+    setMedicalReportNurseNotes('');
+    setMedicalReportNurseSignature('');
+    setMedicalReportRecommendations('');
+    
+    // Fetch and populate allergies and vitals from patient appointments
+    let allergiesText = '';
+    let vitalsText = '';
+    
+    if (patientIdKey || resolvedClient) {
+      try {
+        // Get patient's appointments to extract allergies and vitals
+        const patientShifts = appointments.filter(shift => 
+          shift.patientId === patientIdKey || 
+          shift.patientEmail?.toLowerCase() === reqEmailLower ||
+          shift.patientAuthUid === patientIdKey
+        );
+        
+        // Collect allergies and vitals from the most recent appointments
+        const allergiesSet = new Set();
+        let latestVitals = null;
+        
+        patientShifts.forEach(shift => {
+          // Collect allergies
+          if (shift.allergies) {
+            const allergiesList = Array.isArray(shift.allergies) ? shift.allergies : [shift.allergies];
+            allergiesList.forEach(allergy => {
+              const allergyStr = String(allergy).trim();
+              if (allergyStr && allergyStr !== 'None') allergiesSet.add(allergyStr);
+            });
+          }
+          if (shift.allergyOther) {
+            const otherStr = String(shift.allergyOther).trim();
+            if (otherStr) allergiesSet.add(otherStr);
+          }
+          
+          // Get most recent vitals
+          if (shift.vitals && !latestVitals) {
+            latestVitals = shift.vitals;
+          }
+        });
+        
+        // Format allergies
+        if (allergiesSet.size > 0) {
+          allergiesText = Array.from(allergiesSet).join(', ');
+        } else {
+          allergiesText = 'No known allergies';
+        }
+        
+        // Format vitals
+        if (latestVitals) {
+          const vitalsParts = [];
+          const bpSys = String(latestVitals.bloodPressureSystolic || latestVitals.bpSystolic || '').trim();
+          const bpDia = String(latestVitals.bloodPressureDiastolic || latestVitals.bpDiastolic || '').trim();
+          const hr = String(latestVitals.heartRate || '').trim();
+          const temp = String(latestVitals.temperature || '').trim();
+          const spo2 = String(latestVitals.oxygenSaturation || '').trim();
+          
+          if (bpSys || bpDia) vitalsParts.push(`Blood Pressure: ${bpSys || '?'}/${bpDia || '?'} mmHg`);
+          if (hr) vitalsParts.push(`Heart Rate: ${hr} bpm`);
+          if (temp) vitalsParts.push(`Temperature: ${temp}°F`);
+          if (spo2) vitalsParts.push(`Oxygen Saturation: ${spo2}%`);
+          
+          vitalsText = vitalsParts.length > 0 ? vitalsParts.join('\n') : 'No vitals recorded';
+        } else {
+          vitalsText = 'No vitals recorded';
+        }
+      } catch (err) {
+        console.error('Error extracting allergies/vitals:', err);
+      }
+    }
+    
+    setMedicalReportAllergies(allergiesText);
+    setMedicalReportVitals(vitalsText);
+    setMedicalHistoryInputHeight(120);
+    setNurseNotesInputHeight(120);
+
+    setMedicalReportRequestModalVisible(true);
+  };
+
+  const closeMedicalReportRequestModal = () => {
+    if (sendingMedicalReport) return;
+    setMedicalReportRequestModalVisible(false);
+  };
+
+  const openMedicalReportGenerateModal = () => {
+    if (sendingMedicalReport) return;
+    if (!selectedMedicalReportRequest) return;
+
+    const req = selectedMedicalReportRequest;
+    const patientIdKey = String(req?.patientId || req?.patientAuthUid || '').trim();
+    const reqEmailLower = String(req?.patientEmail || req?.email || '').trim().toLowerCase();
+    const resolvedClient =
+      (patientIdKey ? clientsById.get(patientIdKey) : null) ||
+      (reqEmailLower ? clientsByEmailLower.get(reqEmailLower) : null) ||
+      null;
+
+    const resolvedPatientName =
+      (req?.patientName && String(req.patientName).trim()) ||
+      (req?.clientName && String(req.clientName).trim()) ||
+      (resolvedClient?.name && String(resolvedClient.name).trim()) ||
+      '';
+
+    const to = String(medicalReportToEmail || '').trim();
+    const subject = String(medicalReportSubject || '').trim();
+    const patientName = String(resolvedPatientName || medicalReportPatientName || '').trim();
+    const reportDate = String(medicalReportReportDate || '').trim();
+    const medicalHistory = String(medicalReportMedicalHistory || '').trim();
+    const nurseNotes = String(medicalReportNurseNotes || '').trim();
+    const nurseSignature = String(medicalReportNurseSignature || '').trim();
+    const recommendations = String(medicalReportRecommendations || '').trim();
+
+    if (!to) {
+      Alert.alert('Missing Email', 'Please enter the recipient email address.');
+      return;
+    }
+    if (!subject) {
+      Alert.alert('Missing Subject', 'Please enter an email subject.');
+      return;
+    }
+    if (!patientName || patientName === 'N/A') {
+      Alert.alert('Missing Patient Name', 'Please enter the patient name.');
+      return;
+    }
+    if (!reportDate) {
+      Alert.alert('Missing Report Date', 'Please enter the report date.');
+      return;
+    }
+    if (!medicalHistory) {
+      Alert.alert('Missing Medical History', 'Please enter the medical history.');
+      return;
+    }
+    if (!nurseNotes) {
+      Alert.alert("Missing Nurse's Notes", "Please enter the nurse's notes.");
+      return;
+    }
+    if (!nurseSignature) {
+      Alert.alert("Missing Nurse Signature", "Please enter the nurse's name/signature.");
+      return;
+    }
+    if (!recommendations) {
+      Alert.alert("Missing Recommendations", "Please enter recommendations.");
+      return;
+    }
+
+    // Close the request modal first so the preview behaves like a separate screen
+    // (avoids stacked Modals where only the scrim/overlay is visible).
+    setMedicalReportRequestModalVisible(false);
+    setTimeout(() => {
+      setMedicalReportPreviewVisible(true);
+    }, 250);
+  };
+
+  const closeMedicalReportPreviewModal = () => {
+    if (sendingMedicalReport) return;
+    setMedicalReportPreviewVisible(false);
+  };
+
+  const ensureFirebaseEmailEnabled = async () => {
+    const config = await EmailService.getConfig();
+    const next = {
+      ...(config || {}),
+      provider: 'firebase',
+      enabled: true,
+    };
+    if (config?.enabled && String(config?.provider || '').toLowerCase() === 'firebase') {
+      return next;
+    }
+    await EmailService.saveConfig(next);
+    return next;
+  };
+
+  const sendMedicalReportEmailAndComplete = async () => {
+    if (sendingMedicalReport) return;
+    const req = selectedMedicalReportRequest;
+    const requestId = req?.id;
+
+    const patientIdKey = String(req?.patientId || req?.patientAuthUid || '').trim();
+    const reqEmailLower = String(req?.patientEmail || req?.email || '').trim().toLowerCase();
+    const resolvedClient =
+      (patientIdKey ? clientsById.get(patientIdKey) : null) ||
+      (reqEmailLower ? clientsByEmailLower.get(reqEmailLower) : null) ||
+      null;
+
+    const resolvedPatientName =
+      (req?.patientName && String(req.patientName).trim()) ||
+      (req?.clientName && String(req.clientName).trim()) ||
+      (resolvedClient?.name && String(resolvedClient.name).trim()) ||
+      '';
+
+    const resolvedPatientEmail =
+      (req?.patientEmail && String(req.patientEmail).trim()) ||
+      (req?.email && String(req.email).trim()) ||
+      (resolvedClient?.email && String(resolvedClient.email).trim()) ||
+      '';
+
+    const resolvedPatientPhone =
+      (req?.patientPhone && String(req.patientPhone).trim()) ||
+      (req?.phone && String(req.phone).trim()) ||
+      (resolvedClient?.phone && String(resolvedClient.phone).trim()) ||
+      '';
+
+    const resolvedPatientAddress =
+      (req?.patientAddress && String(req.patientAddress).trim()) ||
+      (req?.address && String(req.address).trim()) ||
+      (resolvedClient?.address && String(resolvedClient.address).trim()) ||
+      '';
+
+    const to = String(medicalReportToEmail || '').trim();
+    const subject = String(medicalReportSubject || '').trim();
+    const patientName = String(resolvedPatientName || medicalReportPatientName || '').trim();
+    const patientDob = String(medicalReportPatientDob || '').trim();
+    const reportDate = String(medicalReportReportDate || '').trim();
+    const patientEmail = String(resolvedPatientEmail || medicalReportPatientEmail || '').trim();
+    const patientPhone = String(resolvedPatientPhone || medicalReportPatientPhone || '').trim();
+    const patientAddress = String(resolvedPatientAddress || medicalReportPatientAddress || '').trim();
+    const medicalHistory = String(medicalReportMedicalHistory || '').trim();
+    const nurseNotes = String(medicalReportNurseNotes || '').trim();
+    const nurseSignature = String(medicalReportNurseSignature || '').trim();
+    const recommendations = String(medicalReportRecommendations || '').trim();
+
+    if (!to) {
+      Alert.alert('Missing Email', 'Please enter the recipient email address.');
+      return;
+    }
+    if (!subject) {
+      Alert.alert('Missing Subject', 'Please enter an email subject.');
+      return;
+    }
+    if (!patientName || patientName === 'N/A') {
+      Alert.alert('Missing Patient Name', 'Please enter the patient name.');
+      return;
+    }
+    if (!reportDate) {
+      Alert.alert('Missing Report Date', 'Please enter the report date.');
+      return;
+    }
+    if (!medicalHistory) {
+      Alert.alert('Missing Medical History', 'Please enter the medical history.');
+      return;
+    }
+    if (!nurseNotes) {
+      Alert.alert("Missing Nurse's Notes", "Please enter the nurse's notes.");
+      return;
+    }
+    if (!nurseSignature) {
+      Alert.alert('Missing Nurse Signature', "Please enter the nurse's name/signature.");
+      return;
+    }
+    if (!recommendations) {
+      Alert.alert('Missing Recommendations', 'Please enter the recommendations.');
+      return;
+    }
+
+    setSendingMedicalReport(true);
+    try {
+      await ensureFirebaseEmailEnabled();
+
+      const escapeHtml = (value) =>
+        String(value || '')
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;');
+
+      const nl2br = (value) => escapeHtml(value).replace(/\r\n|\r|\n/g, '<br />');
+
+      const safeFirstName = (String(patientName || '').trim().split(' ')[0] || 'there').trim();
+
+      // Load logo for PDF
+      const getLogoDataUri = async () => {
+        try {
+          const asset = Asset.fromModule(require('../assets/Images/Nurses-logo.png'));
+          await asset.downloadAsync();
+          let uri = asset.localUri || asset.uri;
+          if (!uri) return null;
+
+          if (!uri.startsWith('file://') && FileSystem.cacheDirectory) {
+            const targetUri = `${FileSystem.cacheDirectory}876nurses-logo.png`;
+            try {
+              const downloadResult = await FileSystem.downloadAsync(uri, targetUri);
+              uri = downloadResult?.uri || targetUri;
+            } catch {
+              // Keep original URI
+            }
+          }
+
+          const base64Encoding =
+            (FileSystem.EncodingType && (FileSystem.EncodingType.Base64 || FileSystem.EncodingType.BASE64)) ||
+            'base64';
+
+          const base64 = await FileSystem.readAsStringAsync(uri, { encoding: base64Encoding });
+          return `data:image/png;base64,${base64}`;
+        } catch (error) {
+          console.warn('Unable to load logo for PDF:', error?.message || error);
+          return null;
+        }
+      };
+
+      const logoDataUri = await getLogoDataUri();
+
+      // Company details for consistent footer styling
+      const companyLegalName = '876 Nurses Home Care Services Limited';
+      const companyAddress = '60 Knutsford Blvd, Panjam Building, 9th Floor - Regus, Kingston 5, Jamaica, West Indies';
+      const companyWebsite = 'https://www.876nurses.com';
+      const instagramUrl = 'https://instagram.com/876_nurses';
+      const facebookUrl = 'https://facebook.com/876nurses';
+      const whatsAppUrl = 'https://wa.me/8766189876';
+
+      const instagramIconUrl = 'https://storage.googleapis.com/nurses-afb7e.firebasestorage.app/email-assets/icon-instagram.png';
+      const facebookIconUrl = 'https://storage.googleapis.com/nurses-afb7e.firebasestorage.app/email-assets/icon-facebook.png';
+      const whatsAppIconUrl = 'https://storage.googleapis.com/nurses-afb7e.firebasestorage.app/email-assets/icon-whatsapp.png';
+
+      const fileSafe = (value) =>
+        String(value || '')
+          .trim()
+          .replace(/\s+/g, '-')
+          .replace(/[^a-zA-Z0-9._-]/g, '')
+          .slice(0, 80);
+
+      // 1) Build PDF (attachment) containing the full report content (match preview screen layout)
+      const reportPdfHtml = `<!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <title>Medical Reports of Patients</title>
+            <style>
+              * { box-sizing: border-box; }
+              body { font-family: Arial, sans-serif; color: #1f2a44; background: #ffffff; margin: 0; padding: 0; }
+              .page { padding: 28px 26px; max-width: 650px; margin: 0 auto; }
+              .header { text-align: center; margin-bottom: 12px; }
+              .logo { width: 90px; height: 70px; margin: 0 auto 6px; display: block; }
+              .title { font-size: 18px; font-weight: 700; color: #2f62d7; margin: 0; text-align: center; }
+              .bar { height: 2px; background: #2f62d7; margin: 10px 0 18px 0; }
+              .section-title { font-size: 14px; font-weight: 700; color: #1f2a44; margin-top: 10px; margin-bottom: 8px; }
+              .info-row { display: flex; margin-bottom: 6px; font-size: 13px; }
+              .info-label { width: 140px; font-weight: 600; color: #1f2a44; }
+              .info-value { flex: 1; color: #1f2a44; }
+              .notes-box { border: 1px solid #d1d5db; border-radius: 8px; padding: 12px; background: #f3f4f6; min-height: 80px; margin-bottom: 14px; }
+              .notes-text { font-size: 13px; line-height: 1.4; color: #1f2a44; }
+              .spacer { height: 10px; }
+              .footer { margin-top: 18px; font-size: 11px; color: #6b7280; text-align: center; line-height: 1.5; border-top: 1px solid #e5e7eb; padding-top: 14px; }
+            </style>
+          </head>
+          <body>
+            <div class="page">
+              <div class="header">
+                ${logoDataUri ? `<img class="logo" src="${logoDataUri}" alt="876 Nurses" />` : ''}
+                <h1 class="title">Medical Reports of Patients</h1>
+              </div>
+              <div class="bar"></div>
+
+              <div class="section-title">Patient Information:</div>
+              <div class="info-row">
+                <span class="info-label">Name:</span>
+                <span class="info-value">${escapeHtml(patientName)}</span>
+              </div>
+              ${patientDob ? `<div class="info-row"><span class="info-label">Date of Birth:</span><span class="info-value">${escapeHtml(patientDob)}</span></div>` : ''}
+              <div class="info-row">
+                <span class="info-label">Date of Report:</span>
+                <span class="info-value">${escapeHtml(reportDate)}</span>
+              </div>
+              ${patientEmail ? `<div class="info-row"><span class="info-label">Email:</span><span class="info-value">${escapeHtml(patientEmail)}</span></div>` : ''}
+              ${patientPhone ? `<div class="info-row"><span class="info-label">Phone:</span><span class="info-value">${escapeHtml(patientPhone)}</span></div>` : ''}
+              ${patientAddress ? `<div class="info-row"><span class="info-label">Address:</span><span class="info-value">${escapeHtml(patientAddress)}</span></div>` : ''}
+
+              ${medicalReportAllergies ? `<div class="spacer"></div>
+              <div class="section-title">Allergies:</div>
+              <div class="notes-box">
+                <div class="notes-text">${nl2br(medicalReportAllergies)}</div>
+              </div>` : ''}
+
+              ${medicalReportVitals ? `<div class="section-title">Recent Vitals:</div>
+              <div class="notes-box">
+                <div class="notes-text">${nl2br(medicalReportVitals)}</div>
+              </div>` : ''}
+
+              <div class="spacer"></div>
+              <div class="section-title">Medical History:</div>
+              <div class="notes-box">
+                <div class="notes-text">${nl2br(medicalHistory)}</div>
+              </div>
+
+              <div class="section-title">Nurse's Notes:</div>
+              <div class="notes-box">
+                <div class="notes-text">${nl2br(nurseNotes)}</div>
+              </div>
+
+              <div class="spacer"></div>
+              <div class="section-title">Recommendations:</div>
+              <div class="notes-box">
+                <div class="notes-text">${nl2br(recommendations)}</div>
+              </div>
+
+              <div style="margin-top: 24px; padding-top: 16px; border-top: 1px solid #e5e7eb;">
+                <div style="font-size: 13px; font-weight: 600; color: #1f2a44; margin-bottom: 4px;">Prepared by:</div>
+                <div style="font-size: 13px; color: #1f2a44;">${escapeHtml(nurseSignature)}</div>
+              </div>
+            </div>
+          </body>
+        </html>`;
+
+      const pdf = await Print.printToFileAsync({
+        html: reportPdfHtml,
+        base64: false,
+        width: 612,
+        height: 792,
+      });
+      const pdfUri = pdf?.uri;
+      if (!pdfUri) throw new Error('Failed to generate PDF for medical report');
+
+      const baseFileName = `Medical-Report-${fileSafe(patientName) || 'Patient'}-${fileSafe(reportDate) || 'Report'}.pdf`;
+      const storagePath = `medical-reports/${fileSafe(requestId) || 'adhoc'}/${Date.now()}-${baseFileName}`;
+
+      const uploadRes = await FirebaseService.uploadImage(pdfUri, storagePath);
+      if (!uploadRes?.success) {
+        throw new Error(uploadRes?.error || 'Failed to upload medical report PDF');
+      }
+
+      // 2) Email body should be short (do not embed medical notes)
+      const html = `<!DOCTYPE html>
+        <html>
+          <head>
+            <meta charset="utf-8" />
+            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+            <title>Medical Report Ready</title>
+          </head>
+          <body style="margin:0;padding:0;background-color:#ffffff;font-family:Arial,sans-serif;color:#111827;">
+            <div style="max-width:600px;margin:0 auto;padding:28px 20px;line-height:1.7;">
+              <p style="margin:0 0 14px 0;">Hi ${escapeHtml(safeFirstName)},</p>
+              <p style="margin:0 0 10px 0;">Your medical report is ready for viewing.</p>
+              <p style="margin:0 0 14px 0;">Please see the attached PDF.</p>
+
+              <div style="margin-top:26px;">
+                <div style="text-align:center;color:#9ca3af;font-size:11px;line-height:1.6;padding:10px 10px 0 10px;">
+                  <span style="white-space:nowrap;">This email was sent by: ${escapeHtml(companyLegalName)}</span><br />
+                  ${escapeHtml(companyAddress)}<br />
+                  <a href="${escapeHtml(companyWebsite)}" style="color:#9ca3af;text-decoration:underline;font-weight:600;">${escapeHtml(
+                    companyWebsite.replace(/^https?:\/\//, '').replace(/\/$/, '')
+                  )}</a>
+                </div>
+
+                <div style="border-top:1px solid #e5e7eb;margin:18px 0 16px 0;"></div>
+
+                <table role="presentation" align="center" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto;">
+                  <tr>
+                    <td align="center" style="padding:0 10px;">
+                      <a href="${escapeHtml(instagramUrl)}" target="_blank" rel="noopener noreferrer"
+                        style="display:inline-block;width:28px;height:28px;text-decoration:none;">
+                        <img src="${escapeHtml(instagramIconUrl)}" width="28" height="28" alt="Instagram"
+                          style="display:block;width:28px;height:28px;border:0;outline:none;text-decoration:none;border-radius:14px;" />
+                      </a>
+                    </td>
+                    <td align="center" style="padding:0 10px;">
+                      <a href="${escapeHtml(facebookUrl)}" target="_blank" rel="noopener noreferrer"
+                        style="display:inline-block;width:28px;height:28px;text-decoration:none;">
+                        <img src="${escapeHtml(facebookIconUrl)}" width="28" height="28" alt="Facebook"
+                          style="display:block;width:28px;height:28px;border:0;outline:none;text-decoration:none;border-radius:14px;" />
+                      </a>
+                    </td>
+                    <td align="center" style="padding:0 10px;">
+                      <a href="${escapeHtml(whatsAppUrl)}" target="_blank" rel="noopener noreferrer"
+                        style="display:inline-block;width:28px;height:28px;text-decoration:none;">
+                        <img src="${escapeHtml(whatsAppIconUrl)}" width="28" height="28" alt="WhatsApp"
+                          style="display:block;width:28px;height:28px;border:0;outline:none;text-decoration:none;border-radius:14px;" />
+                      </a>
+                    </td>
+                  </tr>
+                </table>
+              </div>
+            </div>
+          </body>
+        </html>`;
+
+      const text = [
+        `Hi ${safeFirstName},`,
+        '',
+        'Your medical report is ready for viewing.',
+        'Please see the attached PDF.',
+        '',
+        `This email was sent by: ${companyLegalName}`,
+        companyAddress,
+        `Website: ${companyWebsite}`,
+        `Instagram: ${instagramUrl}`,
+        `WhatsApp: ${whatsAppUrl}`,
+      ].join('\n');
+
+      const sendRes = await EmailService.send({
+        to,
+        subject,
+        html,
+        text,
+        attachments: [
+          {
+            storagePath,
+            filename: baseFileName,
+            contentType: 'application/pdf',
+          },
+        ],
+        meta: {
+          type: 'medical_report',
+          requestId: requestId || null,
+          patientId: req?.patientId || null,
+          reportStoragePath: storagePath,
+          reportPdfUrl: uploadRes?.url || null,
+        },
+      });
+
+      if (!sendRes?.success) {
+        throw new Error(sendRes?.error || 'Failed to queue email');
+      }
+
+      if (requestId) {
+        await FirebaseService.updateMedicalReportRequest(requestId, {
+          status: 'completed',
+          completedAtIso: new Date().toISOString(),
+          generatedByUid: user?.id || user?.uid || null,
+          generatedById: user?.id || null,
+          emailQueuedId: sendRes?.id || null,
+          reportStoragePath: storagePath,
+          reportPdfUrl: uploadRes?.url || null,
+          reportFileName: baseFileName,
+        });
+      }
+
+      setPendingMedicalReportRequests((prev) => (Array.isArray(prev) ? prev.filter((r) => r?.id !== requestId) : []));
+      setMedicalReportPreviewVisible(false);
+      setMedicalReportRequestModalVisible(false);
+      setSelectedMedicalReportRequest(null);
+      Alert.alert('Queued', 'Medical report email has been queued to send.');
+    } catch (e) {
+      Alert.alert('Send Failed', e?.message || 'Failed to send medical report email.');
+    } finally {
+      setSendingMedicalReport(false);
+    }
+  };
 
   useEffect(() => {
     // Reset initialization flag when user changes so the sequences reinitialize
@@ -2051,12 +2916,12 @@ export default function AdminDashboardScreen({ navigation, route }) {
         const allInvoices = await InvoiceService.getAllInvoices();
         const invoices = Array.isArray(allInvoices) ? allInvoices : [];
 
-        if (__DEV__) {
-          console.log('[Admin Invoice AutoGen] Starting scan', {
-            completedShiftsCount: completedShifts.length,
-            totalInvoices: invoices.length,
-          });
-        }
+        // if (__DEV__) {
+        //   console.log('[Admin Invoice AutoGen] Starting scan', {
+        //     completedShiftsCount: completedShifts.length,
+        //     totalInvoices: invoices.length,
+        //   });
+        // }
 
         const invoiceByShiftId = new Map();
         for (const inv of invoices) {
@@ -2073,17 +2938,17 @@ export default function AdminDashboardScreen({ navigation, route }) {
 
           const shiftIdKey = String(shiftId);
 
-          if (__DEV__ && shiftIdKey === 'IFUO3HmNuZ5sO74KFQGb') {
-            console.log('[Admin Invoice AutoGen][IFUO3HmNuZ5sO74KFQGb] Checking', {
-              alreadyAttempted: autoFinalShiftInvoiceAttemptedRef.current.has(shiftIdKey),
-              finalInvoiceId: request?.finalInvoiceId || null,
-              finalInvoiceGeneratedAt: request?.finalInvoiceGeneratedAt || null,
-              finalInvoiceSentAt: request?.finalInvoiceSentAt || null,
-              isRecurring: isRecurringRequest(request),
-              status: request?.status,
-              existingInvoice: invoiceByShiftId.has(shiftIdKey) ? invoiceByShiftId.get(shiftIdKey)?.invoiceId : null,
-            });
-          }
+          // if (__DEV__ && shiftIdKey === 'IFUO3HmNuZ5sO74KFQGb') {
+          //   console.log('[Admin Invoice AutoGen][IFUO3HmNuZ5sO74KFQGb] Checking', {
+          //     alreadyAttempted: autoFinalShiftInvoiceAttemptedRef.current.has(shiftIdKey),
+          //     finalInvoiceId: request?.finalInvoiceId || null,
+          //     finalInvoiceGeneratedAt: request?.finalInvoiceGeneratedAt || null,
+          //     finalInvoiceSentAt: request?.finalInvoiceSentAt || null,
+          //     isRecurring: isRecurringRequest(request),
+          //     status: request?.status,
+          //     existingInvoice: invoiceByShiftId.has(shiftIdKey) ? invoiceByShiftId.get(shiftIdKey)?.invoiceId : null,
+          //   });
+          // }
 
           if (autoFinalShiftInvoiceAttemptedRef.current.has(shiftIdKey)) continue;
 
@@ -2129,15 +2994,15 @@ export default function AdminDashboardScreen({ navigation, route }) {
 
           const hoursWorked = computeTotalHoursFromClock(request);
 
-          if (__DEV__ && shiftIdKey === 'IFUO3HmNuZ5sO74KFQGb') {
-            console.log('[Admin Invoice AutoGen][IFUO3HmNuZ5sO74KFQGb] Creating invoice', {
-              clientEmail,
-              clientName,
-              serviceType,
-              hoursWorked,
-              completedAtIso,
-            });
-          }
+          // if (__DEV__ && shiftIdKey === 'IFUO3HmNuZ5sO74KFQGb') {
+          //   console.log('[Admin Invoice AutoGen][IFUO3HmNuZ5sO74KFQGb] Creating invoice', {
+          //     clientEmail,
+          //     clientName,
+          //     serviceType,
+          //     hoursWorked,
+          //     completedAtIso,
+          //   });
+          // }
 
           const invoiceRes = await InvoiceService.createInvoice({
             ...(request || {}),
@@ -2161,13 +3026,13 @@ export default function AdminDashboardScreen({ navigation, route }) {
             hoursWorked,
           });
 
-          if (__DEV__ && shiftIdKey === 'IFUO3HmNuZ5sO74KFQGb') {
-            console.log('[Admin Invoice AutoGen][IFUO3HmNuZ5sO74KFQGb] Invoice creation result', {
-              success: invoiceRes?.success,
-              invoiceId: invoiceRes?.invoice?.invoiceId,
-              error: invoiceRes?.error || null,
-            });
-          }
+          // if (__DEV__ && shiftIdKey === 'IFUO3HmNuZ5sO74KFQGb') {
+          //   console.log('[Admin Invoice AutoGen][IFUO3HmNuZ5sO74KFQGb] Invoice creation result', {
+          //     success: invoiceRes?.success,
+          //     invoiceId: invoiceRes?.invoice?.invoiceId,
+          //     error: invoiceRes?.error || null,
+          //   });
+          // }
 
           if (invoiceRes?.success && invoiceRes?.invoice?.invoiceId) {
             await ApiService.updateShiftRequest(shiftIdKey, {
@@ -2176,11 +3041,11 @@ export default function AdminDashboardScreen({ navigation, route }) {
               finalCompletedAt: completedAtIso,
             });
 
-            if (__DEV__ && shiftIdKey === 'IFUO3HmNuZ5sO74KFQGb') {
-              console.log('[Admin Invoice AutoGen][IFUO3HmNuZ5sO74KFQGb] Updated shift request with finalInvoiceId', {
-                finalInvoiceId: invoiceRes.invoice.invoiceId,
-              });
-            }
+            // if (__DEV__ && shiftIdKey === 'IFUO3HmNuZ5sO74KFQGb') {
+            //   console.log('[Admin Invoice AutoGen][IFUO3HmNuZ5sO74KFQGb] Updated shift request with finalInvoiceId', {
+            //     finalInvoiceId: invoiceRes.invoice.invoiceId,
+            //   });
+            // }
           } else {
             console.warn('⚠️ Admin final shift invoice auto-generation failed:', invoiceRes?.error || 'Unknown error');
           }
@@ -2493,6 +3358,13 @@ export default function AdminDashboardScreen({ navigation, route }) {
     [selectedShiftRequest]
   );
 
+  // Distinguish admin-created recurring shifts (need nurse assignment) from nurse-created recurring shift requests (need approval)
+  const isAdminCreatedRecurring = useMemo(() => {
+    if (!isRecurringSchedule) return false;
+    return selectedShiftRequest?.adminRecurring === true || 
+      String(selectedShiftRequest?.adminRecurring || '').trim().toLowerCase() === 'true';
+  }, [isRecurringSchedule, selectedShiftRequest?.adminRecurring]);
+
   const selectedShiftActualTimes = useMemo(() => {
     if (!selectedShiftRequest?.actualStartTime || !selectedShiftRequest?.actualEndTime) {
       return null;
@@ -2534,6 +3406,19 @@ export default function AdminDashboardScreen({ navigation, route }) {
     setSelectedNurseDetails(details);
     setNurseDetailsModalVisible(true);
   };
+
+  const openShiftRequestInlineNurseDetailsModal = (details) => {
+    if (!details) return;
+    setShiftRequestInlineNurseDetails(details);
+    setShiftRequestInlineNurseDetailsVisible(true);
+  };
+
+  useEffect(() => {
+    if (!shiftRequestModalVisible) {
+      setShiftRequestInlineNurseDetailsVisible(false);
+      setShiftRequestInlineNurseDetails(null);
+    }
+  }, [shiftRequestModalVisible]);
 
   const renderAppointmentNurseActions = () => {
     const details = selectedAppointmentDetails || {};
@@ -3085,7 +3970,21 @@ export default function AdminDashboardScreen({ navigation, route }) {
     }
   }, [completedAppointments.length]);
 
-  const activeNurses = getAvailableNursesFromContext();
+  const activeNurses = (() => {
+    const raw = getAvailableNursesFromContext();
+    const list = Array.isArray(raw) ? [...raw] : [];
+    list.sort((a, b) => {
+      const aName = String(
+        a?.fullName || a?.name || a?.displayName || `${a?.firstName || ''} ${a?.lastName || ''}`.trim() || ''
+      ).trim();
+      const bName = String(
+        b?.fullName || b?.name || b?.displayName || `${b?.firstName || ''} ${b?.lastName || ''}`.trim() || ''
+      ).trim();
+
+      return aName.localeCompare(bName, undefined, { sensitivity: 'base' });
+    });
+    return list;
+  })();
 
   // Helper function to get nurse name from appointment or nurses list
   const getNurseName = (appointment) => {
@@ -5539,8 +6438,8 @@ export default function AdminDashboardScreen({ navigation, route }) {
       </View>
 
       {/* Content Area */}
-      <ScrollView 
-        style={styles.content} 
+      <ScrollView
+        style={styles.content}
         showsVerticalScrollIndicator={false}
         refreshControl={
           <RefreshControl
@@ -5644,6 +6543,131 @@ export default function AdminDashboardScreen({ navigation, route }) {
 
         {selectedCard === 'pending' && (
           <View style={styles.contentSection}>
+
+            {/* Pending Consultation Calls */}
+            {pendingConsultationRequests.length > 0 && (
+              <>
+                <Text style={styles.subsectionTitle}>Consultation Calls</Text>
+                {pendingConsultationRequests.map((req, index) => {
+                  const displayName =
+                    req.patientName ||
+                    req.clientName ||
+                    req.patientEmail ||
+                    req.email ||
+                    req.patientId ||
+                    'Unknown Patient';
+
+                  const dateObj = getConsultationScheduledDate(req);
+                  const isCallRequested = String(req?.status || '').toLowerCase() === 'call_requested';
+                  const isCallTime = Boolean(dateObj && dateObj.getTime() <= nowTick);
+                  const showCall = isCallRequested || isCallTime;
+                  const callPhone = req?.patientPhone || req?.phone || '';
+
+                  const dateLabel = dateObj
+                    ? dateObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                    : 'Date TBD';
+                  const timeLabel = dateObj
+                    ? dateObj.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+                    : 'Time TBD';
+
+                  return (
+                    <View key={req.id || `consult-${index}`} style={styles.compactCard}>
+                      <View style={styles.compactHeader}>
+                        <MaterialCommunityIcons name="phone" size={20} color={COLORS.primary} />
+                        <View style={styles.compactInfo}>
+                          <Text style={styles.compactClient}>{displayName}</Text>
+                          <Text style={styles.compactService}>{dateLabel} at {timeLabel}</Text>
+                        </View>
+
+                        {showCall ? (
+                          <TouchableWeb
+                            style={styles.reassignChip}
+                            onPress={() => openDialerForPhone(callPhone, req.id, req.patientAuthUid || req.patientId)}
+                            activeOpacity={0.8}
+                          >
+                            <LinearGradient
+                              colors={GRADIENTS.header}
+                              start={{ x: 0, y: 0 }}
+                              end={{ x: 0, y: 1 }}
+                              style={styles.reassignChipGradient}
+                            >
+                              <Text style={styles.reassignChipText}>Call</Text>
+                            </LinearGradient>
+                          </TouchableWeb>
+                        ) : (
+                          <View style={styles.reassignChip}>
+                            <LinearGradient
+                              colors={GRADIENTS.warning}
+                              start={{ x: 0, y: 0 }}
+                              end={{ x: 0, y: 1 }}
+                              style={styles.reassignChipGradient}
+                            >
+                              <Text style={styles.reassignChipText}>Pending</Text>
+                            </LinearGradient>
+                          </View>
+                        )}
+                      </View>
+                    </View>
+                  );
+                })}
+              </>
+            )}
+
+            {/* Medical Report Requests */}
+            {pendingMedicalReportRequests.length > 0 && (
+              <>
+                <Text style={styles.subsectionTitle}>Medical Report Requests</Text>
+                {pendingMedicalReportRequests.map((req, index) => {
+                  const displayName =
+                    req.patientName ||
+                    req.clientName ||
+                    'Unknown Patient';
+
+                  const createdObj = (() => {
+                    const v = req.createdAt || null;
+                    try {
+                      if (!v) return null;
+                      if (typeof v?.toDate === 'function') return v.toDate();
+                      if (v?.seconds != null) return new Date(v.seconds * 1000);
+                      const d = new Date(v);
+                      return Number.isNaN(d.getTime()) ? null : d;
+                    } catch (_) {
+                      return null;
+                    }
+                  })();
+
+                  const createdLabel = createdObj
+                    ? createdObj.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                    : 'Recently';
+
+                  return (
+                    <TouchableWeb
+                      key={req.id || `medrep-${index}`}
+                      style={styles.compactCard}
+                      activeOpacity={0.8}
+                      onPress={() => openMedicalReportRequestModal(req)}
+                    >
+                      <View style={styles.compactHeader}>
+                        <MaterialCommunityIcons name="file-document-outline" size={20} color={COLORS.primary} />
+                        <View style={styles.compactInfo}>
+                          <Text style={styles.compactClient}>{displayName}</Text>
+                        </View>
+                        <View style={styles.reassignChip}>
+                          <LinearGradient
+                            colors={GRADIENTS.warning}
+                            start={{ x: 0, y: 0 }}
+                            end={{ x: 0, y: 1 }}
+                            style={styles.reassignChipGradient}
+                          >
+                            <Text style={styles.reassignChipText}>Pending</Text>
+                          </LinearGradient>
+                        </View>
+                      </View>
+                    </TouchableWeb>
+                  );
+                })}
+              </>
+            )}
 
             {/* Pending Shift Requests (from nurses) */}
             {pendingShiftRequests.length > 0 && (
@@ -5935,39 +6959,91 @@ export default function AdminDashboardScreen({ navigation, route }) {
             {pendingProfileEditRequests.length > 0 && (
               <>
                 <Text style={styles.subsectionTitle}>Profile Edit Requests</Text>
-                {pendingProfileEditRequests.map((request, index) => (
-                  <View key={request.id || `edit-request-${index}`} style={styles.compactCard}>
-                    <View style={styles.compactHeader}>
-                      <MaterialCommunityIcons 
-                        name="account-edit"
-                        size={20}
-                        color={COLORS.primary} 
-                      />
-                      <View style={styles.compactInfo}>
-                        <Text style={styles.compactClient}>{request.nurseName || 'Unknown'}</Text>
-                        <Text style={styles.compactService}>Code: {request.nurseCode || 'N/A'}</Text>
-                      </View>
-                      <View style={styles.editRequestButtons}>
-                        <TouchableWeb 
-                          style={styles.denyBtn} 
-                          onPress={() => handleDenyEditRequest(request)}
-                        >
-                          <Text style={styles.denyBtnText}>Deny</Text>
-                        </TouchableWeb>
-                        <TouchableWeb 
-                          style={styles.approveBtn} 
-                          onPress={() => handleApproveEditRequest(request)}
-                        >
-                          <Text style={styles.approveBtnText}>Approve</Text>
-                        </TouchableWeb>
+                {pendingProfileEditRequests.map((request, index) => {
+                  const requestName = (request?.nurseName || '').trim();
+                  const fallbackName = requestName || request?.nurseCode || 'Nurse';
+                  const requestNurseId = String(request?.nurseId || request?.userId || request?.uid || '').trim();
+                  const requestNurseCode = String(request?.nurseCode || request?.code || request?.nurseCodeValue || '').trim();
+
+                  const matchedNurse = (Array.isArray(nurses) ? nurses : []).find((n) => {
+                    if (!n) return false;
+                    const nId = String(n?.id || n?._id || n?.nurseId || n?.userId || n?.uid || '').trim();
+                    const nCode = String(n?.code || n?.nurseCode || n?.staffCode || '').trim();
+                    if (requestNurseId && nId && nId === requestNurseId) return true;
+                    if (requestNurseCode && nCode && nCode === requestNurseCode) return true;
+                    return false;
+                  });
+
+                  const photoUri =
+                    sanitizeMediaValue(
+                      request?.profilePhoto ||
+                        request?.profileImage ||
+                        request?.photoUrl ||
+                        request?.photoURL ||
+                        request?.nurseProfilePhoto
+                    ) ||
+                    sanitizeMediaValue(
+                      matchedNurse?.profilePhoto ||
+                        matchedNurse?.profileImage ||
+                        matchedNurse?.photoUrl ||
+                        matchedNurse?.photoURL
+                    ) ||
+                    null;
+
+                  return (
+                    <View key={request.id || `edit-request-${index}`} style={styles.compactCard}>
+                      <View style={styles.compactHeader}>
+                        {photoUri ? (
+                          <View style={styles.compactAvatarWrapper}>
+                            <Image source={{ uri: photoUri }} style={styles.compactAvatarImage} />
+                          </View>
+                        ) : (
+                          <View style={[styles.compactAvatarWrapper, styles.compactAvatarFallback]}>
+                            <Text style={styles.compactAvatarInitials}>{getInitials(fallbackName)}</Text>
+                          </View>
+                        )}
+                        <View style={styles.compactInfo}>
+                          <Text style={styles.compactClient}>{request.nurseName || 'Unknown'}</Text>
+                          <Text style={styles.compactService}>Code: {request.nurseCode || 'N/A'}</Text>
+                        </View>
+                        <View style={styles.editRequestButtons}>
+                          <TouchableWeb 
+                            style={styles.denyBtn} 
+                            onPress={() => handleDenyEditRequest(request)}
+                            activeOpacity={0.8}
+                          >
+                            <LinearGradient
+                              colors={[COLORS.error, COLORS.error]}
+                              start={{ x: 0, y: 0 }}
+                              end={{ x: 0, y: 1 }}
+                              style={styles.denyBtnGradient}
+                            >
+                              <Text style={styles.denyBtnText}>Deny</Text>
+                            </LinearGradient>
+                          </TouchableWeb>
+                          <TouchableWeb 
+                            style={styles.approveBtn} 
+                            onPress={() => handleApproveEditRequest(request)}
+                            activeOpacity={0.8}
+                          >
+                            <LinearGradient
+                              colors={['#10b981', '#059669']}
+                              start={{ x: 0, y: 0 }}
+                              end={{ x: 0, y: 1 }}
+                              style={styles.approveBtnGradient}
+                            >
+                              <Text style={styles.approveBtnText}>Approve</Text>
+                            </LinearGradient>
+                          </TouchableWeb>
+                        </View>
                       </View>
                     </View>
-                  </View>
-                ))}
+                  );
+                })}
               </>
             )}
             
-            {pendingShiftRequests.length === 0 && pendingRecurringShiftRequests.length === 0 && allPendingForDisplay.length === 0 && pendingProfileEditRequests.length === 0 && (
+            {pendingConsultationRequests.length === 0 && pendingMedicalReportRequests.length === 0 && pendingShiftRequests.length === 0 && pendingRecurringShiftRequests.length === 0 && allPendingForDisplay.length === 0 && pendingProfileEditRequests.length === 0 && (
               <Text style={styles.emptyText}>No pending items</Text>
             )}
           </View>
@@ -5976,7 +7052,22 @@ export default function AdminDashboardScreen({ navigation, route }) {
         {selectedCard === 'completed' && (
           <View key={`completed-${refreshKey}`} style={styles.contentSection}>
             {sortedFinalCompletedAppointments.map((appointment, index) => {
-              const isClockedIn = appointment.status === 'active' || appointment.status === 'clocked-in' || appointment.status === 'in-progress';
+              const statusLower = String(appointment.status || '').toLowerCase();
+              const hasClockInData = Boolean(
+                appointment.startedAt ||
+                  appointment.actualStartTime ||
+                  appointment.clockInTime ||
+                  appointment.lastClockInTime
+              );
+              const hasClockOutData = Boolean(
+                appointment.completedAt ||
+                  appointment.actualEndTime ||
+                  appointment.clockOutTime ||
+                  appointment.lastClockOutTime ||
+                  appointment.lastActualEndTime ||
+                  appointment.lastCompletedAt
+              );
+              const isClockedIn = !hasClockOutData && (['active', 'clocked-in', 'in-progress'].includes(statusLower) || hasClockInData);
               const displayName = resolveClientDisplayName(appointment);
               const serviceLabel =
                 appointment.serviceName ||
@@ -6051,6 +7142,607 @@ export default function AdminDashboardScreen({ navigation, route }) {
 
       </ScrollView>
 
+      {/* Medical Report Request Details Modal */}
+      <Modal
+        animationType="slide"
+        transparent={true}
+        presentationStyle="overFullScreen"
+        visible={medicalReportRequestModalVisible}
+        onRequestClose={closeMedicalReportRequestModal}
+      >
+        <View style={styles.modalOverlay}>
+          <View style={[styles.modalContent, { height: medicalReportModalHeight }]}>
+            <KeyboardAvoidingView
+              style={{ flex: 1 }}
+              behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+              keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 0}
+            >
+              <View style={styles.modalHeader}>
+                <Text style={styles.modalTitle}>Medical Report Request</Text>
+                <TouchableWeb onPress={closeMedicalReportRequestModal} disabled={sendingMedicalReport}>
+                  <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
+                </TouchableWeb>
+              </View>
+
+              <ScrollView
+                style={{ flex: 1 }}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+                keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+                automaticallyAdjustKeyboardInsets
+                contentContainerStyle={[styles.createNurseForm, { paddingBottom: 140 }]}
+              >
+                {/* Client Information */}
+                <View style={styles.detailsSection}>
+                  <Text style={styles.sectionTitle}>Client Information</Text>
+
+                {(() => {
+                  const req = selectedMedicalReportRequest || {};
+
+                  const patientIdKey = String(req.patientId || req.patientAuthUid || '').trim();
+                  const reqEmailLower = String(req.patientEmail || req.email || '').trim().toLowerCase();
+                  const resolvedClient =
+                    (patientIdKey ? clientsById.get(patientIdKey) : null) ||
+                    (reqEmailLower ? clientsByEmailLower.get(reqEmailLower) : null) ||
+                    null;
+
+                  const name =
+                    (req.patientName && String(req.patientName).trim()) ||
+                    (req.clientName && String(req.clientName).trim()) ||
+                    (resolvedClient?.name && String(resolvedClient.name).trim()) ||
+                    'N/A';
+
+                  const email =
+                    (req.patientEmail && String(req.patientEmail).trim()) ||
+                    (req.email && String(req.email).trim()) ||
+                    (resolvedClient?.email && String(resolvedClient.email).trim()) ||
+                    'Not provided';
+
+                  const phone =
+                    (req.patientPhone && String(req.patientPhone).trim()) ||
+                    (req.phone && String(req.phone).trim()) ||
+                    (resolvedClient?.phone && String(resolvedClient.phone).trim()) ||
+                    'Not provided';
+
+                  const address =
+                    (req.patientAddress && String(req.patientAddress).trim()) ||
+                    (req.address && String(req.address).trim()) ||
+                    (resolvedClient?.address && String(resolvedClient.address).trim()) ||
+                    'Not provided';
+
+                  return (
+                    <>
+                      <View style={styles.detailItem}>
+                        <MaterialCommunityIcons name="account" size={20} color={COLORS.primary} />
+                        <View style={styles.detailContent}>
+                          <Text style={styles.detailLabel}>Name</Text>
+                          <Text style={styles.detailValue}>{name}</Text>
+                        </View>
+                      </View>
+                      <View style={styles.detailItem}>
+                        <MaterialCommunityIcons name="email" size={20} color={COLORS.primary} />
+                        <View style={styles.detailContent}>
+                          <Text style={styles.detailLabel}>Email</Text>
+                          <Text style={styles.detailValue}>{email}</Text>
+                        </View>
+                      </View>
+                      <View style={styles.detailItem}>
+                        <MaterialCommunityIcons name="phone" size={20} color={COLORS.primary} />
+                        <View style={styles.detailContent}>
+                          <Text style={styles.detailLabel}>Phone</Text>
+                          <Text style={styles.detailValue}>{phone}</Text>
+                        </View>
+                      </View>
+                      <View style={styles.detailItem}>
+                        <MaterialCommunityIcons name="map-marker" size={20} color={COLORS.primary} />
+                        <View style={styles.detailContent}>
+                          <Text style={styles.detailLabel}>Address</Text>
+                          <Text style={styles.detailValue}>{address}</Text>
+                        </View>
+                      </View>
+                    </>
+                  );
+                })()}
+                </View>
+
+                {/* Report Details (fill in here, then Generate to preview) */}
+                <View style={styles.detailsSection}>
+                  <Text style={styles.sectionTitle}>Report Details</Text>
+
+                  <Text style={styles.formLabel}>Send To Email</Text>
+                  <View style={styles.formInput}>
+                    <MaterialCommunityIcons name="email-outline" size={18} color={COLORS.textLight} />
+                    <TextInput
+                      style={styles.input}
+                      value={medicalReportToEmail}
+                      onChangeText={setMedicalReportToEmail}
+                      placeholder="Recipient email"
+                      placeholderTextColor={COLORS.textLight}
+                      keyboardType="email-address"
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                      editable={!sendingMedicalReport}
+                    />
+                  </View>
+
+                  <Text style={styles.formLabel}>Subject</Text>
+                  <View style={styles.formInput}>
+                    <MaterialCommunityIcons name="text" size={18} color={COLORS.textLight} />
+                    <TextInput
+                      style={styles.input}
+                      value={medicalReportSubject}
+                      onChangeText={setMedicalReportSubject}
+                      placeholder="Email subject"
+                      placeholderTextColor={COLORS.textLight}
+                      editable={!sendingMedicalReport}
+                    />
+                  </View>
+
+                  <Text style={styles.formLabel}>Date of Birth</Text>
+                  <View style={styles.formInput}>
+                    <MaterialCommunityIcons name="calendar" size={18} color={COLORS.textLight} />
+                    <TextInput
+                      style={styles.input}
+                      value={medicalReportPatientDob}
+                      onChangeText={setMedicalReportPatientDob}
+                      placeholder="MM/DD/YYYY"
+                      placeholderTextColor={COLORS.textLight}
+                      editable={!sendingMedicalReport}
+                    />
+                  </View>
+
+                  <Text style={styles.formLabel}>Date of Report</Text>
+                  <View style={styles.formInput}>
+                    <MaterialCommunityIcons name="calendar-check" size={18} color={COLORS.textLight} />
+                    <TextInput
+                      style={styles.input}
+                      value={medicalReportReportDate}
+                      onChangeText={setMedicalReportReportDate}
+                      placeholder="MM/DD/YYYY"
+                      placeholderTextColor={COLORS.textLight}
+                      editable={!sendingMedicalReport}
+                    />
+                  </View>
+                </View>
+
+                <View style={styles.detailsSection}>
+                  <Text style={styles.sectionTitle}>Medical History</Text>
+                  <TextInput
+                    style={[styles.notesInput, { height: Math.max(120, medicalHistoryInputHeight) }]}
+                    value={medicalReportMedicalHistory}
+                    onChangeText={setMedicalReportMedicalHistory}
+                    placeholder="Enter medical history..."
+                    placeholderTextColor={COLORS.textLight}
+                    multiline
+                    editable={!sendingMedicalReport}
+                    onContentSizeChange={(e) => {
+                      const nextHeight = e?.nativeEvent?.contentSize?.height;
+                      if (typeof nextHeight === 'number' && Number.isFinite(nextHeight)) {
+                        setMedicalHistoryInputHeight(nextHeight + 24);
+                      }
+                    }}
+                  />
+                </View>
+
+                <View style={styles.detailsSection}>
+                  <Text style={styles.sectionTitle}>Nurse's Notes</Text>
+                  <TextInput
+                    style={[styles.notesInput, { height: Math.max(120, nurseNotesInputHeight) }]}
+                    value={medicalReportNurseNotes}
+                    onChangeText={setMedicalReportNurseNotes}
+                    placeholder="Enter nurse's notes..."
+                    placeholderTextColor={COLORS.textLight}
+                    multiline
+                    editable={!sendingMedicalReport}
+                    onContentSizeChange={(e) => {
+                      const nextHeight = e?.nativeEvent?.contentSize?.height;
+                      if (typeof nextHeight === 'number' && Number.isFinite(nextHeight)) {
+                        setNurseNotesInputHeight(nextHeight + 24);
+                      }
+                    }}
+                  />
+                </View>
+
+                <View style={styles.detailsSection}>
+                  <Text style={styles.sectionTitle}>Recommendations</Text>
+                  <TextInput
+                    style={[styles.notesInput, { height: Math.max(100, recommendationsInputHeight) }]}
+                    value={medicalReportRecommendations}
+                    onChangeText={setMedicalReportRecommendations}
+                    placeholder="Enter recommendations..."
+                    placeholderTextColor={COLORS.textLight}
+                    multiline
+                    editable={!sendingMedicalReport}
+                    onContentSizeChange={(e) => {
+                      const nextHeight = e?.nativeEvent?.contentSize?.height;
+                      if (typeof nextHeight === 'number' && Number.isFinite(nextHeight)) {
+                        setRecommendationsInputHeight(nextHeight + 24);
+                      }
+                    }}
+                  />
+                </View>
+
+                <View style={styles.detailsSection}>
+                  <Text style={styles.sectionTitle}>Nurse Signature</Text>
+                  <TextInput
+                    style={[styles.notesInput, styles.signatureInput]}
+                    value={medicalReportNurseSignature}
+                    onChangeText={setMedicalReportNurseSignature}
+                    placeholder="Enter nurse's name/signature..."
+                    placeholderTextColor={COLORS.textLight}
+                    editable={!sendingMedicalReport}
+                  />
+                </View>
+
+                {/* Medical Notes */}
+                <View style={styles.detailsSection}>
+                  {(() => {
+                  const req = selectedMedicalReportRequest || {};
+                  const patientId = req.patientId || req.patientAuthUid || null;
+                  const patientEmailLower = String(req.patientEmail || req.email || '').trim().toLowerCase();
+
+                  const normalizeId = (value) => {
+                    if (value === null || value === undefined) return null;
+                    const str = String(value).trim();
+                    return str ? str : null;
+                  };
+
+                  const normalizeEmailLower = (value) => {
+                    if (value === null || value === undefined) return '';
+                    const str = String(value).trim().toLowerCase();
+                    return str;
+                  };
+
+                  const matchesRequest = (apt) => {
+                    if (!apt) return false;
+
+                    const idCandidates = [
+                      apt?.patientId,
+                      apt?.clientId,
+                      apt?.userId,
+                      apt?.patient?.id,
+                      apt?.client?.id,
+                      apt?.patient?._id,
+                      apt?.client?._id,
+                      apt?.patientAuthUid,
+                    ]
+                      .map(normalizeId)
+                      .filter(Boolean);
+
+                    if (patientId) {
+                      const pid = normalizeId(patientId);
+                      if (pid && idCandidates.includes(pid)) return true;
+                    }
+
+                    if (patientEmailLower) {
+                      const emailCandidates = [
+                        apt?.patientEmail,
+                        apt?.clientEmail,
+                        apt?.email,
+                        apt?.patient?.email,
+                        apt?.client?.email,
+                      ]
+                        .map(normalizeEmailLower)
+                        .filter(Boolean);
+                      if (emailCandidates.includes(patientEmailLower)) return true;
+                    }
+
+                    return false;
+                  };
+
+                  const related = (Array.isArray(appointments) ? appointments : []).filter(matchesRequest);
+
+                  const pickFirstText = (values) => {
+                    const normalizeVal = (val) => {
+                      if (val === null || val === undefined) return '';
+                      if (Array.isArray(val)) {
+                        const inner = val
+                          .map((v) => {
+                            if (v === null || v === undefined) return '';
+                            if (typeof v === 'string' || typeof v === 'number') return String(v).trim();
+                            if (typeof v === 'object') {
+                              const candidate = v.text ?? v.body ?? v.note ?? v.value ?? '';
+                              return candidate === null || candidate === undefined ? '' : String(candidate).trim();
+                            }
+                            return '';
+                          })
+                          .find((t) => Boolean(t));
+                        return inner || '';
+                      }
+                      if (typeof val === 'object') {
+                        const candidate = val.text ?? val.body ?? val.note ?? val.value ?? '';
+                        return candidate === null || candidate === undefined ? '' : String(candidate).trim();
+                      }
+                      return String(val).trim();
+                    };
+                    return (values || []).map(normalizeVal).find((t) => Boolean(t)) || '';
+                  };
+
+                  const normalizePhotoUrls = (raw) => {
+                    const flatten = (val) => {
+                      if (!val) return [];
+                      if (Array.isArray(val)) return val.flatMap(flatten);
+                      return [val];
+                    };
+
+                    const arr = flatten(raw);
+
+                    return arr
+                      .map((p) => {
+                        if (typeof p === 'string') return p.trim();
+                        if (p && typeof p === 'object') {
+                          const candidate = p.url || p.uri || p.downloadURL || p.downloadUrl;
+                          return candidate ? String(candidate).trim() : '';
+                        }
+                        return '';
+                      })
+                      .filter((u) => typeof u === 'string' && u.length > 0)
+                      .filter((u) => /^https?:\/\//i.test(u));
+                  };
+
+                  const nurseNoteItems = [];
+                  const patientNoteItems = [];
+
+                  related.forEach((apt, idx) => {
+                    const nurseNotesText = pickFirstText([
+                      apt?.nurseNotes,
+                      apt?.completionNotes,
+                      apt?.lastCompletionNotes,
+                    ]);
+
+                    const nursePhotos = normalizePhotoUrls([
+                      apt?.notePhotos,
+                      apt?.nurseNotePhotos,
+                      apt?.completionPhotos,
+                      apt?.photoUrls,
+                      apt?.photos,
+                    ]);
+
+                    if (String(nurseNotesText || '').trim() || nursePhotos.length > 0) {
+                      nurseNoteItems.push({
+                        id: `nurse-note-${apt?.id || apt?._id || apt?.appointmentId || idx}`,
+                        date: apt?.completedAt || apt?.updatedAt || apt?.createdAt || apt?.date || null,
+                        title: String(apt?.nurseName || apt?.assignedNurseName || 'Nurse Note').trim() || 'Nurse Note',
+                        subtitle: String(apt?.service || apt?.appointmentType || '').trim(),
+                        body: String(nurseNotesText || nursePhotos.length ? (nurseNotesText || 'Photos attached.') : '').trim(),
+                        photoUrls: nursePhotos,
+                      });
+                    }
+
+                    const patientBookingNotesText = pickFirstText([
+                      apt?.patientNotes,
+                      apt?.patientNote,
+                      apt?.bookingNotes,
+                      apt?.bookingNote,
+                      apt?.clientNotes,
+                      apt?.specialInstructions,
+                      apt?.instructions,
+                      apt?.patient?.notes,
+                      apt?.client?.notes,
+                      apt?.clientSnapshot?.notes,
+                      apt?.patientSnapshot?.notes,
+                      apt?.clientData?.notes,
+                      apt?.patientData?.notes,
+                    ]);
+
+                    const legacyNotes = pickFirstText([apt?.notes]);
+                    const text = patientBookingNotesText || legacyNotes;
+
+                    const patientPhotos = normalizePhotoUrls([
+                      apt?.patientNotePhotos,
+                      apt?.bookingNotePhotos,
+                      apt?.clientNotePhotos,
+                      apt?.photoUrls,
+                      apt?.photos,
+                    ]);
+
+                    if (String(text || '').trim() || patientPhotos.length > 0) {
+                      patientNoteItems.push({
+                        id: `patient-note-${apt?.id || apt?._id || apt?.appointmentId || idx}`,
+                        date: apt?.createdAt || apt?.updatedAt || apt?.date || apt?.scheduledDate || null,
+                        title: String(apt?.patientName || apt?.clientName || req?.patientName || 'Patient').trim() || 'Patient',
+                        subtitle: String(apt?.service || apt?.appointmentType || 'From booking').trim(),
+                        body: String(text || (patientPhotos.length ? 'Photos attached.' : '')).trim(),
+                        photoUrls: patientPhotos,
+                      });
+                    }
+                  });
+
+                  const toEpochMs = (value) => {
+                    if (!value) return 0;
+                    if (value instanceof Date) return Number.isNaN(value.getTime()) ? 0 : value.getTime();
+                    if (typeof value === 'object') {
+                      if (typeof value.toDate === 'function') {
+                        const d = value.toDate();
+                        return d instanceof Date && !Number.isNaN(d.getTime()) ? d.getTime() : 0;
+                      }
+                      const seconds = typeof value.seconds === 'number' ? value.seconds : typeof value._seconds === 'number' ? value._seconds : null;
+                      if (typeof seconds === 'number' && Number.isFinite(seconds)) return seconds * 1000;
+                    }
+                    if (typeof value === 'number' && Number.isFinite(value)) return value < 1e12 ? value * 1000 : value;
+                    const parsed = Date.parse(String(value));
+                    return Number.isFinite(parsed) ? parsed : 0;
+                  };
+
+                  const allNoteItems = [...nurseNoteItems, ...patientNoteItems].sort((a, b) => toEpochMs(b?.date) - toEpochMs(a?.date));
+
+                  return (
+                    <>
+                      <Text style={styles.sectionTitle}>Medical Notes ({allNoteItems.length})</Text>
+                      <NotesAccordionList
+                        items={allNoteItems}
+                        emptyText="No medical notes available yet"
+                        showTime
+                        onPhotoPress={openNotePhotoPreview}
+                      />
+                    </>
+                  );
+                  })()}
+                </View>
+              </ScrollView>
+
+              <View
+                style={[
+                  styles.modalFooter,
+                  styles.modalFooterSingle,
+                  { position: 'absolute', left: 0, right: 0, bottom: 0 },
+                ]}
+              >
+                <TouchableWeb
+                  style={[styles.modalAssignButton, (!selectedMedicalReportRequest || sendingMedicalReport) && styles.buttonDisabled]}
+                  onPress={openMedicalReportGenerateModal}
+                  disabled={!selectedMedicalReportRequest || sendingMedicalReport}
+                >
+                  <LinearGradient
+                    colors={GRADIENTS.header}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 0, y: 1 }}
+                    style={styles.modalAssignButtonGradient}
+                  >
+                    <Text style={styles.modalAssignButtonText}>Generate</Text>
+                  </LinearGradient>
+                </TouchableWeb>
+              </View>
+            </KeyboardAvoidingView>
+            </View>
+          </View>
+      </Modal>
+
+      {/* Medical Report Preview (invoice-style) */}
+      <Modal
+        visible={medicalReportPreviewVisible}
+        animationType="slide"
+        transparent={false}
+        onRequestClose={closeMedicalReportPreviewModal}
+      >
+        <SafeAreaView style={styles.reportModalContainer} edges={['bottom']}>
+          <Image
+            source={require('../assets/Images/Nurses-logo.png')}
+            style={styles.watermarkLogo}
+            resizeMode="contain"
+            pointerEvents="none"
+            accessible={false}
+          />
+          <LinearGradient
+            colors={GRADIENTS.header}
+            start={{ x: 0, y: 0 }}
+            end={{ x: 0, y: 1 }}
+            style={[styles.reportModalHeader, { paddingTop: insets.top + 20 }]}
+          >
+            <View style={styles.reportHeaderRow}>
+              <View style={{ width: 44, height: 44 }} />
+              <Text style={styles.reportHeaderTitle} numberOfLines={1}>Report Preview</Text>
+              <TouchableWeb
+                onPress={closeMedicalReportPreviewModal}
+                style={styles.iconButton}
+                disabled={sendingMedicalReport}
+              >
+                <MaterialCommunityIcons name="close" size={26} color={COLORS.white} />
+              </TouchableWeb>
+            </View>
+          </LinearGradient>
+
+          <ScrollView
+            style={{ flex: 1, backgroundColor: '#F3F4F6' }}
+            showsVerticalScrollIndicator={false}
+            contentContainerStyle={{ paddingHorizontal: 12, paddingTop: 12, paddingBottom: 160 }}
+          >
+            <View style={styles.reportDocCard}>
+              <View style={styles.reportDocHeader}>
+                <Image
+                  source={require('../assets/Images/Nurses-logo.png')}
+                  style={styles.reportLogo}
+                  resizeMode="contain"
+                />
+                <Text style={styles.reportDocTitle}>Medical Reports of Patients</Text>
+                <View style={styles.reportDocLine} />
+              </View>
+
+              <Text style={styles.reportSectionTitle}>Patient Information:</Text>
+              <View style={styles.reportRow}>
+                <Text style={styles.reportLabel}>Name:</Text>
+                <Text style={styles.reportValue}>{medicalReportPatientName || 'N/A'}</Text>
+              </View>
+              <View style={styles.reportRow}>
+                <Text style={styles.reportLabel}>Date of Birth:</Text>
+                <Text style={styles.reportValue}>{medicalReportPatientDob || 'N/A'}</Text>
+              </View>
+              <View style={styles.reportRow}>
+                <Text style={styles.reportLabel}>Date of Report:</Text>
+                <Text style={styles.reportValue}>{medicalReportReportDate || 'N/A'}</Text>
+              </View>
+
+              {medicalReportAllergies && (
+                <>
+                  <View style={styles.reportSpacer} />
+                  <Text style={styles.reportSectionTitle}>Allergies:</Text>
+                  <View style={styles.reportNotesBox}>
+                    <Text style={styles.reportNotesText}>{medicalReportAllergies}</Text>
+                  </View>
+                </>
+              )}
+
+              {medicalReportVitals && (
+                <>
+                  <Text style={styles.reportSectionTitle}>Recent Vitals:</Text>
+                  <View style={styles.reportNotesBox}>
+                    <Text style={styles.reportNotesText}>{medicalReportVitals}</Text>
+                  </View>
+                </>
+              )}
+
+              <View style={styles.reportSpacer} />
+              <Text style={styles.reportSectionTitle}>Medical History:</Text>
+              <View style={styles.reportNotesBox}>
+                <Text style={styles.reportNotesText}>{medicalReportMedicalHistory || 'N/A'}</Text>
+              </View>
+
+              <View style={styles.reportSpacer} />
+              <Text style={styles.reportSectionTitle}>Nurse's Notes:</Text>
+              <View style={styles.reportNotesBox}>
+                <Text style={styles.reportNotesText}>{medicalReportNurseNotes || 'N/A'}</Text>
+              </View>
+
+              <Text style={styles.reportSectionTitle}>Recommendations:</Text>
+              <View style={styles.reportNotesBox}>
+                <Text style={styles.reportNotesText}>{medicalReportRecommendations || 'N/A'}</Text>
+              </View>
+
+              <View style={{ marginTop: 20, paddingTop: 15, borderTopWidth: 1, borderTopColor: '#E0E0E0' }}>
+                <Text style={styles.reportNotesText}>
+                  <Text style={{ fontWeight: '600' }}>Prepared by:</Text> {medicalReportNurseSignature || 'N/A'}
+                </Text>
+              </View>
+            </View>
+          </ScrollView>
+
+          <View style={styles.reportModalFooter}>
+            <TouchableWeb
+              style={styles.modalDenyButton}
+              onPress={closeMedicalReportPreviewModal}
+              disabled={sendingMedicalReport}
+            >
+              <Text style={styles.modalDenyButtonText}>Back</Text>
+            </TouchableWeb>
+
+            <TouchableWeb
+              style={[styles.modalAssignButton, sendingMedicalReport && styles.buttonDisabled]}
+              onPress={sendMedicalReportEmailAndComplete}
+              disabled={sendingMedicalReport}
+            >
+              <LinearGradient
+                colors={GRADIENTS.header}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 0, y: 1 }}
+                style={styles.modalAssignButtonGradient}
+              >
+                <Text style={styles.modalAssignButtonText}>{sendingMedicalReport ? 'Sending…' : 'Send'}</Text>
+              </LinearGradient>
+            </TouchableWeb>
+          </View>
+        </SafeAreaView>
+      </Modal>
+
 
 
       {/* Create Nurse Modal */}
@@ -6073,7 +7765,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                 <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
               </TouchableWeb>
             </View>
-            <ScrollView style={styles.createNurseForm}>
+            <ScrollView style={{ flex: 1 }} contentContainerStyle={styles.createNurseForm}>
               {/* Role Selection and Code Generation - Horizontal Layout */}
               <Text style={styles.formLabel}>Staff Type & Code Generation</Text>
               <View style={styles.horizontalBoxContainer}>
@@ -6509,6 +8201,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
         onRequestClose={() => {
           setAppointmentDetailsModalVisible(false);
           setAppointmentClockDetailsVisible(false);
+          closeNotePhotoPreview();
         }}
       >
         <View style={styles.modalOverlay}>
@@ -6527,19 +8220,115 @@ export default function AdminDashboardScreen({ navigation, route }) {
                 onPress={() => {
                   setAppointmentDetailsModalVisible(false);
                   setAppointmentClockDetailsVisible(false);
+                  closeNotePhotoPreview();
                 }}
               >
                 <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
               </TouchableWeb>
             </View>
+
+            {notePhotoPreviewVisible && (
+              <View style={styles.notePhotoPreviewOverlayInModal}>
+                <TouchableOpacity
+                  activeOpacity={1}
+                  style={styles.notePhotoPreviewOverlayTapArea}
+                  onPress={closeNotePhotoPreview}
+                >
+                  <TouchableOpacity
+                    activeOpacity={1}
+                    style={styles.notePhotoPreviewImageFrame}
+                    onPress={() => {}}
+                  >
+                    {notePhotoPreviewUri ? (
+                      <Image
+                        source={{ uri: notePhotoPreviewUri }}
+                        style={styles.notePhotoPreviewImage}
+                        resizeMode="contain"
+                      />
+                    ) : null}
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              </View>
+            )}
             
             {selectedAppointmentDetails && (
               <>
                 <ScrollView
-                  style={styles.appointmentDetailsScroll}
                   contentContainerStyle={styles.appointmentDetailsContent}
                   showsVerticalScrollIndicator={false}
                 >
+                  {/* Patient Alerts Banner */}
+                  {(() => {
+                    const status = selectedAppointmentDetails?.status;
+                    // Show alerts for all appointments except completed/cancelled
+                    const shouldShowAlerts = status && !['completed', 'cancelled', 'canceled', 'declined', 'rejected'].includes(status.toLowerCase());
+                    if (!shouldShowAlerts) return null;
+
+                    let patientAlerts = selectedAppointmentDetails?.patientAlerts ||
+                      selectedAppointmentDetails?.clinicalInfo ||
+                      selectedAppointmentDetails?.appointmentDetails?.patientAlerts;
+
+                    if (typeof patientAlerts === 'string') {
+                      try {
+                        patientAlerts = JSON.parse(patientAlerts);
+                      } catch {
+                        patientAlerts = null;
+                      }
+                    }
+
+                    if (!patientAlerts || typeof patientAlerts !== 'object') return null;
+
+                    const allergies = Array.isArray(patientAlerts.allergies) ? patientAlerts.allergies : [];
+                    const allergyOther = String(patientAlerts.allergyOther || '').trim();
+                    const vitals = patientAlerts.vitals || {};
+
+                    const bpSys = String(vitals?.bloodPressureSystolic || '').trim();
+                    const bpDia = String(vitals?.bloodPressureDiastolic || '').trim();
+                    const hr = String(vitals?.heartRate || '').trim();
+                    const temp = String(vitals?.temperature || '').trim();
+                    const spo2 = String(vitals?.oxygenSaturation || '').trim();
+
+                    const allergiesFiltered = allergies
+                      .map((a) => String(a).trim())
+                      .filter((a) => a && a.toLowerCase() !== 'none')
+                      .filter((a) => !(a === 'Other' && allergyOther));
+
+                    const hasAllergies = allergiesFiltered.length > 0 || Boolean(allergyOther);
+                    const hasVitals = Boolean(bpSys || bpDia || hr || temp || spo2);
+                    
+                    if (!hasAllergies && !hasVitals) return null;
+
+                    const allergyTextParts = [...allergiesFiltered];
+                    if (allergyOther && !allergyTextParts.includes(allergyOther)) allergyTextParts.push(allergyOther);
+                    const allergyText = allergyTextParts.length ? allergyTextParts.join(', ') : '';
+
+                    const vitalsParts = [];
+                    if (bpSys || bpDia) vitalsParts.push(`BP ${bpSys || '?'} / ${bpDia || '?'}`);
+                    if (hr) vitalsParts.push(`HR ${hr}`);
+                    if (temp) vitalsParts.push(`Temp ${temp}`);
+                    if (spo2) vitalsParts.push(`SpO₂ ${spo2}%`);
+                    const vitalsText = vitalsParts.join(' • ');
+
+                    return (
+                      <View style={styles.patientAlertsBanner}>
+                        <MaterialCommunityIcons name="alert-circle" size={18} color={COLORS.error} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.patientAlertsTitle}>Patient Alerts</Text>
+                          {hasAllergies ? (
+                            <Text style={styles.patientAlertsText} numberOfLines={3}>
+                              Patient is allergic to: {allergyText || '—'}
+                            </Text>
+                          ) : null}
+                          {hasVitals ? (
+                            <Text style={styles.patientAlertsText} numberOfLines={3}>
+                              Vitals are: {vitalsText}
+                            </Text>
+                          ) : null}
+                        </View>
+                      </View>
+                    );
+                  })()}
+
                   {/* Client Information (Moved to Top & Renamed) */}
                   <View style={styles.detailsSection}>
                     <Text style={styles.sectionTitle}>Client Information</Text>
@@ -6905,18 +8694,6 @@ export default function AdminDashboardScreen({ navigation, route }) {
                         }
                         return String(durationValue);
                       })();
-
-                      // Debug: verify resolved assigned/requesting nurse used in Service Info
-                      try {
-                        console.log('[AdminDashboard] ServiceInfo Assigned Nurse', {
-                          appointmentId: d?.id || d?._id || d?.appointmentId || null,
-                          resolvedAssignedNurseId,
-                          resolvedAssignedNurseCode,
-                          nurseDisplayName,
-                          nurseCode,
-                          coverageRequestingNurseName,
-                        });
-                      } catch {}
 
                       const isShiftLikeAppointment = Boolean(
                         d.isRecurring ||
@@ -7411,6 +9188,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                       null;
 
                     const hasAssignedClockActivity = Boolean(assignedClockInTime || assignedClockOutTime);
+                    const isAssignedCurrentlyClockedIn = Boolean(assignedClockInTime) && !Boolean(assignedClockOutTime);
                     const assignedClockPayload = hasAssignedClockActivity
                       ? {
                           clockInTime: assignedClockInTime,
@@ -7441,6 +9219,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                           hideSpecialty={!hasAssignedClockActivity}
                           hideCode={!hasAssignedClockActivity}
                           showViewButton={false}
+                          style={isAssignedCurrentlyClockedIn ? styles.cardClockedIn : undefined}
                           actionButton={
                             <TouchableWeb
                               onPress={() => {
@@ -7694,7 +9473,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                           <View style={{ flexDirection: 'row', alignItems: 'center', gap: 8 }}>
                             <Text style={styles.sectionTitle}>Emergency Backup Nurses</Text>
                           </View>
-                          {user?.role === 'admin' && (
+                          {isAdminUser && !appointmentHasClockedIn && (
                             <TouchableWeb
                               onPress={() => openBackupNurseModal(selectedAppointmentDetails)}
                               activeOpacity={0.7}
@@ -7730,35 +9509,6 @@ export default function AdminDashboardScreen({ navigation, route }) {
                             let hasIn = null;
                             let hasOut = null;
                             let hasClockHistory = false;
-                            const apptStatus = String(d.status || '').trim().toLowerCase();
-                            const isShiftActive = ['clocked-in', 'active', 'in-progress'].includes(apptStatus);
-
-                            // Fallback: if the appointment itself is active/clocked-in and the "working nurse" fields
-                            // match this backup nurse, mark as clocked-in even if clockByNurse is missing.
-                            if (isShiftActive && (backupId || backupCode)) {
-                              const workingId = normalizeId(
-                                d.nurseId ||
-                                  d.assignedNurseId ||
-                                  d.nurse?.id ||
-                                  d.nurse?._id ||
-                                  d.assignedNurse?.id ||
-                                  d.assignedNurse?._id ||
-                                  null
-                              );
-                              const workingCode = normalizeCode(
-                                d.nurseCode ||
-                                  d.staffCode ||
-                                  d.assignedNurseCode ||
-                                  d.assignedNurseStaffCode ||
-                                  d.nurse?.nurseCode ||
-                                  d.nurse?.staffCode ||
-                                  d.assignedNurse?.nurseCode ||
-                                  d.assignedNurse?.staffCode ||
-                                  null
-                              );
-                              if (backupId && workingId && backupId === workingId) isClockedIn = true;
-                              if (!isClockedIn && backupCode && workingCode && backupCode === workingCode) isClockedIn = true;
-                            }
 
                             const mergedClockByNurse =
                               d.clockByNurse ||
@@ -7821,14 +9571,6 @@ export default function AdminDashboardScreen({ navigation, route }) {
                                   clockEntry.clockOutTime ||
                                   clockEntry.completedAt;
                               }
-                            }
-
-                            // Fallback to appointment-level times when clock entry is absent or incomplete
-                            if (!hasIn) {
-                              hasIn = d.actualStartTime || d.clockInTime || d.startedAt;
-                            }
-                            if (!hasOut) {
-                              hasOut = d.actualEndTime || d.clockOutTime || d.completedAt;
                             }
 
                             hasClockHistory = Boolean(hasIn || hasOut);
@@ -7966,6 +9708,30 @@ export default function AdminDashboardScreen({ navigation, route }) {
                   {(() => {
                     const d = selectedAppointmentDetails || {};
                     const nurseItems = [];
+
+                    const nurseNotePhotos = (() => {
+                      const raw =
+                        d.nurseNotePhotos ||
+                        d.shiftDetails?.nurseNotePhotos ||
+                        d.shift?.nurseNotePhotos ||
+                        d.activeShift?.nurseNotePhotos ||
+                        d.shiftRequest?.nurseNotePhotos ||
+                        null;
+                      if (!raw) return [];
+                      const arr = Array.isArray(raw) ? raw : [raw];
+                      return arr
+                        .map((p) => {
+                          if (typeof p === 'string') return p.trim();
+                          if (p && typeof p === 'object') {
+                            const candidate = p.url || p.uri || p.downloadURL || p.downloadUrl || p.path;
+                            return candidate ? String(candidate).trim() : '';
+                          }
+                          return '';
+                        })
+                        .filter((u) => typeof u === 'string' && u.length > 0)
+                        .filter((u) => /^https?:\/\//i.test(u));
+                    })();
+
                     const pushNurseNote = (rawItem) => {
                       if (!rawItem || !rawItem.body) return;
                       const normalizedBody = String(rawItem.body).trim();
@@ -7974,7 +9740,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                         return String(existing.body || '').trim() === normalizedBody;
                       });
                       if (duplicate) return;
-                      nurseItems.push({ ...rawItem, body: normalizedBody });
+                      nurseItems.push({ ...rawItem, body: normalizedBody, photoUrls: nurseNotePhotos });
                     };
 
                     const nurseNotesBody = (d.nurseNotes && String(d.nurseNotes).trim().length)
@@ -8048,12 +9814,29 @@ export default function AdminDashboardScreen({ navigation, route }) {
                       });
                     }
 
+                    // If photos exist but no text notes were captured, still render a note card so thumbnails show.
+                    if (nurseItems.length === 0 && nurseNotePhotos.length > 0) {
+                      const nurseSubtitle = workingNurseForNotes.code || workingNurseForNotes.id || 'Nurse';
+                      pushNurseNote({
+                        id: `nurse-photos-${d.id || d._id || d.appointmentId || 'note'}`,
+                        date: d.updatedAt || d.completedAt || d.actualEndTime || null,
+                        title: workingNurseForNotes.name || 'Nurse Note',
+                        subtitle: nurseSubtitle,
+                        body: 'Photos attached.',
+                      });
+                    }
+
                     return (
                       <>
                         {nurseItems.length > 0 && (
                           <View style={styles.detailsSection}>
                             <Text style={styles.sectionTitle}>Nurses Notes</Text>
-                            <NotesAccordionList items={nurseItems} emptyText="No notes yet" showTime />
+                            <NotesAccordionList
+                              items={nurseItems}
+                              emptyText="No notes yet"
+                              showTime
+                              onPhotoPress={openNotePhotoPreview}
+                            />
                           </View>
                         )}
                       </>
@@ -8220,7 +10003,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                 )}
 
                 {/* Action Buttons for Pending Appointments (not recurring - nurse handles those) */}
-                {user?.role === 'admin' && selectedAppointmentDetails.status === 'pending' && !selectedAppointmentDetails.isRecurring && (
+                {isAdminUser && selectedAppointmentDetails.status === 'pending' && !selectedAppointmentDetails.isRecurring && (
                 <View style={styles.modalFooter}>
                   <TouchableWeb
                     style={styles.modalDenyButton}
@@ -8288,6 +10071,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
         }}
         nurse={selectedNurseDetails}
         nursesRoster={nurses}
+        showQualificationsRequest={false}
         footer={
           nurseSelectionMode ? (
             <TouchableOpacity
@@ -8353,8 +10137,16 @@ export default function AdminDashboardScreen({ navigation, route }) {
           // Close underlying shift modal and any stacked nurse details modal
           setShiftRequestModalVisible(false);
           setNurseDetailsModalVisible(false);
+          setShiftRequestInlineNurseDetailsVisible(false);
         }}
       >
+        <NurseDetailsModal
+          visible={shiftRequestInlineNurseDetailsVisible}
+          onClose={() => setShiftRequestInlineNurseDetailsVisible(false)}
+          nurse={shiftRequestInlineNurseDetails}
+          nursesRoster={nurses}
+          showQualificationsRequest={false}
+        />
         <View style={styles.detailsModalOverlay}>
           <View style={styles.detailsModalContent}>
             <View style={styles.detailsModalHeader}>
@@ -8371,33 +10163,79 @@ export default function AdminDashboardScreen({ navigation, route }) {
             
             {selectedShiftRequest && (
               <>
-                {/* DEBUG: Log the entire shift request */}
-                {(() => {
-                  console.log('📋 SELECTED SHIFT REQUEST FULL DATA:', {
-                    id: selectedShiftRequest.id || selectedShiftRequest._id,
-                    status: selectedShiftRequest.status,
-                    requestedBy: selectedShiftRequest.requestedBy,
-                    allKeys: Object.keys(selectedShiftRequest),
-                    nurseFields: Object.keys(selectedShiftRequest).filter(k => 
-                      k.toLowerCase().includes('nurse') || 
-                      k.toLowerCase().includes('prefer') || 
-                      k.toLowerCase().includes('request') ||
-                      k.toLowerCase().includes('assign')
-                    ).reduce((acc, key) => {
-                      acc[key] = selectedShiftRequest[key];
-                      return acc;
-                    }, {}),
-                    // Show full nurse-related objects
-                    nurseResponses: selectedShiftRequest.nurseResponses,
-                    assignedNurses: selectedShiftRequest.assignedNurses,
-                  });
-                  return null;
-                })()}
                 <ScrollView
-                  style={styles.appointmentDetailsScroll}
                   contentContainerStyle={styles.appointmentDetailsContent}
                   showsVerticalScrollIndicator={false}
                 >
+                  {/* Patient Alerts Banner */}
+                  {(() => {
+                    const status = String(selectedShiftRequest?.status || '').toLowerCase();
+                    if (['completed', 'cancelled', 'canceled', 'declined', 'rejected'].includes(status)) return null;
+
+                    let pa =
+                      selectedShiftRequest?.patientAlerts ||
+                      selectedShiftRequest?.shiftDetails?.patientAlerts ||
+                      selectedShiftRequest?.appointmentDetails?.patientAlerts ||
+                      selectedShiftRequest?.clinicalInfo ||
+                      selectedShiftRequest?.shiftDetails?.clinicalInfo ||
+                      null;
+
+                    if (typeof pa === 'string') {
+                      try { pa = JSON.parse(pa); } catch { pa = null; }
+                    }
+                    if (!pa || typeof pa !== 'object') pa = null;
+
+                    const allergiesRaw = pa?.allergies || selectedShiftRequest?.allergies || null;
+                    const allergies = Array.isArray(allergiesRaw)
+                      ? allergiesRaw.map((a) => String(a).trim()).filter(Boolean)
+                      : [];
+                    const allergyOther = String(pa?.allergyOther || '').trim();
+
+                    const vitals = pa?.vitals || selectedShiftRequest?.vitals || null;
+                    const bpSys = String(vitals?.bpSystolic || vitals?.bloodPressureSystolic || '').trim();
+                    const bpDia = String(vitals?.bpDiastolic || vitals?.bloodPressureDiastolic || '').trim();
+                    const hr = String(vitals?.heartRate || '').trim();
+                    const temp = String(vitals?.temperature || '').trim();
+                    const spo2 = String(vitals?.oxygenSaturation || '').trim();
+
+                    const filtered = allergies
+                      .map((a) => String(a).trim())
+                      .filter((a) => a && a.toLowerCase() !== 'none')
+                      .filter((a) => !(a === 'Other' && allergyOther));
+
+                    const hasAllergies = filtered.length > 0 || Boolean(allergyOther);
+                    const hasVitals = Boolean(bpSys || bpDia || hr || temp || spo2);
+                    if (!hasAllergies && !hasVitals) return null;
+
+                    const allergyParts = [...filtered];
+                    if (allergyOther && !allergyParts.includes(allergyOther)) allergyParts.push(allergyOther);
+
+                    const vitalsParts = [];
+                    if (bpSys || bpDia) vitalsParts.push(`BP ${bpSys || '?'} / ${bpDia || '?'}`);
+                    if (hr) vitalsParts.push(`HR ${hr}`);
+                    if (temp) vitalsParts.push(`Temp ${temp}`);
+                    if (spo2) vitalsParts.push(`SpO₂ ${spo2}%`);
+
+                    return (
+                      <View style={styles.patientAlertsBanner}>
+                        <MaterialCommunityIcons name="alert-circle" size={18} color={COLORS.error} />
+                        <View style={{ flex: 1 }}>
+                          <Text style={styles.patientAlertsTitle}>Patient Alerts</Text>
+                          {hasAllergies ? (
+                            <Text style={styles.patientAlertsText} numberOfLines={3}>
+                              Patient is allergic to: {allergyParts.join(', ') || '—'}
+                            </Text>
+                          ) : null}
+                          {hasVitals ? (
+                            <Text style={styles.patientAlertsText} numberOfLines={3}>
+                              Vitals: {vitalsParts.join(' • ')}
+                            </Text>
+                          ) : null}
+                        </View>
+                      </View>
+                    );
+                  })()}
+
                   {/* Client Information */}
                   <View style={styles.detailsSection}>
                     <Text style={styles.sectionTitle}>Client Information</Text>
@@ -8607,14 +10445,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
 
                   {/* Requested Nurse Card for Recurring Shifts */}
                   {(() => {
-                    console.log('🔍 REQUESTED NURSE SECTION CHECK:', { 
-                      isRecurringSchedule, 
-                      selectedShiftRequest: !!selectedShiftRequest,
-                      shiftId: selectedShiftRequest?.id || selectedShiftRequest?._id
-                    });
-                    
                     if (!isRecurringSchedule) {
-                      console.log('❌ Not a recurring schedule, skipping requested nurse section');
                       return null;
                     }
                     
@@ -8865,6 +10696,38 @@ export default function AdminDashboardScreen({ navigation, route }) {
                                     }
 
                                     if (normalizedResponseStatus === 'pending') {
+                                      // For nurse-created recurring shift requests, show "View" button instead of "Pending" badge
+                                      const isNurseCreatedRecurring = !selectedShiftRequest?.adminRecurring && 
+                                        (selectedShiftRequest?.isRecurring || selectedShiftRequest?.recurringPattern);
+                                      
+                                      if (isNurseCreatedRecurring) {
+                                        return (
+                                          <TouchableWeb
+                                            style={styles.detailsButton}
+                                            onPress={() => {
+                                              setTimeout(() => {
+                                                setNurseSelectionMode(null);
+                                                openShiftRequestInlineNurseDetailsModal(nurseData || { 
+                                                  id: nurseKey, 
+                                                  fullName: nurseName,
+                                                  staffCode: nurseCode 
+                                                });
+                                              }, 100);
+                                            }}
+                                            activeOpacity={0.7}
+                                          >
+                                            <LinearGradient
+                                              colors={GRADIENTS.header}
+                                              start={{ x: 0, y: 0 }}
+                                              end={{ x: 0, y: 1 }}
+                                              style={styles.detailsButtonGradient}
+                                            >
+                                              <Text style={styles.detailsButtonText}>View</Text>
+                                            </LinearGradient>
+                                          </TouchableWeb>
+                                        );
+                                      }
+                                      
                                       return (
                                         <View style={styles.reassignChip}>
                                           <LinearGradient
@@ -8910,6 +10773,38 @@ export default function AdminDashboardScreen({ navigation, route }) {
                                     }
 
                                     if (normalizedStatus === 'pending') {
+                                      // For nurse-created recurring shift requests, show "View" button instead of "Pending" badge
+                                      const isNurseCreatedRecurring = !selectedShiftRequest?.adminRecurring && 
+                                        (selectedShiftRequest?.isRecurring || selectedShiftRequest?.recurringPattern);
+                                      
+                                      if (isNurseCreatedRecurring) {
+                                        return (
+                                          <TouchableWeb
+                                            style={styles.detailsButton}
+                                            onPress={() => {
+                                              setTimeout(() => {
+                                                setNurseSelectionMode(null);
+                                                openShiftRequestInlineNurseDetailsModal(nurseData || { 
+                                                  id: nurseKey, 
+                                                  fullName: nurseName,
+                                                  staffCode: nurseCode 
+                                                });
+                                              }, 100);
+                                            }}
+                                            activeOpacity={0.7}
+                                          >
+                                            <LinearGradient
+                                              colors={GRADIENTS.header}
+                                              start={{ x: 0, y: 0 }}
+                                              end={{ x: 0, y: 1 }}
+                                              style={styles.detailsButtonGradient}
+                                            >
+                                              <Text style={styles.detailsButtonText}>View</Text>
+                                            </LinearGradient>
+                                          </TouchableWeb>
+                                        );
+                                      }
+                                      
                                       return (
                                         <View style={styles.reassignChip}>
                                           <LinearGradient
@@ -9018,6 +10913,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                                       {(() => {
                                         const dateStr = startDate;
                                         if (!dateStr) return 'N/A';
+                                        if (typeof dateStr !== 'string') { const _d = coerceToDateSafe(dateStr); return !_d ? 'N/A' : _d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
                                         const match = dateStr.match(/^([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})$/);
                                         if (match) {
                                           const monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
@@ -9045,6 +10941,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                                       {(() => {
                                         const dateStr = endDate;
                                         if (!dateStr) return 'Ongoing';
+                                        if (typeof dateStr !== 'string') { const _d = coerceToDateSafe(dateStr); return !_d ? 'Ongoing' : _d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
                                         const match = dateStr.match(/^([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})$/);
                                         if (match) {
                                           const monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
@@ -9184,6 +11081,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                                         {(() => {
                                           const dateStr = selectedShiftRequest.date || selectedShiftRequest.startDate;
                                           if (!dateStr) return 'N/A';
+                                          if (typeof dateStr !== 'string') { const _d = coerceToDateSafe(dateStr); return !_d ? 'N/A' : _d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
                                           const match = dateStr.match(/^([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})$/);
                                           if (match) {
                                             const monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
@@ -9211,6 +11109,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                                         {(() => {
                                           const dateStr = selectedShiftRequest.endDate;
                                           if (!dateStr) return 'Ongoing';
+                                          if (typeof dateStr !== 'string') { const _d = coerceToDateSafe(dateStr); return !_d ? 'Ongoing' : _d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
                                           const match = dateStr.match(/^([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})$/);
                                           if (match) {
                                             const monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
@@ -9498,6 +11397,38 @@ export default function AdminDashboardScreen({ navigation, route }) {
                                     }
 
                                     if (normalizedResponseStatus === 'pending') {
+                                      // For nurse-created recurring shift requests, show "View" button instead of "Pending" badge
+                                      const isNurseCreatedRecurring = !selectedShiftRequest?.adminRecurring && 
+                                        (selectedShiftRequest?.isRecurring || selectedShiftRequest?.recurringPattern);
+                                      
+                                      if (isNurseCreatedRecurring) {
+                                        return (
+                                          <TouchableWeb
+                                            style={styles.detailsButton}
+                                            onPress={() => {
+                                              setTimeout(() => {
+                                                setNurseSelectionMode(null);
+                                                openShiftRequestInlineNurseDetailsModal(nurseData || { 
+                                                  id: nurseId, 
+                                                  fullName: nurseName,
+                                                  staffCode: nurseCode 
+                                                });
+                                              }, 100);
+                                            }}
+                                            activeOpacity={0.7}
+                                          >
+                                            <LinearGradient
+                                              colors={GRADIENTS.header}
+                                              start={{ x: 0, y: 0 }}
+                                              end={{ x: 0, y: 1 }}
+                                              style={styles.detailsButtonGradient}
+                                            >
+                                              <Text style={styles.detailsButtonText}>View</Text>
+                                            </LinearGradient>
+                                          </TouchableWeb>
+                                        );
+                                      }
+                                      
                                       return (
                                         <View style={styles.reassignChip}>
                                           <LinearGradient
@@ -9628,6 +11559,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                                       {(() => {
                                         const dateStr = selectedShiftRequest.recurringPeriodStart || selectedShiftRequest.recurringStartDate || selectedShiftRequest.date || selectedShiftRequest.startDate;
                                         if (!dateStr) return 'N/A';
+                                        if (typeof dateStr !== 'string') { const _d = coerceToDateSafe(dateStr); return !_d ? 'N/A' : _d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
                                         const match = dateStr.match(/^([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})$/);
                                         if (match) {
                                           const monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
@@ -9655,6 +11587,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                                       {(() => {
                                         const dateStr = selectedShiftRequest.recurringPeriodEnd || selectedShiftRequest.recurringEndDate || selectedShiftRequest.endDate;
                                         if (!dateStr) return 'Ongoing';
+                                        if (typeof dateStr !== 'string') { const _d = coerceToDateSafe(dateStr); return !_d ? 'Ongoing' : _d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }); }
                                         const match = dateStr.match(/^([A-Za-z]+)\s+(\d{1,2}),\s+(\d{4})$/);
                                         if (match) {
                                           const monthMap = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
@@ -9711,7 +11644,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                     <View style={styles.detailsSection}>
                       <View style={{ flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center', marginBottom: 12 }}>
                         <Text style={styles.sectionTitle}>Emergency Backup Nurses</Text>
-                        {user?.role === 'admin' && (
+                        {isAdminUser && (
                           <TouchableWeb
                             onPress={() => {
                               setShiftRequestModalVisible(false);
@@ -10808,11 +12741,11 @@ export default function AdminDashboardScreen({ navigation, route }) {
                 </ScrollView>
                 
                 {/* Action buttons for shift requests */}
-                {user?.role === 'admin' && selectedShiftRequest?.status === 'pending' && (
+                {isAdminUser && selectedShiftRequest?.status === 'pending' && (
                 <View style={styles.modalFooter}>
                       <TouchableWeb
                         style={styles.modalDenyButton}
-                        onPress={() => isRecurringSchedule ? handleDenyShift(selectedShiftRequest) : handleDenyShift(selectedShiftRequest)}
+                        onPress={() => handleDenyShift(selectedShiftRequest)}
                       >
                         <Text style={styles.modalDenyButtonText}>Cancel</Text>
                       </TouchableWeb>
@@ -10820,13 +12753,14 @@ export default function AdminDashboardScreen({ navigation, route }) {
                       <TouchableWeb
                         style={styles.modalAssignButton}
                         onPress={() => {
-                          console.log('Button clicked, isRecurringSchedule:', isRecurringSchedule);
-                          if (isRecurringSchedule) {
-                            // For recurring shifts, open nurse selection modal
+                          console.log('Button clicked, isAdminCreatedRecurring:', isAdminCreatedRecurring);
+                          if (isAdminCreatedRecurring) {
+                            // For admin-created recurring shifts, open nurse selection modal
                             console.log('Opening primary nurse modal...');
                             openPrimaryNurseModal();
                           } else {
-                            console.log('Approving regular shift...');
+                            // For regular shifts and nurse-created recurring shift requests, approve
+                            console.log('Approving shift...');
                             handleApproveShift(selectedShiftRequest);
                           }
                         }}
@@ -10838,7 +12772,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
                           style={styles.modalAssignButtonGradient}
                         >
                           <Text style={styles.modalAssignButtonText}>
-                            {isRecurringSchedule ? 'Assign Nurse' : 'Approve'}
+                            {isAdminCreatedRecurring ? 'Assign Nurse' : 'Approve'}
                           </Text>
                         </LinearGradient>
                       </TouchableWeb>
@@ -11099,6 +13033,7 @@ export default function AdminDashboardScreen({ navigation, route }) {
         visible={adminViewRecurringShiftModalVisible}
         shift={selectedAppointmentDetails || {}}
         clients={clientsList || []}
+        contextType="admin"
         onClose={() => setAdminViewRecurringShiftModalVisible(false)}
         onOpenClockDetails={(info) => {
           const record = info?.shift || selectedAppointmentDetails || {};
@@ -11701,25 +13636,49 @@ const styles = StyleSheet.create({
     gap: 8,
   },
   denyBtn: {
-    backgroundColor: COLORS.error,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
+    borderRadius: 20,
+    overflow: 'hidden',
+    shadowColor: COLORS.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  denyBtnGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    minWidth: 86,
   },
   denyBtnText: {
-    fontSize: 11,
-    fontFamily: 'Poppins_600SemiBold',
+    fontSize: 12,
+    fontFamily: 'Poppins_700Bold',
     color: COLORS.white,
   },
   approveBtn: {
-    backgroundColor: COLORS.success,
-    paddingHorizontal: 12,
-    paddingVertical: 8,
-    borderRadius: 8,
+    borderRadius: 20,
+    overflow: 'hidden',
+    shadowColor: COLORS.shadow,
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.15,
+    shadowRadius: 4,
+    elevation: 3,
+  },
+  approveBtnGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 6,
+    paddingHorizontal: 14,
+    borderRadius: 20,
+    minWidth: 86,
   },
   approveBtnText: {
-    fontSize: 11,
-    fontFamily: 'Poppins_600SemiBold',
+    fontSize: 12,
+    fontFamily: 'Poppins_700Bold',
     color: COLORS.white,
   },
   pendingDetails: {
@@ -11971,12 +13930,41 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 380,
     maxHeight: Platform.OS === 'android' ? '93%' : '85%',
+    position: 'relative',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.25,
     shadowRadius: 20,
     elevation: 10,
     overflow: 'hidden',
+  },
+  notePhotoPreviewOverlayInModal: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    zIndex: 9999,
+    elevation: 9999,
+  },
+  notePhotoPreviewOverlayTapArea: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  notePhotoPreviewImageFrame: {
+    width: '100%',
+    height: '75%',
+    maxWidth: 360,
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(0,0,0,0.2)',
+  },
+  notePhotoPreviewImage: {
+    width: '100%',
+    height: '100%',
   },
   modalHeader: {
     flexDirection: 'row',
@@ -12834,6 +14822,28 @@ const styles = StyleSheet.create({
   appointmentDetailsScroll: {
     // Intentionally no flex to avoid forcing modal height
   },
+  patientAlertsBanner: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: COLORS.errorLight,
+    borderWidth: 1,
+    borderColor: COLORS.error,
+    marginBottom: 14,
+  },
+  patientAlertsTitle: {
+    fontSize: 13,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.error,
+    marginBottom: 2,
+  },
+  patientAlertsText: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.error,
+  },
   detailsSection: {
     marginBottom: 20,
   },
@@ -13260,6 +15270,144 @@ const styles = StyleSheet.create({
   },
   detailsModalBody: {
     padding: 20,
+  },
+  // Medical Report Form / Preview (full-screen)
+  reportModalContainer: {
+    flex: 1,
+    backgroundColor: COLORS.background,
+  },
+  reportModalHeader: {
+    paddingHorizontal: 20,
+    paddingBottom: 20,
+    borderBottomLeftRadius: 24,
+    borderBottomRightRadius: 24,
+  },
+  reportHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  reportHeaderTitle: {
+    flex: 1,
+    marginHorizontal: 12,
+    textAlign: 'center',
+    color: COLORS.white,
+    fontSize: 18,
+    fontFamily: 'Poppins_700Bold',
+    opacity: 0.98,
+  },
+  reportModalTitle: {
+    color: COLORS.white,
+    fontSize: 18,
+    fontFamily: 'Poppins_700Bold',
+  },
+  reportModalCloseButton: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: 'rgba(255,255,255,0.2)',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  reportModalScroll: {
+    flex: 1,
+    backgroundColor: '#F3F4F6',
+    paddingHorizontal: 12,
+    paddingTop: 12,
+  },
+  reportModalFooter: {
+    padding: 16,
+    borderTopWidth: 1,
+    borderTopColor: COLORS.border,
+    backgroundColor: COLORS.white,
+    flexDirection: 'row',
+    gap: 12,
+  },
+  reportDocCard: {
+    width: '100%',
+    maxWidth: 520,
+    alignSelf: 'center',
+    marginBottom: 12,
+    backgroundColor: COLORS.white,
+    borderRadius: 0,
+    overflow: 'hidden',
+    padding: 18,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  reportDocHeader: {
+    alignItems: 'center',
+    marginBottom: 12,
+  },
+  reportLogo: {
+    width: 90,
+    height: 70,
+    marginBottom: 6,
+  },
+  reportDocTitle: {
+    fontSize: 18,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.primary,
+    textAlign: 'center',
+  },
+  reportDocLine: {
+    height: 2,
+    width: '100%',
+    backgroundColor: COLORS.primary,
+    marginTop: 10,
+  },
+  reportSectionTitle: {
+    fontSize: 14,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.text,
+    marginTop: 10,
+    marginBottom: 8,
+  },
+  reportRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: 8,
+    marginBottom: 6,
+  },
+  reportLabel: {
+    width: 140,
+    fontSize: 13,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+  },
+  reportValue: {
+    flex: 1,
+    fontSize: 13,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.text,
+  },
+  reportBodyText: {
+    fontSize: 13,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.text,
+    lineHeight: 18,
+  },
+  reportNotesBox: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 8,
+    padding: 12,
+    backgroundColor: COLORS.lightGray,
+    minHeight: 80,
+  },
+  reportNotesText: {
+    fontSize: 13,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.text,
+    lineHeight: 18,
+  },
+  reportSpacer: {
+    height: 10,
   },
   nurseDetailsSection: {
     gap: 16,
@@ -14096,6 +16244,13 @@ const styles = StyleSheet.create({
     color: COLORS.text,
     minHeight: 100,
     marginBottom: 16,
+    textAlignVertical: 'top',
+  },
+  signatureInput: {
+    minHeight: 44,
+    height: 44,
+    marginBottom: 0,
+    textAlignVertical: 'center',
   },
   notesSaveButton: {
     backgroundColor: COLORS.primary,

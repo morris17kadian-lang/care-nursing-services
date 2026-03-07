@@ -17,12 +17,16 @@ export default function AdminManagementHubScreen({ navigation, isEmbedded = fals
   const { user } = useAuth();
   const insets = useSafeAreaInsets();
 
-  // Check access control - only ADMIN001 (Nurse Bernard) can access
-  const hasAccess = user?.isSuperAdmin || 
-                    user?.role === 'superAdmin' ||
-                    user?.code === 'ADMIN001' || 
-                    user?.adminCode === 'ADMIN001' ||
-                    user?.username === 'ADMIN001';
+  const userRole = String(user?.role || '').trim().toLowerCase();
+  const hasAccess =
+    user?.isSuperAdmin === true ||
+    userRole === 'superadmin' ||
+    userRole === 'admin' ||
+    userRole === 'admins' ||
+    user?.isAdmin === true ||
+    /^ADMIN\d{3}$/i.test(String(user?.code || '').trim()) ||
+    /^ADMIN\d{3}$/i.test(String(user?.adminCode || '').trim()) ||
+    /^ADMIN\d{3}$/i.test(String(user?.username || '').trim());
   
   if (!hasAccess) {
     if (!isEmbedded) {
@@ -37,7 +41,7 @@ export default function AdminManagementHubScreen({ navigation, isEmbedded = fals
         <MaterialCommunityIcons name="shield-lock" size={64} color={COLORS.lightGray} />
         <Text style={styles.accessDeniedTitle}>Access Restricted</Text>
         <Text style={styles.accessDeniedSubtitle}>
-          Only ADMIN001 (Nurse Bernard) can access this management hub.
+          Only admins can access this management hub.
         </Text>
       </View>
     );
@@ -192,13 +196,6 @@ export default function AdminManagementHubScreen({ navigation, isEmbedded = fals
 
         </View>
 
-        {/* Info Section */}
-        <View style={styles.infoSection}>
-          <MaterialCommunityIcons name="information" size={20} color={COLORS.accent} />
-          <Text style={styles.infoText}>
-            Only ADMIN001 (Nurse Bernard) can access this management hub
-          </Text>
-        </View>
       </ScrollView>
     </SafeAreaView>
   );
@@ -259,30 +256,6 @@ const styles = StyleSheet.create({
   managementRow: {
     flexDirection: 'row',
     gap: SPACING.md,
-  },
-  managementCard: {
-    flex: 1,
-    borderRadius: 16,
-    overflow: 'hidden',
-    backgroundColor: COLORS.white,
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  managementCardGradient: {
-    padding: SPACING.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    minHeight: 120,
-    gap: SPACING.xs,
-  },
-  managementCardTitle: {
-    fontSize: 14,
-    fontFamily: 'Poppins_700Bold',
-    color: COLORS.white,
-    textAlign: 'center',
   },
   managementCardSubtitle: {
     fontSize: 11,

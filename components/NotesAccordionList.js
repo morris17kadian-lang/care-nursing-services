@@ -1,5 +1,5 @@
 import React, { useMemo, useState } from 'react';
-import { View, Text, StyleSheet } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, Image, Linking } from 'react-native';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { COLORS } from '../constants';
 import TouchableWeb from './TouchableWeb';
@@ -90,7 +90,12 @@ const toTimeLabel = (value, { fallback = '' } = {}) => {
  *
  * items: Array<{ id: string, date?: string|Date, title: string, subtitle?: string, body?: string }>
  */
-export default function NotesAccordionList({ items, emptyText = 'No notes yet', showTime = false }) {
+export default function NotesAccordionList({
+  items,
+  emptyText = 'No notes yet',
+  showTime = false,
+  onPhotoPress,
+}) {
   const [expandedId, setExpandedId] = useState(null);
 
   const normalized = useMemo(() => {
@@ -102,12 +107,30 @@ export default function NotesAccordionList({ items, emptyText = 'No notes yet', 
         const subtitle = normalizeString(raw?.subtitle);
         const body = normalizeString(raw?.body);
         const date = raw?.date || null;
-        return { id, title, subtitle, body, date };
+        const dateObj = coerceToDate(date);
+        const epochMs = dateObj ? dateObj.getTime() : 0;
+        const photoUrls = Array.isArray(raw?.photoUrls)
+          ? raw.photoUrls.filter((uri) => typeof uri === 'string' && uri.trim().length > 0)
+          : [];
+        return { id, title, subtitle, body, date, photoUrls, epochMs, __index: index };
       })
       .filter(Boolean);
   }, [items]);
 
-  if (normalized.length === 0) {
+  const sorted = useMemo(() => {
+    const list = Array.isArray(normalized) ? [...normalized] : [];
+    list.sort((a, b) => {
+      const aTime = typeof a?.epochMs === 'number' ? a.epochMs : 0;
+      const bTime = typeof b?.epochMs === 'number' ? b.epochMs : 0;
+      if (aTime !== bTime) return bTime - aTime; // newest first
+      const aIndex = typeof a?.__index === 'number' ? a.__index : 0;
+      const bIndex = typeof b?.__index === 'number' ? b.__index : 0;
+      return aIndex - bIndex;
+    });
+    return list;
+  }, [normalized]);
+
+  if (sorted.length === 0) {
     return (
       <View style={styles.emptyRow}>
         <Text style={styles.emptyText}>{emptyText}</Text>
@@ -117,7 +140,7 @@ export default function NotesAccordionList({ items, emptyText = 'No notes yet', 
 
   return (
     <View style={styles.list}>
-      {normalized.map((item) => {
+      {sorted.map((item) => {
         const expanded = expandedId === item.id;
         return (
           <View key={item.id} style={styles.card}>
@@ -149,6 +172,34 @@ export default function NotesAccordionList({ items, emptyText = 'No notes yet', 
                   {showTime ? <Text style={styles.timeText}>{toTimeLabel(item.date)}</Text> : null}
                 </View>
                 <Text style={styles.bodyText}>{item.body || emptyText}</Text>
+                {Array.isArray(item.photoUrls) && item.photoUrls.length > 0 ? (
+                  <View style={styles.photosSection}>
+                    <Text style={styles.photosLabel}>Photos</Text>
+                    <ScrollView
+                      horizontal
+                      showsHorizontalScrollIndicator={false}
+                      contentContainerStyle={styles.photosList}
+                    >
+                      {item.photoUrls.map((uri, index) => (
+                        <TouchableWeb
+                          key={`${item.id}-photo-${index}`}
+                          onPress={() => {
+                            const target = String(uri || '').trim();
+                            if (!target) return;
+                            if (typeof onPhotoPress === 'function') {
+                              onPhotoPress(target);
+                              return;
+                            }
+                            Linking.openURL(target).catch(() => {});
+                          }}
+                          activeOpacity={0.8}
+                        >
+                          <Image source={{ uri }} style={styles.photoThumb} />
+                        </TouchableWeb>
+                      ))}
+                    </ScrollView>
+                  </View>
+                ) : null}
               </View>
             ) : null}
           </View>
@@ -234,5 +285,25 @@ const styles = StyleSheet.create({
     fontFamily: 'Poppins_400Regular',
     color: COLORS.text,
     lineHeight: 16,
+  },
+  photosSection: {
+    marginTop: 10,
+  },
+  photosLabel: {
+    fontSize: 10,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.textLight,
+    marginBottom: 6,
+  },
+  photosList: {
+    gap: 8,
+  },
+  photoThumb: {
+    width: 64,
+    height: 64,
+    borderRadius: 8,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.background,
   },
 });

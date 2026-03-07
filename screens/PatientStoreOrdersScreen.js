@@ -178,7 +178,7 @@ export default function PatientStoreOrdersScreen({ navigation, route }) {
           <TouchableWeb onPress={() => navigation.goBack()} style={styles.backButton}>
             <MaterialCommunityIcons name="arrow-left" size={24} color={COLORS.white} />
           </TouchableWeb>
-          <Text style={styles.headerTitle}>My Orders</Text>
+          <Text style={styles.headerTitle}>My Store Orders</Text>
           <View style={styles.headerRight} />
         </View>
       </LinearGradient>

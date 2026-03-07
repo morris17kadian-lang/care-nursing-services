@@ -103,7 +103,7 @@ Server runs on `http://localhost:3000`
 
 ### Send Single Email
 ```bash
-POST /api/email/send-email
+POST /api/send-email
 Headers:
   x-api-key: your-secure-api-key-here
   Content-Type: application/json
@@ -122,7 +122,7 @@ Body:
 
 ### Send Bulk Emails
 ```bash
-POST /api/email/send-bulk-emails
+POST /api/send-bulk-emails
 Headers:
   x-api-key: your-secure-api-key-here
   Content-Type: application/json
@@ -137,7 +137,7 @@ Body:
 
 ### Test Configuration
 ```bash
-POST /api/email/test-email
+POST /api/test-email
 Headers:
   x-api-key: your-secure-api-key-here
   Content-Type: application/json
@@ -149,7 +149,7 @@ Body:
 
 ### Check Service Status
 ```bash
-GET /api/email/email-status
+GET /api/email-status
 Headers:
   x-api-key: your-secure-api-key-here
 ```

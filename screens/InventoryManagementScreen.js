@@ -283,7 +283,7 @@ export default function InventoryManagementScreen({ navigation, isEmbedded = fal
             >
               <MaterialCommunityIcons name="arrow-left" size={24} color={COLORS.white} />
             </TouchableWeb>
-            <Text style={styles.headerTitle}>Inventory Management</Text>
+            <Text style={styles.headerTitle}>Store Inventory</Text>
             <TouchableWeb
               style={styles.addButton}
               onPress={handleAddProduct}

@@ -15,7 +15,6 @@ import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context';
 import { COLORS, SPACING, TYPOGRAPHY, GRADIENTS, CONTACT_INFO } from '../constants';
 import { useAuth } from '../context/AuthContext';
-import { resetOnboarding } from '../components/AppOnboarding';
 
 export default function SettingsScreen({ navigation }) {
   const { user, logout } = useAuth();
@@ -58,35 +57,6 @@ export default function SettingsScreen({ navigation }) {
 
   const handleHelpFAQ = () => {
     navigation.navigate('Help');
-  };
-
-  const handleRestartTutorial = async () => {
-    Alert.alert(
-      'Restart Tutorial',
-      'This will restart the app tutorial guide on your next launch.',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Restart',
-          onPress: async () => {
-            await resetOnboarding();
-            Alert.alert(
-              'Tutorial Reset',
-              'The tutorial will appear when you restart the app or log in again.',
-              [
-                {
-                  text: 'OK',
-                  onPress: () => {
-                    // Optionally log out and back in to trigger immediately
-                    logout();
-                  }
-                }
-              ]
-            );
-          }
-        }
-      ]
-    );
   };
 
   const handleAbout = () => {
@@ -195,12 +165,6 @@ export default function SettingsScreen({ navigation }) {
             title="Help & FAQ"
             subtitle="Common questions and answers"
             onPress={handleHelpFAQ}
-          />
-          <SettingItem
-            icon="school-outline"
-            title="Restart Tutorial"
-            subtitle="Show app walkthrough again"
-            onPress={handleRestartTutorial}
           />
         </View>
 

@@ -13,7 +13,8 @@ import {
   updatePassword,
 } from 'firebase/auth';
 import { doc, onSnapshot } from 'firebase/firestore';
-import { auth, db } from '../config/firebase';
+import { getFunctions, httpsCallable } from 'firebase/functions';
+import { auth, db, app } from '../config/firebase';
 import FirebaseService from '../services/FirebaseService';
 import PushNotificationService from '../services/PushNotificationService';
 import { clearAllSequenceCache } from '../clear-sequence-cache';
@@ -36,7 +37,10 @@ const registerPushToken = async (userId) => {
     
     if (pushToken) {
       // Update user profile with FCM token
-      await FirebaseService.updateUser(userId, { fcmToken: pushToken });
+      const updateResult = await FirebaseService.updateUser(userId, { fcmToken: pushToken });
+      if (!updateResult.offline) {
+        console.log('✅ Push token successfully saved to user profile');
+      }
     }
   } catch (error) {
     console.error('Push notification initialization failed:', error.message);
@@ -92,6 +96,13 @@ export const AuthProvider = ({ children }) => {
         if (firebaseUser) {
           // User is logged in
           const userResult = await FirebaseService.getUser(firebaseUser.uid);
+          
+          // If offline, continue with cached user data
+          if (userResult.offline) {
+            console.log('📡 Offline - using cached user data');
+            setLoading(false);
+            return;
+          }
           
           if (userResult.success) {
             const userData = {
@@ -186,6 +197,10 @@ export const AuthProvider = ({ children }) => {
         resolvedProfile = lookedUpProfile;
       } else {
         const userResult = await FirebaseService.getUser(firebaseUser.uid);
+        if (userResult.offline) {
+          // Can't fetch user profile while offline during login
+          throw new Error('Cannot complete login while offline. Please check your connection.');
+        }
         if (userResult.success) {
           resolvedProfile = userResult.user;
         }
@@ -257,8 +272,12 @@ export const AuthProvider = ({ children }) => {
 
         if (Object.keys(updatesToPersist).length > 0) {
           try {
-            await FirebaseService.updateUser(firebaseUser.uid, updatesToPersist);
-            resolvedProfile = { ...resolvedProfile, ...updatesToPersist };
+            const updateResult = await FirebaseService.updateUser(firebaseUser.uid, updatesToPersist);
+            if (updateResult.offline) {
+              console.log('📡 Offline - profile updates will sync when online');
+            } else {
+              resolvedProfile = { ...resolvedProfile, ...updatesToPersist };
+            }
           } catch (e) {
             // Don't block login if profile normalization fails.
           }
@@ -465,8 +484,17 @@ export const AuthProvider = ({ children }) => {
 
   const resetPassword = async (email) => {
     try {
-      // Send Firebase password reset email
-      await sendPasswordResetEmail(auth, email);
+      const normalizedEmail = String(email || '').trim().toLowerCase();
+
+      // Preferred: branded reset email via Cloud Function (custom template + sender).
+      // Fallback: Firebase Auth built-in reset email.
+      try {
+        const functions = getFunctions(app, 'us-central1');
+        const requestPasswordResetEmail = httpsCallable(functions, 'requestPasswordResetEmail');
+        await requestPasswordResetEmail({ email: normalizedEmail });
+      } catch (fnErr) {
+        await sendPasswordResetEmail(auth, normalizedEmail);
+      }
       
       return { success: true };
     } catch (error) {
@@ -486,6 +514,10 @@ export const AuthProvider = ({ children }) => {
   const persistUserUpdates = async (targetUserId, updates = {}) => {
     try {
       const result = await FirebaseService.updateUser(targetUserId, updates);
+      if (result.offline) {
+        console.log('📡 Offline - user updates will sync when online');
+        return { success: false, offline: true };
+      }
       if (result.success && targetUserId === user?.id) {
         const updatedUser = { ...(user || {}), ...updates };
         setUser(updatedUser);

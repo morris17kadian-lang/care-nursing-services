@@ -27,6 +27,19 @@ class FirebaseEmailQueueService {
     const safeAmount = Number.isFinite(amount) ? amount.toFixed(2) : String(amount || '');
     const hasAppInvoiceUrl = typeof appInvoiceUrl === 'string' && appInvoiceUrl.trim().length > 0;
 
+    // Company details for footer
+    const companyLegalName = '876 Nurses Home Care Services Limited';
+    const companyAddress = '60 Knutsford Blvd, Panjam Building, 9th Floor - Regus, Kingston 5, Jamaica, West Indies';
+    const companyWebsite = 'https://www.876nurses.com';
+    const instagramUrl = 'https://instagram.com/876_nurses';
+    const facebookUrl = 'https://facebook.com/876nurses';
+    const whatsAppUrl = 'https://wa.me/8766189876';
+
+    // Social icon URLs
+    const instagramIconUrl = 'https://storage.googleapis.com/nurses-afb7e.firebasestorage.app/email-assets/icon-instagram.png';
+    const facebookIconUrl = 'https://storage.googleapis.com/nurses-afb7e.firebasestorage.app/email-assets/icon-facebook.png';
+    const whatsAppIconUrl = 'https://storage.googleapis.com/nurses-afb7e.firebasestorage.app/email-assets/icon-whatsapp.png';
+
     return `
       <!DOCTYPE html>
       <html>
@@ -45,10 +58,42 @@ class FirebaseEmailQueueService {
 
             ${hasAppInvoiceUrl ? `<p style="margin:0 0 16px 0;"><a href="${appInvoiceUrl}" style="color:#2f62d7;text-decoration:underline;font-weight:700;">Click here to view invoice</a></p>` : ''}
 
-            <p style="margin:18px 0 0 0;color:#9ca3af;font-size:12px;line-height:1.6;text-align:center;">
-              876 Nurses Home Care Services · Kingston, Jamaica<br />
-              Need help? Email <a href="mailto:876nurses@gmail.com" style="color:#6b7280;text-decoration:underline;">876nurses@gmail.com</a>
-            </p>
+            <!-- Footer with neutral styling -->
+            <div style="margin-top:26px;">
+              <div style="text-align:center;color:#9ca3af;font-size:11px;line-height:1.6;padding:10px 10px 0 10px;">
+                <span style="white-space:nowrap;">This email was sent by: ${companyLegalName}</span><br />
+                ${companyAddress}<br />
+                <a href="${companyWebsite}" style="color:#9ca3af;text-decoration:underline;font-weight:600;">${companyWebsite.replace(/^https?:\/\//, '').replace(/\/$/, '')}</a>
+              </div>
+
+              <div style="border-top:1px solid #e5e7eb;margin:18px 0 16px 0;"></div>
+
+              <table role="presentation" align="center" cellpadding="0" cellspacing="0" border="0" style="margin:0 auto;">
+                <tr>
+                  <td align="center" style="padding:0 10px;">
+                    <a href="${instagramUrl}" target="_blank" rel="noopener noreferrer"
+                       style="display:inline-block;width:28px;height:28px;text-decoration:none;">
+                      <img src="${instagramIconUrl}" width="28" height="28" alt="Instagram"
+                           style="display:block;width:28px;height:28px;border:0;outline:none;text-decoration:none;border-radius:14px;" />
+                    </a>
+                  </td>
+                  <td align="center" style="padding:0 10px;">
+                    <a href="${facebookUrl}" target="_blank" rel="noopener noreferrer"
+                       style="display:inline-block;width:28px;height:28px;text-decoration:none;">
+                      <img src="${facebookIconUrl}" width="28" height="28" alt="Facebook"
+                           style="display:block;width:28px;height:28px;border:0;outline:none;text-decoration:none;border-radius:14px;" />
+                    </a>
+                  </td>
+                  <td align="center" style="padding:0 10px;">
+                    <a href="${whatsAppUrl}" target="_blank" rel="noopener noreferrer"
+                       style="display:inline-block;width:28px;height:28px;text-decoration:none;">
+                      <img src="${whatsAppIconUrl}" width="28" height="28" alt="WhatsApp"
+                           style="display:block;width:28px;height:28px;border:0;outline:none;text-decoration:none;border-radius:14px;" />
+                    </a>
+                  </td>
+                </tr>
+              </table>
+            </div>
           </div>
         </body>
       </html>

@@ -1,66 +1,48 @@
-const admin = require('firebase-admin');
+const { google } = require('googleapis');
 const path = require('path');
 
-/**
- * Enqueue an email by writing a document to Firestore collection `/mail`.
- * A deployed Firebase Cloud Function (`sendQueuedEmailOnCreate`) will send the email.
- *
- * Usage:
- *   node sendEmail.js recipient@example.com
- *   node sendEmail.js recipient@example.com "Subject here" "Hello from 876 Nurses"
- */
+// Path to your service account key file
+const KEYFILEPATH = path.join(__dirname, 'firebase-service-key.json');
 
-const serviceAccountPath = path.join(__dirname, 'firebase-service-key.json');
-// eslint-disable-next-line import/no-dynamic-require, global-require
-const serviceAccount = require(serviceAccountPath);
+// The email address of the user you want to send as (must be authorized)
+const SENDER_EMAIL = '876nurses.notify@gmail.com'; // <-- Change this to your Gmail address
 
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert(serviceAccount),
-  });
-}
+// Scopes required for Gmail API
+const SCOPES = ['https://www.googleapis.com/auth/gmail.send'];
 
-async function enqueueEmail({ to, subject, text, html }) {
-  const db = admin.firestore();
-  const payload = {
-    to: Array.isArray(to) ? to : [to],
-    subject: subject || '',
-    text: text || null,
-    html: html || null,
-    attachments: [],
-    meta: { source: 'sendEmail.js' },
-    createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    status: 'queued',
-  };
-
-  const ref = await db.collection('mail').add(payload);
-  return ref.id;
-}
-
-async function main() {
-  const to = process.argv[2];
-  const subject = process.argv[3] || 'Test Email - Firebase Mail Queue';
-  const text = process.argv[4] || 'Hello! This is a test email queued via Firestore.';
-
-  if (!to) {
-    console.error('❌ Missing recipient email');
-    console.error('Usage: node sendEmail.js recipient@example.com "Subject" "Message"');
-    process.exit(1);
-  }
-
-  const id = await enqueueEmail({
-    to,
-    subject,
-    text,
-    html: `<p>${String(text).replace(/</g, '&lt;').replace(/>/g, '&gt;')}</p>`,
-  });
-
-  console.log('✅ Email queued in Firestore /mail');
-  console.log('Mail doc id:', id);
-  console.log('Next: check Firebase Functions logs for sendQueuedEmailOnCreate.');
-}
-
-main().catch((err) => {
-  console.error('❌ Failed to queue email:', err);
-  process.exit(1);
+const auth = new google.auth.GoogleAuth({
+  keyFile: KEYFILEPATH,
+  scopes: SCOPES,
 });
+
+async function sendEmail() {
+  const gmail = google.gmail({ version: 'v1', auth });
+
+  // Create email message
+  const message = [
+    `From: "Your Name" <${SENDER_EMAIL}>`,
+    'To: morris.kadian@yahoo.com', // <-- Change this to recipient
+    'Subject: Test Email from Gmail API',
+    '',
+    'Hello, this is a test email sent using Gmail API!',
+  ].join('\n');
+
+  // Encode message in base64
+  const encodedMessage = Buffer.from(message)
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/, '');
+
+  // Send email
+  const res = await gmail.users.messages.send({
+    userId: 'me',
+    requestBody: {
+      raw: encodedMessage,
+    },
+  });
+
+  console.log('Email sent:', res.data);
+}
+
+sendEmail().catch(console.error);

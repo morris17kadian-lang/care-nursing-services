@@ -15,7 +15,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
-import { COLORS, GRADIENTS } from '../constants';
+import { COLORS, GRADIENTS, SPACING } from '../constants';
+import { isJamaicanHoliday, getHolidayName } from '../constants/JamaicanHolidays';
 import { useAppointments } from '../context/AppointmentContext';
 import { useShifts } from '../context/ShiftContext';
 import { useNurses } from '../context/NurseContext';
@@ -506,13 +507,13 @@ const RecentTransactionsScreen = ({ navigation }) => {
       generatedDate: payRunDate.toISOString().split('T')[0],
       payDate: payRunDate.toISOString().split('T')[0],
       hourlyRate: 2500,
-      regularHours: 35,
-      overtimeHours: 3,
+      regularHours: 38,
+      overtimeHours: 0, // Overtime only applies to holiday shifts
       shiftHours: 0,
-      regularPay: (35 * 2500).toFixed(2),
-      overtimePay: (3 * 2500 * 1.5).toFixed(2),
-      grossPay: (35 * 2500 + 3 * 2500 * 1.5).toFixed(2),
-      netPay: (35 * 2500 + 3 * 2500 * 1.5 - 12000).toFixed(2),
+      regularPay: (38 * 2500).toFixed(2),
+      overtimePay: 0, // No regular overtime in Jamaica
+      grossPay: (38 * 2500).toFixed(2),
+      netPay: (38 * 2500 - 12000).toFixed(2),
       allowances: { transport: 15000, meal: 8000, phone: 5000 },
       deductions: { tax: 10000, nis: 2000 },
       status: 'pending',
@@ -588,7 +589,10 @@ const RecentTransactionsScreen = ({ navigation }) => {
       }
 
       const normalizedHours = hours >= 10 ? 12 : 8;
-      const isHoliday = Boolean(
+      
+      // Auto-detect if shift falls on a Jamaican public holiday
+      const shiftDate = shift.date || shift.scheduledDate || shift.appointmentDate;
+      const isHoliday = isJamaicanHoliday(shiftDate) || Boolean(
         shift.isHoliday ||
         shift.holiday ||
         shift.isHolidayShift ||
@@ -623,8 +627,11 @@ const RecentTransactionsScreen = ({ navigation }) => {
     const fallbackHours = totalHours > 0 ? totalHours : range[0] + Math.random() * (range[1] - range[0]);
     
     const finalTotalHours = totalHours > 0 ? totalHours : fallbackHours;
-    const regularHours = Math.min(finalTotalHours, 35); // Standard 35 hours per weekly period (Tue–Mon)
-    const overtimeHours = Math.max(0, finalTotalHours - 35);
+    
+    // NOTE: Overtime is ONLY paid for holiday shifts (at 2x rate)
+    // Regular overtime (hours over 35) is NOT paid as overtime in Jamaica
+    const regularHours = finalTotalHours;
+    const overtimeHours = 0; // No overtime for regular hours
 
     return {
       totalHours: parseFloat(finalTotalHours.toFixed(1)),
@@ -808,6 +815,8 @@ const RecentTransactionsScreen = ({ navigation }) => {
             (breakdown.eightHourShifts || 0) * parseFloat(shiftRates.eightHours || 0) +
             (breakdown.twelveHourShifts || 0) * parseFloat(shiftRates.twelveHours || 0);
 
+          // Holiday shifts get paid at holidayMultiplier rate (default 2x)
+          // This is the ONLY overtime nurses receive in Jamaica
           const holidayExtra =
             (breakdown.holidayEightHourShifts || 0) * parseFloat(shiftRates.eightHours || 0) * (holidayMultiplier - 1) +
             (breakdown.holidayTwelveHourShifts || 0) * parseFloat(shiftRates.twelveHours || 0) * (holidayMultiplier - 1);
@@ -815,7 +824,7 @@ const RecentTransactionsScreen = ({ navigation }) => {
           const appointmentPay = (hoursData.appointmentHours || 0) * hourlyRate;
 
           const regularPay = baseShiftPay + appointmentPay + holidayExtra;
-          const overtimePay = 0;
+          const overtimePay = 0; // Overtime is only for holidays, already included in holidayExtra
           const grossPay = regularPay + overtimePay;
           const netPay = grossPay;
           
@@ -845,10 +854,24 @@ const RecentTransactionsScreen = ({ navigation }) => {
         }
       }
 
-      // Save to AsyncStorage (simulate database)
+      // Save to Firestore and get generated IDs
+      const savedPayslips = [];
+      for (const payslip of newPayslips) {
+        try {
+          const { id: tempId, ...payslipData } = payslip; // Remove temp ID
+          const createdPayslip = await ApiService.createPayslip(payslipData);
+          savedPayslips.push(createdPayslip);
+        } catch (error) {
+          console.error('Error saving payslip to Firestore:', error);
+          // Still save to local storage if Firestore fails
+          savedPayslips.push(payslip);
+        }
+      }
+
+      // Save to AsyncStorage as cache
       const existingPayslips = await AsyncStorage.getItem('generatedPayslips');
       const allPayslips = existingPayslips ? JSON.parse(existingPayslips) : [];
-      allPayslips.push(...newPayslips);
+      allPayslips.push(...savedPayslips);
       await AsyncStorage.setItem('generatedPayslips', JSON.stringify(allPayslips));
 
       // Update local state to show new payslips immediately
@@ -975,9 +998,19 @@ const RecentTransactionsScreen = ({ navigation }) => {
           return;
         }
         
-        const stored = await AsyncStorage.getItem('generatedPayslips');
-        if (stored) {
-          setGeneratedPayslips(JSON.parse(stored));
+        // Load from Firestore (primary source)
+        try {
+          const payslips = await ApiService.getPayslips({});
+          setGeneratedPayslips(payslips);
+          // Update AsyncStorage cache
+          await AsyncStorage.setItem('generatedPayslips', JSON.stringify(payslips));
+        } catch (firestoreError) {
+          console.error('Error loading from Firestore, using cache:', firestoreError);
+          // Fallback to AsyncStorage cache if Firestore fails
+          const stored = await AsyncStorage.getItem('generatedPayslips');
+          if (stored) {
+            setGeneratedPayslips(JSON.parse(stored));
+          }
         }
       } catch (error) {
         console.error('Error loading generated payslips:', error);
@@ -1542,6 +1575,17 @@ const RecentTransactionsScreen = ({ navigation }) => {
       setGeneratedPayslips(updatedList);
       setSelectedPayslip((prev) => (prev && prev.id === payslip.id ? paidPayslip : prev));
 
+      // Sync to Firestore
+      try {
+        await ApiService.updatePayslip(paidPayslip.id, {
+          status: 'paid',
+          paidDate: paidAtIso,
+          payDate: payslip.payDate || paidAtDate,
+        });
+      } catch (firestoreError) {
+        console.error('Error syncing paid status to Firestore:', firestoreError);
+      }
+
       // Save stamped payslip to nurse profile
       const saved = await savePayslipToNurseProfile(paidPayslip);
       
@@ -1583,6 +1627,17 @@ const RecentTransactionsScreen = ({ navigation }) => {
           setGeneratedPayslips(updatedList);
         }
 
+        // Sync to Firestore
+        try {
+          await ApiService.updatePayslip(payslip.id, {
+            status: 'paid',
+            payDate: new Date().toISOString().split('T')[0],
+            paymentMethod: paymentMethod.name,
+          });
+        } catch (firestoreError) {
+          console.error('Error syncing payment to Firestore:', firestoreError);
+        }
+
         // Save to staff profile
         await savePayslipToNurseProfile({ ...payslip, status: 'paid', payDate: new Date().toISOString().split('T')[0] });
         
@@ -1603,6 +1658,16 @@ const RecentTransactionsScreen = ({ navigation }) => {
           );
           await AsyncStorage.setItem('generatedPayslips', JSON.stringify(updatedList));
           setGeneratedPayslips(updatedList);
+        }
+
+        // Sync to Firestore
+        try {
+          await ApiService.updatePayslip(payslip.id, {
+            status: 'failed',
+            paymentMethod: paymentMethod.name,
+          });
+        } catch (firestoreError) {
+          console.error('Error syncing failed payment to Firestore:', firestoreError);
         }
 
         Alert.alert(
@@ -1737,23 +1802,6 @@ const RecentTransactionsScreen = ({ navigation }) => {
             Payroll validation {payrollValidation.lastRun ? `updated ${new Date(payrollValidation.lastRun).toLocaleTimeString()}` : 'awaiting first run'}
           </Text>
         </View>
-        
-        {/* Search Bar in Header */}
-        {searchVisible && (
-          <View style={styles.headerSearchBar}>
-            <MaterialCommunityIcons name="magnify" size={20} color={COLORS.white} />
-            <TextInput
-              style={styles.headerSearchInput}
-              placeholder="Search staff, role, or employee ID..."
-              value={searchQuery}
-              onChangeText={setSearchQuery}
-              placeholderTextColor={COLORS.white + '80'}
-            />
-            <TouchableWeb onPress={() => setSearchQuery('')} style={styles.clearSearchButton}>
-              <MaterialCommunityIcons name="close" size={20} color={COLORS.white} />
-            </TouchableWeb>
-          </View>
-        )}
       </LinearGradient>
 
       {/* Main Scrollable Content */}
@@ -1763,34 +1811,7 @@ const RecentTransactionsScreen = ({ navigation }) => {
           <RefreshControl refreshing={refreshing} onRefresh={onRefresh} />
         }
       >
-        {/* Payslip Preview Section */}
-        <View style={styles.previewSection}>
-        {selectedPayslip ? (
-          <PayslipComponent
-            payslip={selectedPayslip}
-            onClose={() => setSelectedPayslip(null)}
-            onShare={handleGeneratePayslip}
-            hideHeader={true}
-          />
-        ) : (
-          <>
-            <View style={styles.previewHeader}>
-              <Text style={styles.previewTitle}>Payslip Preview</Text>
-            </View>
-            <View style={styles.noPayslipSelected}>
-              <MaterialCommunityIcons name="receipt" size={60} color={COLORS.border} />
-              <Text style={styles.noPayslipText}>Select a payslip below to preview</Text>
-            </View>
-          </>
-        )}
-      </View>
-
-      {/* Filter Pills */}
-      <View style={styles.filterSection}>
-        <FilterPills />
-      </View>
-
-      {/* Payroll Validation */}
+        {/* Payroll Validation */}
       {payrollValidation.issues.length > 0 && (
         <View style={styles.validationSection}>
           <View style={styles.validationHeaderRow}>
@@ -1846,128 +1867,54 @@ const RecentTransactionsScreen = ({ navigation }) => {
         </View>
       )}
 
-      {/* Payslips List */}
-      <View style={styles.payslipsContainer}>
-        {sortedPayslips.length === 0 ? (
-          selectedFilter === 'available' && !searchQuery ? (
-            <View style={styles.samplePreviewContainer}>
-              <SampleAvailablePayslip />
-            </View>
-          ) : (
-            <View style={styles.emptyState}>
-              <MaterialCommunityIcons name="receipt" size={80} color={COLORS.border} />
-              <Text style={styles.emptyTitle}>
-                {searchQuery ? 'No matching payslips' : 'No payslips found'}
-              </Text>
-              <Text style={styles.emptyText}>
-                {searchQuery 
-                  ? `No payslips match "${searchQuery}". Try a different search term.`
-                  : selectedFilter !== 'all' 
-                  ? 'Try adjusting your filter'
-                  : 'Payslips will appear here when generated'
-                }
-              </Text>
-              {searchQuery && (
-                <TouchableWeb
-                  style={styles.clearSearchInline}
-                  onPress={() => setSearchQuery('')}
-                >
-                  <Text style={styles.clearSearchText}>Clear Search</Text>
-                </TouchableWeb>
-              )}
-            </View>
-          )
-        ) : (
-          <>
-            {/* Search Results Count */}
-            {(searchQuery || selectedFilter !== 'all') && (
-              <View style={styles.searchResultsHeader}>
-                <Text style={styles.searchResultsText}>
-                  {sortedPayslips.length} payslip{sortedPayslips.length !== 1 ? 's' : ''} found
-                  {searchQuery && ` for "${searchQuery}"`}
-                    {selectedFilter !== 'all' && ` (${FILTER_LABELS[selectedFilter]})`}
-                </Text>
-                {searchQuery && (
-                  <TouchableWeb onPress={() => setSearchQuery('')} style={styles.clearSearchSmall}>
-                    <MaterialCommunityIcons name="close" size={16} color={COLORS.textLight} />
-                  </TouchableWeb>
-                )}
-              </View>
-            )}
-            
-            <View style={styles.payslipsList}>
-            {sortedPayslips.map((payslip) => {
-              const payslipNumber = payslip.payslipNumber || 
-                `NUR-PAY-${String(payslip.employeeId || '0001').padStart(4, '0')}`;
-              
-              return (
-              <View key={payslip.id} style={styles.payslipCard}>
-                <View style={styles.payslipCardContent}>
-                  <View style={styles.payslipCardInfo}>
-                    <Text style={styles.payslipCardId}>{payslipNumber}</Text>
-                    <Text style={styles.payslipCardName}>{payslip.staffName}</Text>
-                  </View>
-                  <View style={styles.cardActionGroup}>
-                    <TouchableOpacity
-                      style={styles.cardActionButton}
-                      onPress={() => handlePayslipPress(payslip)}
-                    >
-                      <LinearGradient
-                        colors={['#6B46C1', '#9333EA']}
-                        style={styles.cardActionGradient}
-                      >
-                        <MaterialCommunityIcons name="eye" size={14} color={COLORS.white} />
-                        <Text style={styles.cardActionText}>View</Text>
-                      </LinearGradient>
-                    </TouchableOpacity>
-                    <TouchableOpacity
-                      style={styles.cardActionButton}
-                      disabled={payslip.status === 'paid'}
-                      onPress={() => {
-                        if (payslip.status !== 'paid') {
-                          handlePayNow(payslip);
-                        }
-                      }}
-                    >
-                      <LinearGradient
-                        colors={payslip.status === 'paid' ? ['#9CA3AF', '#9CA3AF'] : ['#10B981', '#059669']}
-                        style={styles.cardActionGradient}
-                      >
-                        <MaterialCommunityIcons
-                          name={payslip.status === 'paid' ? 'check-circle' : 'credit-card'}
-                          size={14}
-                          color={COLORS.white}
-                        />
-                        <Text style={styles.cardActionText}>
-                          Paid
-                        </Text>
-                      </LinearGradient>
-                    </TouchableOpacity>
-                  </View>
-                </View>
-              </View>
-              );
-            })}
-            </View>
-          </>
-        )}
-        
-        {/* Generate New Payslips Button */}
-        <TouchableOpacity 
-          style={styles.newTransactionButton} 
-          onPress={() => setGeneratePayslipModalVisible(true)}
-        >
-          <LinearGradient
-            colors={['#6B46C1', '#9333EA']}
-            style={styles.newTransactionGradient}
+      {/* Payslip Preview Section */}
+      <View style={styles.previewSection}>
+        <View style={styles.previewHeader}>
+          <TouchableWeb
+            onPress={() => setSelectedPayslip(null)}
+            style={styles.closeIconButton}
+            activeOpacity={0.7}
           >
-            <MaterialCommunityIcons name="plus" size={20} color={COLORS.white} />
-            <Text style={styles.newTransactionText}>Generate New Payslips</Text>
-          </LinearGradient>
-        </TouchableOpacity>
-        
-        <View style={styles.bottomPadding} />
+            <MaterialCommunityIcons name="close" size={18} color={COLORS.white} />
+          </TouchableWeb>
+          <Text style={styles.previewTitle}>
+            {selectedPayslip ? `Payslip Preview - ${selectedPayslip.employeeId || selectedPayslip.staffId}` : 'Payslip Preview'}
+          </Text>
+          <TouchableWeb
+            onPress={() => {
+              // PDF share feature temporarily disabled
+            }}
+            style={styles.shareIconButtonDisabled}
+            activeOpacity={1}
+            disabled
+          >
+            <MaterialCommunityIcons name="file-pdf-box" size={18} color="#999" />
+          </TouchableWeb>
+        </View>
+
+        {selectedPayslip ? (
+          <View style={styles.payslipPreviewBackdrop}>
+            <View style={styles.payslipPreviewCard}>
+              <PayslipComponent
+                payslip={selectedPayslip}
+                companyDetails={companyDetails}
+                staffContact={selectedStaffContact}
+                payslipEmployeeBenefits={payslipEmployeeBenefits}
+              />
+            </View>
+          </View>
+        ) : (
+          <View style={styles.noPayslipSelected}>
+            <MaterialCommunityIcons name="receipt-text-outline" size={80} color={COLORS.border} />
+            <Text style={styles.noPayslipText}>Select a payslip below to preview</Text>
+          </View>
+        )}
       </View>
+
+      {/* Filter Pills */}
+      <FilterPills />
+      
+      <View style={styles.bottomPadding} />
       </ScrollView>
 
       {/* Payslip Review Modal */}
@@ -2942,6 +2889,89 @@ const styles = StyleSheet.create({
     fontSize: 11,
     fontFamily: 'Poppins_700Bold',
     color: COLORS.textMuted,
+    textAlign: 'center',
+  },
+  // Payslip Preview Section Styles (matching Invoice Management)
+  previewSection: {
+    backgroundColor: COLORS.background,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.md,
+  },
+  previewHeader: {
+    backgroundColor: COLORS.white,
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 8,
+    paddingVertical: 14,
+    borderBottomWidth: 1,
+    borderBottomColor: '#E0E0E0',
+  },
+  previewTitle: {
+    fontSize: 15,
+    fontWeight: '600',
+    color: '#333',
+    flex: 1,
+    textAlign: 'center',
+    marginHorizontal: 6,
+  },
+  closeIconButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#EF5350',
+    alignItems: 'center',
+    justifyContent: 'center',
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
+  shareIconButtonDisabled: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: '#ccc',
+    alignItems: 'center',
+    justifyContent: 'center',
+    opacity: 0.5,
+  },
+  payslipPreviewBackdrop: {
+    backgroundColor: '#F3F4F6',
+    padding: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  payslipPreviewCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 0,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+    marginBottom: SPACING.sm,
+    width: '100%',
+    maxWidth: 520,
+    aspectRatio: 8.5 / 11, // US Letter
+    alignSelf: 'center',
+  },
+  noPayslipSelected: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 80,
+    backgroundColor: COLORS.white,
+    borderRadius: 12,
+    marginTop: 12,
+  },
+  noPayslipText: {
+    fontSize: 16,
+    color: COLORS.textLight,
+    marginTop: 12,
     textAlign: 'center',
   },
   samplePreviewContainer: {

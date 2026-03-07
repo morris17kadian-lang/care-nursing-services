@@ -2,6 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { LogBox } from 'react-native';
 import ErrorBoundary from './components/ErrorBoundary';
 import { migrateAsyncStorageCareTo876 } from './utils/migrateAsyncStorageCareTo876';
+import { ENABLE_DEBUG_LOGS } from './constants';
 
 // Suppress Expo notifications warning in Expo Go (SDK 53+)
 LogBox.ignoreLogs([
@@ -15,6 +16,14 @@ LogBox.ignoreLogs([
   'Offline persistence has been disabled',
   'WARN  [expo-av]: Expo AV has been deprecated',
 ]);
+
+if (!ENABLE_DEBUG_LOGS) {
+  const noop = () => {};
+  // Keep warn/error so real problems still surface.
+  console.log = noop;
+  console.info = noop;
+  console.debug = noop;
+}
 
 // Import the full original app - now safe with dimension fixes
 import AppOriginal from './App-original';

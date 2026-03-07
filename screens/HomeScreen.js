@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
 import {
   View,
   Text,
@@ -6,6 +6,7 @@ import {
   KeyboardAvoidingView,
   Keyboard,
   TouchableWithoutFeedback,
+  Pressable,
   StyleSheet,
   Image,
   
@@ -32,6 +33,7 @@ import { useShifts } from '../context/ShiftContext';
 import TouchableWeb from '../components/TouchableWeb';
 import InvoiceService from '../services/InvoiceService';
 import PushNotificationService from '../services/PushNotificationService';
+import FirebaseService from '../services/FirebaseService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { useNurses } from '../context/NurseContext';
 import { useFocusEffect } from '@react-navigation/native';
@@ -69,12 +71,42 @@ export default function HomeScreen({ navigation }) {
   const [overdueInvoices, setOverdueInvoices] = useState([]);
   const [pendingOrders, setPendingOrders] = useState([]);
   const [emergencyContact, setEmergencyContact] = useState(null);
+  const [upcomingConsultationRequest, setUpcomingConsultationRequest] = useState(null);
+  const [allServicesModalVisible, setAllServicesModalVisible] = useState(false);
   const fadeAnim = useRef(new Animated.Value(1)).current;
   const arrowAnim = useRef(new Animated.Value(0)).current;
   const servicesScrollAnim = useRef(new Animated.Value(0)).current;
   const scrollViewRef = useRef(null);
 
+  const SERVICE_PREVIEW_COUNT = 5;
+  const previewServices = useMemo(
+    () => (Array.isArray(services) ? services.slice(0, SERVICE_PREVIEW_COUNT) : []),
+    [services]
+  );
+  const remainingServices = useMemo(
+    () => (Array.isArray(services) ? services.slice(SERVICE_PREVIEW_COUNT) : []),
+    [services]
+  );
+  const hasMoreServices = remainingServices.length > 0;
+
   const activeRemindersCount = reminders.filter((r) => !r?.completed).length;
+
+  const loadRemindersFromStorage = useCallback(async () => {
+    if (!user?.id) return;
+    try {
+      const raw = await AsyncStorage.getItem(`${REMINDERS_STORAGE_KEY}_${user.id}`);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed)) {
+          setReminders(parsed);
+          return;
+        }
+      }
+      setReminders([]);
+    } catch (e) {
+      // ignore
+    }
+  }, [user?.id]);
 
   // Refresh appointments when screen comes into focus
   useFocusEffect(
@@ -83,6 +115,58 @@ export default function HomeScreen({ navigation }) {
       refreshAppointments();
     }, [refreshAppointments])
   );
+
+  // Refresh reminders when screen comes into focus (e.g., after scheduling a consult)
+  useFocusEffect(
+    useCallback(() => {
+      loadRemindersFromStorage();
+    }, [loadRemindersFromStorage])
+  );
+
+  useFocusEffect(
+    useCallback(() => {
+      let active = true;
+
+      const loadUpcomingConsult = async () => {
+        try {
+          if (user?.role !== 'patient') {
+            if (active) setUpcomingConsultationRequest(null);
+            return;
+          }
+
+          const authUid = user?.uid || null;
+          if (!authUid) {
+            if (active) setUpcomingConsultationRequest(null);
+            return;
+          }
+
+          const res = await FirebaseService.getUpcomingConsultationRequestsForPatient(authUid, 1);
+          const next = res?.success && Array.isArray(res.requests) ? (res.requests[0] || null) : null;
+          if (active) setUpcomingConsultationRequest(next);
+        } catch (e) {
+          if (active) setUpcomingConsultationRequest(null);
+        }
+      };
+
+      loadUpcomingConsult();
+      return () => {
+        active = false;
+      };
+    }, [user?.id, user?.uid, user?.role])
+  );
+
+  const coerceToDate = (value) => {
+    try {
+      if (!value) return null;
+      if (typeof value?.toDate === 'function') return value.toDate();
+      if (value?.seconds != null) return new Date(value.seconds * 1000);
+      const d = new Date(value);
+      if (!Number.isNaN(d.getTime())) return d;
+      return null;
+    } catch (_) {
+      return null;
+    }
+  };
 
   // Get upcoming appointments for patient (including approved shifts)
   const upcomingAppointments = getUpcomingAppointments();
@@ -551,7 +635,7 @@ export default function HomeScreen({ navigation }) {
   }, [arrowAnim]);
 
   // Auto-scroll services animation with Animated API
-  const [isAutoScrolling, setIsAutoScrolling] = useState(true);
+  const [isAutoScrolling, setIsAutoScrolling] = useState(false);
   const autoScrollTimeoutRef = useRef(null);
   const servicesLoopAnimRef = useRef(null);
 
@@ -681,22 +765,8 @@ export default function HomeScreen({ navigation }) {
 
   // Load reminders from local storage
   useEffect(() => {
-    const load = async () => {
-      if (!user?.id) return;
-      try {
-        const raw = await AsyncStorage.getItem(`${REMINDERS_STORAGE_KEY}_${user.id}`);
-        if (raw) {
-          const parsed = JSON.parse(raw);
-          if (Array.isArray(parsed)) {
-            setReminders(parsed);
-          }
-        }
-      } catch (e) {
-        // ignore
-      }
-    };
-    load();
-  }, [user?.id]);
+    loadRemindersFromStorage();
+  }, [loadRemindersFromStorage]);
 
   // Clean up expired reminders and their notifications
   useEffect(() => {
@@ -804,17 +874,11 @@ export default function HomeScreen({ navigation }) {
               horizontal
               showsHorizontalScrollIndicator={false}
               contentContainerStyle={{ paddingVertical: 15 }}
-              scrollEventThrottle={16}
-              onScrollBeginDrag={pauseAutoScroll}
-              onTouchStart={pauseAutoScroll}
             >
-              <Animated.View style={{ 
-                flexDirection: 'row',
-                transform: [{ translateX: servicesScrollAnim }] 
-              }}>
-                {services && [...services, ...services].map((service, index) => (
+              <View style={{ flexDirection: 'row' }}>
+                {previewServices.map((service) => (
                   <TouchableWeb
-                    key={`${service.id}-${index}`}
+                    key={service.id || service.title}
                     style={styles.serviceCircle}
                     onPress={() => handleServicePress(service)}
                     activeOpacity={0.7}
@@ -834,10 +898,73 @@ export default function HomeScreen({ navigation }) {
                     </Text>
                   </TouchableWeb>
                 ))}
-              </Animated.View>
+
+                {hasMoreServices ? (
+                  <TouchableWeb
+                    style={styles.serviceCircle}
+                    onPress={() => setAllServicesModalVisible(true)}
+                    activeOpacity={0.7}
+                  >
+                    <LinearGradient
+                      colors={GRADIENTS.header}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 0, y: 1 }}
+                      style={styles.serviceCircleGradient}
+                    >
+                      <View style={styles.innerGlow}>
+                        <MaterialCommunityIcons name="plus" size={34} color={COLORS.white} />
+                      </View>
+                    </LinearGradient>
+                    <Text style={styles.serviceCircleLabel} numberOfLines={2}>
+                      More
+                    </Text>
+                  </TouchableWeb>
+                ) : null}
+              </View>
             </ScrollView>
           </View>
         </View>
+
+        {/* Scheduled Consultation Call */}
+        {upcomingConsultationRequest ? (
+          <View style={styles.fullWidthSection}>
+            <View style={styles.sectionContent}>
+              {(() => {
+                const scheduledDate = coerceToDate(upcomingConsultationRequest.scheduledFor || upcomingConsultationRequest.scheduledForIso);
+                const dateLabel = scheduledDate
+                  ? scheduledDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                  : 'Date TBD';
+                const timeLabel = scheduledDate
+                  ? scheduledDate.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' })
+                  : 'Time TBD';
+                const statusRaw = String(upcomingConsultationRequest.status || '').trim();
+                const statusLabel = statusRaw ? statusRaw.charAt(0).toUpperCase() + statusRaw.slice(1) : null;
+                return (
+                  <LinearGradient
+                    colors={GRADIENTS.header}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 0, y: 1 }}
+                    style={styles.appointmentCardGradient}
+                  >
+                    <View style={styles.appointmentHeader}>
+                      <MaterialCommunityIcons name="phone" size={24} color={COLORS.white} />
+                      <Text style={[styles.appointmentTitle, { color: COLORS.white }]}>Scheduled Consult Call</Text>
+                    </View>
+                    <Text style={[styles.appointmentText, { color: COLORS.white }]}>{dateLabel} at {timeLabel}</Text>
+                    <Text style={[styles.appointmentService, { color: 'rgba(255, 255, 255, 0.9)' }]}>
+                      {upcomingConsultationRequest.patientName ? `For ${upcomingConsultationRequest.patientName}` : 'Consultation Call'}
+                    </Text>
+                    {statusLabel ? (
+                      <Text style={[styles.appointmentService, { color: 'rgba(255, 255, 255, 0.8)', fontSize: 14, marginTop: 4 }]}>
+                        Status: {statusLabel}
+                      </Text>
+                    ) : null}
+                  </LinearGradient>
+                );
+              })()}
+            </View>
+          </View>
+        ) : null}
 
         {/* Next Appointment */}
         <View style={styles.fullWidthSection}>
@@ -1068,6 +1195,70 @@ export default function HomeScreen({ navigation }) {
             )}
           </View>
         </View>
+      </Modal>
+
+      {/* All Services Modal */}
+      <Modal
+        animationType="fade"
+        transparent={true}
+        visible={allServicesModalVisible}
+        onRequestClose={() => setAllServicesModalVisible(false)}
+      >
+        <Pressable style={styles.modalOverlay} onPress={() => setAllServicesModalVisible(false)}>
+          <Pressable
+            style={[styles.modalContent, styles.allServicesModalContent]}
+            onPress={(e) => e.stopPropagation()}
+          >
+            <LinearGradient
+              colors={GRADIENTS.header}
+              start={{ x: 0, y: 0 }}
+              end={{ x: 0, y: 1 }}
+              style={styles.modalHeader}
+            >
+              <View style={styles.allServicesModalHeaderRow}>
+                <View style={styles.allServicesHeaderSpacer} />
+                <Text style={styles.allServicesModalTitle}>More Services</Text>
+                <TouchableWeb
+                  onPress={() => setAllServicesModalVisible(false)}
+                  activeOpacity={0.8}
+                  style={styles.allServicesCloseButton}
+                >
+                  <MaterialCommunityIcons name="close" size={22} color={COLORS.white} />
+                </TouchableWeb>
+              </View>
+            </LinearGradient>
+
+            <ScrollView contentContainerStyle={styles.allServicesModalBody}>
+              <View style={styles.allServicesGrid}>
+                {remainingServices.map((service) => (
+                  <TouchableWeb
+                    key={service.id || service.title}
+                    style={styles.allServiceCircle}
+                    onPress={() => {
+                      setAllServicesModalVisible(false);
+                      handleServicePress(service);
+                    }}
+                    activeOpacity={0.7}
+                  >
+                    <LinearGradient
+                      colors={GRADIENTS.header}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 0, y: 1 }}
+                      style={styles.serviceCircleGradient}
+                    >
+                      <View style={styles.innerGlow}>
+                        <MaterialCommunityIcons name={service.icon} size={32} color={COLORS.white} />
+                      </View>
+                    </LinearGradient>
+                    <Text style={styles.serviceCircleLabel} numberOfLines={2}>
+                      {service.title || 'Service'}
+                    </Text>
+                  </TouchableWeb>
+                ))}
+              </View>
+            </ScrollView>
+          </Pressable>
+        </Pressable>
       </Modal>
 
       {/* Add Reminder Modal */}
@@ -1750,10 +1941,29 @@ const styles = StyleSheet.create({
     shadowRadius: 20,
     elevation: 15,
   },
+  allServicesModalContent: {
+    maxHeight: '75%',
+  },
   modalHeader: {
     paddingVertical: SPACING.md,
     paddingHorizontal: SPACING.lg,
     alignItems: 'center',
+  },
+  allServicesModalHeaderRow: {
+    width: '100%',
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  allServicesHeaderSpacer: {
+    width: 32,
+    height: 32,
+  },
+  allServicesCloseButton: {
+    width: 32,
+    height: 32,
+    alignItems: 'center',
+    justifyContent: 'center',
   },
   modalTitle: {
     fontSize: 17,
@@ -1763,6 +1973,29 @@ const styles = StyleSheet.create({
     textAlign: 'center',
     width: '100%',
     paddingHorizontal: SPACING.md,
+  },
+  allServicesModalTitle: {
+    flex: 1,
+    fontSize: 17,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.white,
+    textAlign: 'center',
+    marginTop: SPACING.xs,
+    paddingHorizontal: SPACING.md,
+  },
+  allServicesModalBody: {
+    paddingHorizontal: SPACING.lg,
+    paddingVertical: SPACING.lg,
+  },
+  allServicesGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    justifyContent: 'space-between',
+  },
+  allServiceCircle: {
+    alignItems: 'center',
+    width: '48%',
+    marginBottom: SPACING.lg,
   },
   modalCategory: {
     fontSize: 11,
@@ -2461,7 +2694,7 @@ const styles = StyleSheet.create({
     color: COLORS.white,
     letterSpacing: 0.5,
   },
-  // 876Nurses Store Styles
+  // 876nurses store Styles
   storeCardGradient: {
     borderRadius: 20,
     padding: 40,

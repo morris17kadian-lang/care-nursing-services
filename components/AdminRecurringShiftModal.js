@@ -4,6 +4,7 @@ import {
   Text,
   StyleSheet,
   Modal,
+  Pressable,
   TouchableOpacity,
   ScrollView,
   TextInput,
@@ -18,7 +19,6 @@ import {
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
-import AsyncStorage from '@react-native-async-storage/async-storage';
 import { COLORS, SPACING, SERVICES, GRADIENTS } from '../constants';
 import ApiService from '../services/ApiService';
 import { useNotifications } from '../context/NotificationContext';
@@ -33,6 +33,60 @@ const DAYS_OF_WEEK = [
   { label: 'Fri', value: 5 },
   { label: 'Sat', value: 6 },
 ];
+
+const ALLERGY_GROUPS = [
+  { title: 'Basics', options: ['None'] },
+  {
+    title: 'Medications',
+    options: [
+      'Penicillin',
+      'Amoxicillin',
+      'Cephalosporins',
+      'Sulfa (Sulfonamides)',
+      'Aspirin',
+      'NSAIDs (Ibuprofen/Naproxen)',
+      'Opioids (Morphine/Codeine)',
+      'Anesthesia',
+      'Iodine / Contrast Dye',
+    ],
+  },
+  {
+    title: 'Foods',
+    options: [
+      'Shellfish',
+      'Fish',
+      'Seafood',
+      'Peanuts',
+      'Tree Nuts',
+      'Sesame',
+      'Dairy / Milk',
+      'Eggs',
+      'Soy',
+      'Wheat / Gluten',
+    ],
+  },
+  {
+    title: 'Environmental',
+    options: ['Pollen', 'Dust Mites', 'Pet Dander', 'Mold', 'Insect Stings (Bee/Wasp)'],
+  },
+  {
+    title: 'Contact / Topical',
+    options: ['Latex', 'Adhesive / Tape', 'Chlorhexidine', 'Fragrances / Perfume', 'Nickel'],
+  },
+  { title: 'Other', options: ['Other'] },
+];
+
+const createEmptyPatientAlerts = () => ({
+  allergies: [],
+  allergyOther: '',
+  vitals: {
+    bpSystolic: '',
+    bpDiastolic: '',
+    heartRate: '',
+    temperature: '',
+    oxygenSaturation: '',
+  },
+});
 
 export default function AdminRecurringShiftModal({
   visible,
@@ -64,6 +118,9 @@ export default function AdminRecurringShiftModal({
   const [nurseDetailsMode, setNurseDetailsMode] = useState(null); // 'backup' | 'select'
   const { sendNotificationToUser } = useNotifications();
   const [splitSelectedNurses, setSplitSelectedNurses] = useState([]);
+  const [patientAlerts, setPatientAlerts] = useState(createEmptyPatientAlerts());
+  const [showAllergyPicker, setShowAllergyPicker] = useState(false);
+  const [allergySearchQuery, setAllergySearchQuery] = useState('');
 
   const closeBackupNurseModal = () => {
     setShowBackupNurseModal(false);
@@ -147,6 +204,65 @@ export default function AdminRecurringShiftModal({
     results.sort((a, b) => (getClientName(a) || '').localeCompare(getClientName(b) || ''));
     return results;
   }, [clients, clientSearch]);
+
+  const filteredAllergyItems = useMemo(() => {
+    const q = String(allergySearchQuery || '').trim().toLowerCase();
+    const matches = (label) => {
+      if (!q) return true;
+      return String(label || '').toLowerCase().includes(q);
+    };
+
+    const items = [];
+    ALLERGY_GROUPS.forEach((group) => {
+      const visible = Array.isArray(group?.options) ? group.options.filter(matches) : [];
+      if (visible.length === 0) return;
+      items.push({ type: 'header', label: group.title });
+      visible.forEach((opt) => items.push({ type: 'option', label: opt }));
+    });
+
+    return items;
+  }, [allergySearchQuery]);
+
+  const toggleAllergy = (label) => {
+    const value = String(label || '').trim();
+    if (!value) return;
+
+    setPatientAlerts((prev) => {
+      const current = prev?.allergies;
+      const allergies = Array.isArray(current) ? current : [];
+
+      if (value === 'None') {
+        return {
+          ...createEmptyPatientAlerts(),
+          vitals: {
+            ...(prev?.vitals || createEmptyPatientAlerts().vitals),
+          },
+        };
+      }
+
+      const next = allergies.includes(value)
+        ? allergies.filter((a) => a !== value)
+        : [...allergies.filter((a) => a !== 'None'), value];
+
+      const shouldClearOther = value === 'Other' ? false : next.includes('Other') === false;
+
+      return {
+        ...(prev || createEmptyPatientAlerts()),
+        allergies: next,
+        allergyOther: shouldClearOther ? '' : (prev?.allergyOther || ''),
+      };
+    });
+  };
+
+  const setVitalField = (key, value) => {
+    setPatientAlerts((prev) => ({
+      ...(prev || createEmptyPatientAlerts()),
+      vitals: {
+        ...((prev && prev.vitals) || createEmptyPatientAlerts().vitals),
+        [key]: value,
+      },
+    }));
+  };
 
   // Compute summary of nurses in split-schedule with their assigned days
   const splitAssignmentSummaries = useMemo(() => {
@@ -455,6 +571,37 @@ export default function AdminRecurringShiftModal({
     }
   };
 
+  const buildPatientAlertsPayload = () => {
+    const allergies = Array.isArray(patientAlerts?.allergies)
+      ? patientAlerts.allergies
+          .map((item) => String(item || '').trim())
+          .filter(Boolean)
+      : [];
+
+    const allergyOther = String(patientAlerts?.allergyOther || '').trim();
+    const vitalsSource = patientAlerts?.vitals && typeof patientAlerts.vitals === 'object'
+      ? patientAlerts.vitals
+      : {};
+    const vitals = {
+      bpSystolic: String(vitalsSource.bpSystolic || '').trim(),
+      bpDiastolic: String(vitalsSource.bpDiastolic || '').trim(),
+      heartRate: String(vitalsSource.heartRate || '').trim(),
+      temperature: String(vitalsSource.temperature || '').trim(),
+      oxygenSaturation: String(vitalsSource.oxygenSaturation || '').trim(),
+    };
+
+    const hasVitals = Object.values(vitals).some(Boolean);
+    const hasAllergies = allergies.length > 0 || Boolean(allergyOther);
+
+    if (!hasAllergies && !hasVitals) return null;
+
+    return {
+      allergies,
+      allergyOther,
+      vitals,
+    };
+  };
+
   const validateForm = () => {
     if (assignmentType === 'single-nurse') {
       if (!selectedNurse) {
@@ -547,6 +694,7 @@ export default function AdminRecurringShiftModal({
 
       const backupDetails = enrichBackupNurseDetails(assignmentType === 'single-nurse' ? backupNurses : []);
       const clientSnapshot = selectedClient ? { ...selectedClient } : null;
+      const patientAlertsPayload = buildPatientAlertsPayload();
       const assignmentDescriptor = assignmentType === 'split-schedule'
         ? 'Split Schedule (Multiple Nurses)'
         : backupDetails.length > 0
@@ -619,6 +767,15 @@ export default function AdminRecurringShiftModal({
         status: 'pending',
         isShift: true,
         adminRecurring: true,
+        ...(patientAlertsPayload
+          ? {
+              patientAlerts: patientAlertsPayload,
+              clinicalInfo: patientAlertsPayload,
+              allergies: patientAlertsPayload.allergies,
+              allergyOther: patientAlertsPayload.allergyOther,
+              vitals: patientAlertsPayload.vitals,
+            }
+          : null),
         nurseResponses: Object.keys(nurseResponses).length > 0 ? nurseResponses : null,
         // NEW: Backup nurse and split schedule fields
         assignmentType,
@@ -686,6 +843,9 @@ export default function AdminRecurringShiftModal({
     setBackupNurses([]);
     setNurseSchedule({});
     setSplitSelectedNurses([]);
+    setPatientAlerts(createEmptyPatientAlerts());
+    setShowAllergyPicker(false);
+    setAllergySearchQuery('');
   };
 
   const formatDateDisplay = (date) => {
@@ -693,33 +853,6 @@ export default function AdminRecurringShiftModal({
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
 
-  // Clear AsyncStorage data (temporary utility)
-  const handleClearAsyncStorage = async () => {
-    Alert.alert(
-      'Clear Local Data',
-      'This will remove all locally stored data including duplicate invoices. The app will now use Firestore for all data. Continue?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Clear Data',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              const keys = await AsyncStorage.getAllKeys();
-              await AsyncStorage.clear();
-              Alert.alert(
-                'Success',
-                `Cleared ${keys.length} items from local storage. New invoices will start from NUR-INV-0001 and save to Firestore.`,
-                [{ text: 'OK' }]
-              );
-            } catch (error) {
-              Alert.alert('Error', 'Failed to clear local data: ' + error.message);
-            }
-          },
-        },
-      ]
-    );
-  };
 
   const selectedClientPhoto = selectedClient?.profilePhoto
     || selectedClient?.profileImage
@@ -748,20 +881,6 @@ export default function AdminRecurringShiftModal({
           <View style={styles.header}>
             <Text style={styles.title}>Create Recurring Shift</Text>
             <View style={{ flexDirection: 'row', alignItems: 'center' }}>
-              <TouchableOpacity 
-                onPress={handleClearAsyncStorage} 
-                style={{ 
-                  backgroundColor: COLORS.error, 
-                  paddingHorizontal: 12, 
-                  paddingVertical: 6, 
-                  borderRadius: 8,
-                  marginRight: 8 
-                }}
-              >
-                <Text style={{ color: COLORS.white, fontSize: 12, fontWeight: '600' }}>
-                  Clear Data
-                </Text>
-              </TouchableOpacity>
               <TouchableOpacity onPress={onClose} style={styles.closeButton}>
                 <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
               </TouchableOpacity>
@@ -1379,6 +1498,218 @@ export default function AdminRecurringShiftModal({
               )}
             </View>
 
+            <View style={styles.section}>
+              <Text style={styles.label}>Patient Alerts (Optional)</Text>
+              <Text style={styles.patientAlertsHelpText}>
+                These details will show consistently on the recurring shift detail modals.
+              </Text>
+
+              <View style={styles.patientAlertsCard}>
+                <View style={styles.inputGroup}>
+                  <View style={styles.allergyHeaderRow}>
+                    <View style={{ flex: 1 }}>
+                      <Text style={styles.label}>Allergies</Text>
+                    </View>
+
+                    <TouchableOpacity
+                      style={styles.allergyAddButton}
+                      activeOpacity={0.8}
+                      onPress={() => {
+                        setAllergySearchQuery('');
+                        setShowAllergyPicker(true);
+                      }}
+                    >
+                      <LinearGradient
+                        colors={GRADIENTS.header}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 0, y: 1 }}
+                        style={styles.allergyAddButtonGradient}
+                      >
+                        <MaterialCommunityIcons name="plus" size={16} color={COLORS.white} />
+                        <Text style={styles.allergyAddButtonText}>Add</Text>
+                      </LinearGradient>
+                    </TouchableOpacity>
+                  </View>
+
+                  {(() => {
+                    const allergies = Array.isArray(patientAlerts?.allergies)
+                      ? patientAlerts.allergies
+                      : [];
+                    const otherText = String(patientAlerts?.allergyOther || '').trim();
+                    const hasAny = allergies.length > 0 || Boolean(otherText);
+                    if (!hasAny) return null;
+
+                    const pills = [];
+                    allergies.forEach((label) => {
+                      const value = String(label || '').trim();
+                      if (!value || value === 'Other') return;
+                      pills.push(value);
+                    });
+
+                    if (otherText) {
+                      pills.push(otherText);
+                    } else if (allergies.includes('Other')) {
+                      pills.push('Other');
+                    }
+
+                    if (pills.length === 0) return null;
+
+                    return (
+                      <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        style={{ marginTop: 10 }}
+                      >
+                        <View style={styles.allergySelectedChipsRow}>
+                          {pills.map((label, index) => {
+                            const isOtherText = otherText && label === otherText;
+                            const isOther = label === 'Other' || isOtherText;
+
+                            return (
+                              <TouchableOpacity
+                                key={`${label}-${index}`}
+                                activeOpacity={0.8}
+                                style={styles.allergyOptionChip}
+                                onPress={() => {
+                                  if (isOther) {
+                                    toggleAllergy('Other');
+                                    return;
+                                  }
+                                  toggleAllergy(label);
+                                }}
+                              >
+                                <LinearGradient
+                                  colors={GRADIENTS.header}
+                                  start={{ x: 0, y: 0 }}
+                                  end={{ x: 0, y: 1 }}
+                                  style={styles.allergyOptionChipGradient}
+                                >
+                                  <Text
+                                    style={styles.allergyOptionChipTextSelected}
+                                    numberOfLines={1}
+                                    ellipsizeMode="tail"
+                                  >
+                                    {label}
+                                  </Text>
+                                  <MaterialCommunityIcons name="close" size={14} color={COLORS.white} />
+                                </LinearGradient>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                      </ScrollView>
+                    );
+                  })()}
+
+                  {Array.isArray(patientAlerts?.allergies) && patientAlerts.allergies.includes('Other') && (
+                    <View style={[styles.inputContainer, { marginTop: 10 }]}>
+                      <TextInput
+                        style={styles.input}
+                        placeholder="Describe allergy (e.g., iodine, adhesive)..."
+                        placeholderTextColor={COLORS.textMuted}
+                        value={patientAlerts?.allergyOther || ''}
+                        onChangeText={(text) =>
+                          setPatientAlerts((prev) => ({
+                            ...(prev || createEmptyPatientAlerts()),
+                            allergyOther: text,
+                          }))
+                        }
+                        autoCorrect={false}
+                        autoCapitalize="sentences"
+                      />
+                    </View>
+                  )}
+                </View>
+
+                <View style={styles.inputGroup}>
+                  <Text style={styles.label}>Vitals</Text>
+                  <Text style={styles.patientAlertsSubtext}>If available (leave blank if unknown)</Text>
+
+                  <View style={styles.vitalsRow}>
+                    <View style={[styles.vitalField, { flex: 1 }]}>
+                      <Text style={styles.vitalLabel}>BP (Sys)</Text>
+                      <View style={styles.inputContainer}>
+                        <TextInput
+                          style={styles.input}
+                          placeholder="120"
+                          placeholderTextColor={COLORS.textMuted}
+                          value={patientAlerts?.vitals?.bpSystolic || ''}
+                          onChangeText={(text) => setVitalField('bpSystolic', text)}
+                          keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
+                          returnKeyType="done"
+                        />
+                      </View>
+                    </View>
+
+                    <View style={[styles.vitalField, { flex: 1 }]}>
+                      <Text style={styles.vitalLabel}>BP (Dia)</Text>
+                      <View style={styles.inputContainer}>
+                        <TextInput
+                          style={styles.input}
+                          placeholder="80"
+                          placeholderTextColor={COLORS.textMuted}
+                          value={patientAlerts?.vitals?.bpDiastolic || ''}
+                          onChangeText={(text) => setVitalField('bpDiastolic', text)}
+                          keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
+                          returnKeyType="done"
+                        />
+                      </View>
+                    </View>
+                  </View>
+
+                  <View style={styles.vitalsRow}>
+                    <View style={[styles.vitalField, { flex: 1 }]}>
+                      <Text style={styles.vitalLabel}>HR</Text>
+                      <View style={styles.inputContainer}>
+                        <TextInput
+                          style={styles.input}
+                          placeholder="72"
+                          placeholderTextColor={COLORS.textMuted}
+                          value={patientAlerts?.vitals?.heartRate || ''}
+                          onChangeText={(text) => setVitalField('heartRate', text)}
+                          keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
+                          returnKeyType="done"
+                        />
+                      </View>
+                    </View>
+
+                    <View style={[styles.vitalField, { flex: 1 }]}>
+                      <Text style={styles.vitalLabel}>Temp</Text>
+                      <View style={styles.inputContainer}>
+                        <TextInput
+                          style={styles.input}
+                          placeholder="98.6"
+                          placeholderTextColor={COLORS.textMuted}
+                          value={patientAlerts?.vitals?.temperature || ''}
+                          onChangeText={(text) => setVitalField('temperature', text)}
+                          keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
+                          returnKeyType="done"
+                        />
+                      </View>
+                    </View>
+                  </View>
+
+                  <View style={styles.vitalsRow}>
+                    <View style={[styles.vitalField, { flex: 1 }]}>
+                      <Text style={styles.vitalLabel}>SpO₂ %</Text>
+                      <View style={styles.inputContainer}>
+                        <TextInput
+                          style={styles.input}
+                          placeholder="98"
+                          placeholderTextColor={COLORS.textMuted}
+                          value={patientAlerts?.vitals?.oxygenSaturation || ''}
+                          onChangeText={(text) => setVitalField('oxygenSaturation', text)}
+                          keyboardType={Platform.OS === 'ios' ? 'numbers-and-punctuation' : 'numeric'}
+                          returnKeyType="done"
+                        />
+                      </View>
+                    </View>
+                    <View style={[styles.vitalField, { flex: 1 }]} />
+                  </View>
+                </View>
+              </View>
+            </View>
+
             {/* Service Selection - Only for Single Nurse */}
             {assignmentType === 'single-nurse' && (
               <View style={styles.section}>
@@ -1747,6 +2078,132 @@ export default function AdminRecurringShiftModal({
             </View>
           )}
 
+          <Modal
+            transparent
+            animationType="fade"
+            visible={showAllergyPicker}
+            onRequestClose={() => setShowAllergyPicker(false)}
+          >
+            <Pressable style={styles.allergyModalOverlay} onPress={() => setShowAllergyPicker(false)}>
+              <Pressable style={styles.allergyModalCard} onPress={(e) => e.stopPropagation()}>
+                <View style={styles.allergyModalHeader}>
+                  <Text style={styles.allergyModalTitle}>Select Allergies</Text>
+                  <TouchableOpacity
+                    style={styles.allergyModalClose}
+                    activeOpacity={0.8}
+                    onPress={() => setShowAllergyPicker(false)}
+                  >
+                    <MaterialCommunityIcons name="close" size={22} color={COLORS.text} />
+                  </TouchableOpacity>
+                </View>
+
+                <View style={styles.allergyModalSearchRow}>
+                  <MaterialCommunityIcons name="magnify" size={20} color={COLORS.textMuted} />
+                  <TextInput
+                    style={styles.allergyModalSearchInput}
+                    placeholder="Search allergies..."
+                    placeholderTextColor={COLORS.textMuted}
+                    value={allergySearchQuery}
+                    onChangeText={setAllergySearchQuery}
+                    autoCorrect={false}
+                    autoCapitalize="none"
+                    returnKeyType="search"
+                  />
+                  {String(allergySearchQuery || '').length > 0 && (
+                    <TouchableOpacity
+                      style={styles.allergyModalClearSearch}
+                      activeOpacity={0.8}
+                      onPress={() => setAllergySearchQuery('')}
+                    >
+                      <MaterialCommunityIcons name="close" size={18} color={COLORS.textMuted} />
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                <ScrollView showsVerticalScrollIndicator={false} style={{ maxHeight: 340 }}>
+                  {filteredAllergyItems.map((item) => {
+                    if (item?.type === 'header') {
+                      return (
+                        <View key={`header-${item.label}`} style={styles.allergyModalSectionHeader}>
+                          <Text style={styles.allergyModalSectionHeaderText}>{item.label}</Text>
+                        </View>
+                      );
+                    }
+
+                    const label = item?.label;
+                    const allergies = Array.isArray(patientAlerts?.allergies)
+                      ? patientAlerts.allergies
+                      : [];
+                    const otherText = String(patientAlerts?.allergyOther || '').trim();
+
+                    const selected =
+                      label === 'None'
+                        ? allergies.length === 0 && !otherText
+                        : allergies.includes(label);
+
+                    return (
+                      <TouchableOpacity
+                        key={`option-${label}`}
+                        activeOpacity={0.75}
+                        style={styles.allergyModalOptionRow}
+                        onPress={() => {
+                          toggleAllergy(label);
+                          if (label === 'None') {
+                            setShowAllergyPicker(false);
+                          }
+                        }}
+                      >
+                        <MaterialCommunityIcons
+                          name={selected ? 'checkbox-marked' : 'checkbox-blank-outline'}
+                          size={20}
+                          color={selected ? COLORS.primary : COLORS.textMuted}
+                        />
+                        <Text style={styles.allergyModalOptionText}>{label}</Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </ScrollView>
+
+                {Array.isArray(patientAlerts?.allergies) && patientAlerts.allergies.includes('Other') && (
+                  <View style={{ marginTop: 12 }}>
+                    <Text style={styles.vitalLabel}>Other (describe)</Text>
+                    <View style={styles.inputContainer}>
+                      <TextInput
+                        style={styles.input}
+                        placeholder="Describe allergy (e.g., iodine, adhesive)..."
+                        placeholderTextColor={COLORS.textMuted}
+                        value={patientAlerts?.allergyOther || ''}
+                        onChangeText={(text) =>
+                          setPatientAlerts((prev) => ({
+                            ...(prev || createEmptyPatientAlerts()),
+                            allergyOther: text,
+                          }))
+                        }
+                        autoCorrect={false}
+                        autoCapitalize="sentences"
+                      />
+                    </View>
+                  </View>
+                )}
+
+                <TouchableOpacity
+                  style={[styles.pickerConfirmButton, { marginTop: 14 }]}
+                  activeOpacity={0.8}
+                  onPress={() => setShowAllergyPicker(false)}
+                >
+                  <LinearGradient
+                    colors={GRADIENTS.header}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 0, y: 1 }}
+                    style={styles.pickerConfirmGradient}
+                  >
+                    <Text style={styles.pickerConfirmText}>Done</Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+              </Pressable>
+            </Pressable>
+          </Modal>
+
           {/* Backup Nurse Selection Modal */}
           <Modal
             visible={showBackupNurseModal}
@@ -1882,6 +2339,7 @@ export default function AdminRecurringShiftModal({
             }}
             nurse={selectedNurseDetails}
             nursesRoster={nurses}
+            showQualificationsRequest={false}
             footer={
               nurseDetailsMode === 'select' ? (
                 <TouchableOpacity
@@ -2590,6 +3048,31 @@ const styles = StyleSheet.create({
     marginTop: SPACING.xs,
     fontStyle: 'italic',
   },
+  patientAlertsHelpText: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+    marginTop: -2,
+    marginBottom: SPACING.sm,
+    fontFamily: 'Poppins_400Regular',
+  },
+  patientAlertsSubtext: {
+    fontSize: 12,
+    color: COLORS.textMuted,
+    marginTop: -2,
+    marginBottom: 2,
+    fontFamily: 'Poppins_400Regular',
+  },
+  patientAlertsCard: {
+    backgroundColor: '#F8FAFC',
+    borderRadius: 14,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    padding: SPACING.md,
+    gap: SPACING.md,
+  },
+  inputGroup: {
+    gap: SPACING.xs,
+  },
   // Split Schedule Styles
   dayAssignmentRow: {
     flexDirection: 'row',
@@ -2956,6 +3439,155 @@ const styles = StyleSheet.create({
     color: COLORS.white,
     fontSize: 15,
     fontWeight: '600',
+  },
+  allergyOptionChip: {
+    borderRadius: 18,
+    overflow: 'hidden',
+  },
+  allergyOptionChipGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 18,
+  },
+  allergyOptionChipTextSelected: {
+    fontSize: 13,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.white,
+  },
+  allergySelectedChipsRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingRight: 6,
+  },
+  vitalsRow: {
+    flexDirection: 'row',
+    gap: SPACING.md,
+    marginTop: 10,
+  },
+  vitalField: {
+    flex: 1,
+  },
+  vitalLabel: {
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.textMuted,
+    marginBottom: 6,
+  },
+  allergyHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: 12,
+  },
+  allergyAddButton: {
+    borderRadius: 999,
+    overflow: 'hidden',
+  },
+  allergyAddButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 6,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+  },
+  allergyAddButtonText: {
+    fontSize: 12,
+    lineHeight: 14,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.white,
+    marginTop: 1,
+  },
+  allergyModalOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.45)',
+    justifyContent: 'center',
+    padding: 20,
+  },
+  allergyModalCard: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    padding: 16,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    maxWidth: 520,
+    width: '100%',
+    alignSelf: 'center',
+  },
+  allergyModalHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 12,
+  },
+  allergyModalTitle: {
+    fontSize: 16,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.text,
+    flex: 1,
+  },
+  allergyModalClose: {
+    padding: 6,
+    marginLeft: 10,
+  },
+  allergyModalSearchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingHorizontal: 12,
+    paddingVertical: 10,
+    borderRadius: 12,
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+  },
+  allergyModalSearchInput: {
+    flex: 1,
+    minHeight: 20,
+    fontSize: 14,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.text,
+    paddingVertical: 0,
+  },
+  allergyModalClearSearch: {
+    width: 32,
+    height: 32,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.background,
+  },
+  allergyModalOptionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    paddingVertical: 12,
+    paddingHorizontal: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  allergyModalOptionText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+    flex: 1,
+  },
+  allergyModalSectionHeader: {
+    marginTop: 10,
+    paddingTop: 10,
+    paddingBottom: 6,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  allergyModalSectionHeaderText: {
+    fontSize: 12,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.textMuted,
+    letterSpacing: 0.6,
+    textTransform: 'uppercase',
   },
   nurseCardModalOverlay: {
     flex: 1,

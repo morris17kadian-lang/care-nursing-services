@@ -36,7 +36,7 @@ const ONBOARDING_COMPLETE_KEY = '@876_store_onboarding_complete';
 const ONBOARDING_STEPS = [
   {
     id: 1,
-    title: 'Welcome to 876Nurses Store! 🛒',
+    title: 'Welcome to 876 Nurses Store! 🛒',
     description: 'Shop for medical supplies, personal care items, and mobility aids all in one place.',
     icon: 'shopping',
     highlightArea: null,
@@ -907,7 +907,7 @@ export default function CareStoreScreen({ navigation }) {
         colors={GRADIENTS.header}
         style={[styles.header, { paddingTop: insets.top + 20 }]}
       >
-        <Text style={styles.headerTitle}>876Nurses Store</Text>
+        <Text style={styles.headerTitle}>876 Nurses Store</Text>
         <View style={styles.headerContent}>
           <View style={styles.headerLeftButtons}>
             <TouchableWeb

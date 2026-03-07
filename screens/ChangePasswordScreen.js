@@ -36,11 +36,6 @@ export default function ChangePasswordScreen({ navigation }) {
       return;
     }
 
-    if (formData.newPassword.length < 8) {
-      Alert.alert('Error', 'New password must be at least 8 characters long');
-      return;
-    }
-
     if (formData.newPassword !== formData.confirmPassword) {
       Alert.alert('Error', 'New passwords do not match');
       return;
@@ -103,14 +98,6 @@ export default function ChangePasswordScreen({ navigation }) {
           showsVerticalScrollIndicator={false}
         >
           <View style={styles.form}>
-          {/* Info Box */}
-          <View style={styles.infoBox}>
-            <MaterialCommunityIcons name="information" size={24} color={COLORS.info} />
-            <Text style={styles.infoText}>
-              Your password must be at least 8 characters long and contain a mix of letters, numbers, and symbols.
-            </Text>
-          </View>
-
           {/* Current Password */}
           <View style={styles.inputGroup}>
             <Text style={styles.label}>Current Password</Text>
@@ -180,35 +167,6 @@ export default function ChangePasswordScreen({ navigation }) {
                   color={COLORS.textLight}
                 />
               </TouchableWeb>
-            </View>
-          </View>
-
-          {/* Password Requirements */}
-          <View style={styles.requirementsBox}>
-            <Text style={styles.requirementsTitle}>Password Requirements:</Text>
-            <View style={styles.requirement}>
-              <MaterialCommunityIcons
-                name={formData.newPassword.length >= 8 ? 'check-circle' : 'circle-outline'}
-                size={16}
-                color={formData.newPassword.length >= 8 ? COLORS.success : COLORS.textLight}
-              />
-              <Text style={styles.requirementText}>At least 8 characters</Text>
-            </View>
-            <View style={styles.requirement}>
-              <MaterialCommunityIcons
-                name={/[A-Z]/.test(formData.newPassword) ? 'check-circle' : 'circle-outline'}
-                size={16}
-                color={/[A-Z]/.test(formData.newPassword) ? COLORS.success : COLORS.textLight}
-              />
-              <Text style={styles.requirementText}>One uppercase letter</Text>
-            </View>
-            <View style={styles.requirement}>
-              <MaterialCommunityIcons
-                name={/[0-9]/.test(formData.newPassword) ? 'check-circle' : 'circle-outline'}
-                size={16}
-                color={/[0-9]/.test(formData.newPassword) ? COLORS.success : COLORS.textLight}
-              />
-              <Text style={styles.requirementText}>One number</Text>
             </View>
           </View>
 
@@ -313,21 +271,6 @@ const styles = StyleSheet.create({
   form: {
     padding: SPACING.lg,
   },
-  infoBox: {
-    flexDirection: 'row',
-    backgroundColor: COLORS.infoLight,
-    borderRadius: 12,
-    padding: SPACING.md,
-    marginBottom: SPACING.xl,
-    gap: SPACING.sm,
-  },
-  infoText: {
-    flex: 1,
-    fontSize: 13,
-    fontFamily: 'Poppins_400Regular',
-    color: COLORS.info,
-    lineHeight: 20,
-  },
   inputGroup: {
     marginBottom: SPACING.lg,
   },
@@ -354,31 +297,6 @@ const styles = StyleSheet.create({
     fontFamily: 'Poppins_400Regular',
     color: COLORS.text,
     paddingVertical: Platform.OS === 'android' ? SPACING.sm : 0,
-  },
-  requirementsBox: {
-    backgroundColor: COLORS.white,
-    borderRadius: 12,
-    padding: SPACING.md,
-    marginBottom: SPACING.xl,
-    borderWidth: 1,
-    borderColor: COLORS.border,
-  },
-  requirementsTitle: {
-    fontSize: 14,
-    fontFamily: 'Poppins_600SemiBold',
-    color: COLORS.text,
-    marginBottom: SPACING.sm,
-  },
-  requirement: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: SPACING.sm,
-    marginTop: SPACING.xs,
-  },
-  requirementText: {
-    fontSize: 13,
-    fontFamily: 'Poppins_400Regular',
-    color: COLORS.textLight,
   },
   updateButton: {
     marginTop: SPACING.md,

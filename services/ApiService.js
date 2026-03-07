@@ -971,15 +971,11 @@ class ApiService {
 
   static async denyShiftRequest(shiftId, reason = '') {
     try {
-      const now = new Date().toISOString();
-      const updated = await this.updateShiftRequest(shiftId, {
-        status: 'denied',
-        deniedAt: now,
-        denialReason: reason || 'Declined',
-      });
-      return { success: true, shiftRequest: this._normalizeShiftRequest(updated) };
+      // Delete the shift request instead of just updating status
+      await this.deleteShiftRequest(shiftId);
+      return { success: true };
     } catch (error) {
-      console.error('Error denying shift request:', error);
+      console.error('Error deleting denied shift request:', error);
       return { success: false, error: error.message };
     }
   }
@@ -2028,6 +2024,24 @@ class ApiService {
     } catch (error) {
       console.error('Error fetching payslips:', error);
       return [];
+    }
+  }
+
+  static async createPayslip(payslipData) {
+    try {
+      const docRef = await addDoc(collection(db, COLLECTIONS.PAYSLIPS), {
+        ...payslipData,
+        createdAt: serverTimestamp(),
+        updatedAt: serverTimestamp(),
+      });
+      
+      return {
+        id: docRef.id,
+        ...payslipData,
+      };
+    } catch (error) {
+      console.error('Error creating payslip:', error);
+      throw error;
     }
   }
 

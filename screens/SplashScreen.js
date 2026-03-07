@@ -23,8 +23,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { GRADIENTS, COLORS, SPACING } from '../constants';
 import { useAuth } from '../context/AuthContext';
 import FirebaseService from '../services/FirebaseService';
-import { confirmPasswordReset } from 'firebase/auth';
-import { auth } from '../config/firebase';
+import LegalModal from '../components/LegalModal';
+
 
 // import { seedDefaultChatUsers } from '../utils/chatSeedData';
 
@@ -49,13 +49,10 @@ export default function SplashScreen({ onFinish }) {
   const [isLoading, setIsLoading] = useState(false);
   const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const [showForgotPassword, setShowForgotPassword] = useState(false);
+  const [legalVisible, setLegalVisible] = useState(false);
+  const [legalDoc, setLegalDoc] = useState('legal');
   const [forgotEmail, setForgotEmail] = useState('');
-  const [forgotPasswordStep, setForgotPasswordStep] = useState('email'); // 'email', 'sent', or 'reset'
-  const [resetToken, setResetToken] = useState('');
-  const [resetNewPassword, setResetNewPassword] = useState('');
-  const [resetConfirmPassword, setResetConfirmPassword] = useState('');
-  const [showResetPassword, setShowResetPassword] = useState(false);
-  const [showResetConfirmPassword, setShowResetConfirmPassword] = useState(false);
+  const [forgotPasswordStep, setForgotPasswordStep] = useState('email'); // 'email' or 'sent'
   const [forgotPasswordLoading, setForgotPasswordLoading] = useState(false);
   const [forgotPasswordMessage, setForgotPasswordMessage] = useState('');
   const [sentToEmail, setSentToEmail] = useState('');
@@ -278,6 +275,11 @@ export default function SplashScreen({ onFinish }) {
     }
   };
 
+  const openLegal = (docKey) => {
+    setLegalDoc(docKey);
+    setLegalVisible(true);
+  };
+
   const resolveAccountEmail = async () => {
     const loginInput = username.trim();
 
@@ -288,16 +290,14 @@ export default function SplashScreen({ onFinish }) {
 
     try {
       if (loginInput.includes('@')) {
-        const lookup = await FirebaseService.getUserByEmail(loginInput.toLowerCase());
-        if (lookup?.success && lookup.user?.email) {
-          return lookup.user.email.trim();
-        }
-        Alert.alert('Account Not Found', 'We could not find an account registered with that email.');
-        return null;
+        // Avoid blocking password resets on Firestore lookups (and avoid account enumeration).
+        // If the user entered an email, proceed with the normalized email.
+        return loginInput.trim().toLowerCase();
       }
 
-      const normalizedUsername = loginInput.toUpperCase();
-      const lookup = await FirebaseService.getUserByUsername(normalizedUsername);
+      // Do not pre-normalize here. FirebaseService.getUserByUsername already handles
+      // uppercase staff codes and fallback casing (e.g., older docs with mixed-case usernames).
+      const lookup = await FirebaseService.getUserByUsername(loginInput);
       if (lookup?.success && lookup.user?.email) {
         return lookup.user.email.trim();
       }
@@ -359,60 +359,9 @@ export default function SplashScreen({ onFinish }) {
     }
   };
 
-  const handleResetPassword = async () => {
-    if (!resetToken.trim()) {
-      Alert.alert('Error', 'Paste the reset token from your email before continuing.');
-      return;
-    }
-
-    if (!resetNewPassword || resetNewPassword.length < 6) {
-      Alert.alert('Error', 'New password must be at least 6 characters.');
-      return;
-    }
-
-    if (resetNewPassword !== resetConfirmPassword) {
-      Alert.alert('Error', 'New password and confirmation do not match.');
-      return;
-    }
-
-    setForgotPasswordLoading(true);
-    setForgotPasswordMessage('');
-
-    try {
-      await confirmPasswordReset(auth, resetToken.trim(), resetNewPassword);
-
-      Alert.alert('Success', 'Your password has been reset. Please sign in with your new password.');
-      setShowForgotPassword(false);
-      setForgotEmail('');
-      setResetToken('');
-      setResetNewPassword('');
-      setResetConfirmPassword('');
-      setForgotPasswordStep('email');
-      setForgotPasswordMessage('');
-      setSentToEmail('');
-    } catch (error) {
-      console.error('Reset password error:', error);
-      let errorMessage = error?.message || 'Unable to reset password. Please try again.';
-
-      if (error?.code === 'auth/invalid-action-code') {
-        errorMessage = 'That reset token is invalid or has expired. Please request a new one.';
-      } else if (error?.code === 'auth/weak-password') {
-        errorMessage = 'Password is too weak. Please choose at least 6 characters.';
-      }
-
-      setForgotPasswordMessage(`Error: ${errorMessage}`);
-      Alert.alert('Error', errorMessage);
-    } finally {
-      setForgotPasswordLoading(false);
-    }
-  };
-
   const handleCloseForgotPassword = () => {
     setShowForgotPassword(false);
     setForgotEmail('');
-    setResetToken('');
-    setResetNewPassword('');
-    setResetConfirmPassword('');
     setForgotPasswordStep('email');
     setForgotPasswordMessage('');
     setSentToEmail('');
@@ -709,11 +658,14 @@ export default function SplashScreen({ onFinish }) {
 
           {/* Terms - Only show for signup */}
           {!isLogin && (
-            <Text style={styles.termsText}>
-              By signing up, you agree to our{' '}
-              <Text style={styles.termsLink}>Terms of Service</Text> and{' '}
-              <Text style={styles.termsLink}>Privacy Policy</Text>
-            </Text>
+            <>
+              <Text style={styles.termsText}>
+                By signing up, you agree to our{' '}
+                <Text style={styles.termsLink} onPress={() => openLegal('legal')}>
+                  Terms of Service & Privacy Policy
+                </Text>
+              </Text>
+            </>
           )}
 
           {/* Submit Button */}
@@ -813,15 +765,22 @@ export default function SplashScreen({ onFinish }) {
                     ) : null}
 
                     <TouchableWeb
-                      style={[styles.forgotPasswordButton, forgotPasswordLoading && styles.disabledButton]}
+                      style={[styles.submitButton, styles.forgotPasswordButton, forgotPasswordLoading && styles.disabledButton]}
                       onPress={handleForgotPasswordRequest}
                       disabled={forgotPasswordLoading}
                     >
-                      {forgotPasswordLoading ? (
-                        <ActivityIndicator color="#fff" size="small" />
-                      ) : (
-                        <Text style={styles.forgotPasswordButtonText}>Send Reset Link</Text>
-                      )}
+                      <LinearGradient
+                        colors={forgotPasswordLoading ? ['#CCCCCC', '#CCCCCC'] : GRADIENTS.header}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 0, y: 1 }}
+                        style={styles.submitButtonGradient}
+                      >
+                        {forgotPasswordLoading ? (
+                          <ActivityIndicator color="#fff" size="small" />
+                        ) : (
+                          <Text style={styles.submitButtonText}>Send Reset Link</Text>
+                        )}
+                      </LinearGradient>
                     </TouchableWeb>
                   </View>
                 </>
@@ -839,131 +798,48 @@ export default function SplashScreen({ onFinish }) {
                   </Text>
                   <Text style={styles.emailHighlight}>{sentToEmail}</Text>
                   <Text style={styles.forgotPasswordDescription}>
-                    Click the link in the email to reset your password. You can also paste the reset token below if needed.
+                    Open the email and tap the reset link to choose a new password in your browser. After resetting, return here and sign in with your new password.
                   </Text>
 
                   <View style={styles.forgotPasswordForm}>
-                    <Text style={styles.inputLabel}>Reset Token (from email link)</Text>
-                    <TextInput
-                      style={styles.forgotPasswordInput}
-                      placeholder="Paste token from email"
-                      placeholderTextColor={COLORS.textMuted}
-                      value={resetToken}
-                      onChangeText={setResetToken}
-                      multiline={true}
-                      autoCapitalize="none"
-                    />
-
                     <TouchableWeb
-                      style={styles.forgotPasswordButton}
-                      onPress={() => {
-                        if (resetToken.trim()) {
-                          setForgotPasswordStep('reset');
-                        } else {
-                          Alert.alert('Info', 'Please paste the token from the email link, or wait for the email and click the link directly.');
-                        }
-                      }}
-                    >
-                      <Text style={styles.forgotPasswordButtonText}>Continue with Token</Text>
-                    </TouchableWeb>
-
-                    <TouchableWeb
-                      style={styles.backToEmailButton}
-                      onPress={() => setForgotPasswordStep('email')}
-                    >
-                      <Text style={styles.backToEmailButtonText}>Send to Different Email</Text>
-                    </TouchableWeb>
-                  </View>
-                </>
-              ) : (
-                <>
-                  <Text style={styles.forgotPasswordDescription}>
-                    Enter your new password below to update your account.
-                  </Text>
-
-                  <View style={styles.forgotPasswordForm}>
-                    <Text style={styles.inputLabel}>New Password</Text>
-                    <View style={styles.passwordInputContainer}>
-                      <TextInput
-                        style={styles.forgotPasswordInput}
-                        placeholder="Enter new password"
-                        placeholderTextColor={COLORS.textMuted}
-                        value={resetNewPassword}
-                        onChangeText={setResetNewPassword}
-                        editable={!forgotPasswordLoading}
-                        secureTextEntry={!showResetPassword}
-                      />
-                      <TouchableWeb
-                        style={styles.togglePasswordButton}
-                        onPress={() => setShowResetPassword(!showResetPassword)}
-                      >
-                        <MaterialCommunityIcons
-                          name={showResetPassword ? "eye-off" : "eye"}
-                          size={20}
-                          color={COLORS.textMuted}
-                        />
-                      </TouchableWeb>
-                    </View>
-
-                    <Text style={styles.inputLabel}>Confirm Password</Text>
-                    <View style={styles.passwordInputContainer}>
-                      <TextInput
-                        style={styles.forgotPasswordInput}
-                        placeholder="Confirm new password"
-                        placeholderTextColor={COLORS.textMuted}
-                        value={resetConfirmPassword}
-                        onChangeText={setResetConfirmPassword}
-                        editable={!forgotPasswordLoading}
-                        secureTextEntry={!showResetConfirmPassword}
-                      />
-                      <TouchableWeb
-                        style={styles.togglePasswordButton}
-                        onPress={() => setShowResetConfirmPassword(!showResetConfirmPassword)}
-                      >
-                        <MaterialCommunityIcons
-                          name={showResetConfirmPassword ? "eye-off" : "eye"}
-                          size={20}
-                          color={COLORS.textMuted}
-                        />
-                      </TouchableWeb>
-                    </View>
-
-                    {forgotPasswordMessage ? (
-                      <Text style={[styles.forgotPasswordMessage, { color: forgotPasswordMessage.includes('Error') ? COLORS.error : COLORS.success }]}>
-                        {forgotPasswordMessage}
-                      </Text>
-                    ) : null}
-
-                    <TouchableWeb
-                      style={[styles.forgotPasswordButton, forgotPasswordLoading && styles.disabledButton]}
-                      onPress={handleResetPassword}
+                      style={[styles.submitButton, styles.forgotPasswordButton, forgotPasswordLoading && styles.disabledButton]}
+                      onPress={handleForgotPasswordRequest}
                       disabled={forgotPasswordLoading}
                     >
-                      {forgotPasswordLoading ? (
-                        <ActivityIndicator color="#fff" size="small" />
-                      ) : (
-                        <Text style={styles.forgotPasswordButtonText}>Update Password</Text>
-                      )}
+                      <LinearGradient
+                        colors={forgotPasswordLoading ? ['#CCCCCC', '#CCCCCC'] : GRADIENTS.header}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 0, y: 1 }}
+                        style={styles.submitButtonGradient}
+                      >
+                        {forgotPasswordLoading ? (
+                          <ActivityIndicator color="#fff" size="small" />
+                        ) : (
+                          <Text style={styles.submitButtonText}>Resend Reset Link</Text>
+                        )}
+                      </LinearGradient>
                     </TouchableWeb>
 
                     <TouchableWeb
                       style={styles.backToEmailButton}
-                      onPress={() => {
-                        setForgotPasswordStep('sent');
-                        setResetNewPassword('');
-                        setResetConfirmPassword('');
-                        setForgotPasswordMessage('');
-                      }}
+                      onPress={handleCloseForgotPassword}
                     >
-                      <Text style={styles.backToEmailButtonText}>Back</Text>
+                      <Text style={styles.backToEmailButtonText}>Close</Text>
                     </TouchableWeb>
                   </View>
                 </>
-              )}
+              ) : null}
             </ScrollView>
           </View>
         </View>
       </Modal>
+
+      <LegalModal
+        visible={legalVisible}
+        document={legalDoc}
+        onClose={() => setLegalVisible(false)}
+      />
     </LinearGradient>
   );
 }
@@ -1299,11 +1175,6 @@ const styles = StyleSheet.create({
     lineHeight: 18,
   },
   forgotPasswordButton: {
-    backgroundColor: '#4A90E2',
-    borderRadius: 8,
-    paddingVertical: SPACING.md,
-    alignItems: 'center',
-    justifyContent: 'center',
     marginTop: SPACING.sm,
   },
   forgotPasswordButtonText: {

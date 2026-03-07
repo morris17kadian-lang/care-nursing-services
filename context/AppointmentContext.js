@@ -258,7 +258,11 @@ export const AppointmentProvider = ({ children }) => {
             clientNotes: apt.clientNotes || '',
             specialInstructions: apt.specialInstructions || '',
             nurseNotes: apt.nurseNotes || cachedMatch?.nurseNotes || '',
+            nurseNotePhotos:
+              (Array.isArray(apt.nurseNotePhotos) ? apt.nurseNotePhotos : null) ||
+              (Array.isArray(cachedMatch?.nurseNotePhotos) ? cachedMatch.nurseNotePhotos : []),
             completionNotes: apt.completionNotes || '',
+            patientAlerts: apt.patientAlerts || cachedMatch?.patientAlerts || null,
             status: apt.status || 'pending',
             nurseId: nurseId,
             nurseName: assignedNurseName,
@@ -503,6 +507,7 @@ export const AppointmentProvider = ({ children }) => {
         location: appointmentData.address,
         address: appointmentData.address, // Add address field for compatibility
         notes: appointmentData.notes || '',
+        patientAlerts: appointmentData.patientAlerts || null,
         status: 'pending', // Ensure status is set so it appears in Admin dashboard
         priority: 'medium',
         estimatedDuration: 60, // Default 1 hour (60 minutes)
@@ -516,6 +521,7 @@ export const AppointmentProvider = ({ children }) => {
         requestedNurseName: preferredNurseName,
         requestedNurseCode: preferredNurseCode,
       };
+      
       const response = await ApiService.makeRequest('/appointments', {
         method: 'POST',
         body: JSON.stringify(apiData),
@@ -563,6 +569,7 @@ export const AppointmentProvider = ({ children }) => {
           time: created.scheduledTime || appointmentData.time,
           address: created.address || appointmentData.address,
           notes: created.notes || appointmentData.notes || '',
+          patientAlerts: created.patientAlerts || appointmentData.patientAlerts || null,
           status: created.status || 'pending',
           nurseId: created.nurseId || null,
           nurseName: created.nurseName || null,
@@ -632,6 +639,7 @@ export const AppointmentProvider = ({ children }) => {
         time: appointmentData.time,
         address: appointmentData.address,
         notes: appointmentData.notes || '',
+        patientAlerts: appointmentData.patientAlerts || null,
         status: 'pending',
         nurseId: null,
         nurseName: null,

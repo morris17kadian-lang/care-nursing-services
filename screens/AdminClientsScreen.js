@@ -1,6 +1,21 @@
 import TouchableWeb from "../components/TouchableWeb";
-import React, { useState, useEffect, useMemo } from 'react';
-import { View, Text, StyleSheet, ScrollView, TextInput, Modal, Alert, Image, TouchableOpacity } from 'react-native';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
+import {
+  View,
+  Text,
+  StyleSheet,
+  ScrollView,
+  TextInput,
+  Modal,
+  Alert,
+  Image,
+  TouchableOpacity,
+  ActivityIndicator,
+  Platform,
+  Keyboard,
+  KeyboardAvoidingView,
+  useWindowDimensions,
+} from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -13,26 +28,65 @@ import { useAppointments } from '../context/AppointmentContext';
 import { useNurses } from '../context/NurseContext';
 import { useShifts } from '../context/ShiftContext';
 import InvoiceService from '../services/InvoiceService';
+import EmailService from '../services/EmailService';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { getNurseName } from '../utils/formatters';
-import offlineUsers from '../876Nursesdatabase/care_database.users.json';
 import NotesAccordionList from '../components/NotesAccordionList';
+import DateTimePicker from '@react-native-community/datetimepicker';
 
-export default function AdminClientsScreen({ navigation, route, isEmbedded = false }) {
+export default function AdminClientsScreen({ navigation, route, isEmbedded = false, searchQuery = '' }) {
   const { logout } = useAuth();
   const { appointments: allAppointments, getAppointmentsByStatus } = useAppointments();
   const { nurses: nursesFromContext } = useNurses();
   const { shiftRequests } = useShifts();
   const insets = useSafeAreaInsets();
+  const { height: windowHeight } = useWindowDimensions();
+  
+  const medicalNotesReportModalHeight = useMemo(() => {
+    const base = Number.isFinite(windowHeight) && windowHeight > 0 ? windowHeight : 700;
+    return Math.min(620, Math.max(340, Math.floor(base * 0.82)));
+  }, [windowHeight]);
+  
   const [isAddClientModalVisible, setIsAddClientModalVisible] = useState(false);
   const [deleteModalVisible, setDeleteModalVisible] = useState(false);
   const [clientDetailsModalVisible, setClientDetailsModalVisible] = useState(false);
   const [fullInvoiceModalVisible, setFullInvoiceModalVisible] = useState(false);
   const [selectedClient, setSelectedClient] = useState(null);
   const [recentInvoicesExpanded, setRecentInvoicesExpanded] = useState(false);
+  const [notePhotoPreviewVisible, setNotePhotoPreviewVisible] = useState(false);
+  const [notePhotoPreviewUri, setNotePhotoPreviewUri] = useState(null);
+  const [medicalNotesReportModalVisible, setMedicalNotesReportModalVisible] = useState(false);
+  const [medicalNotesReportEmail, setMedicalNotesReportEmail] = useState('');
+  const [medicalNotesReportSending, setMedicalNotesReportSending] = useState(false);
+  const [medicalNotesReportItems, setMedicalNotesReportItems] = useState([]);
+  const [medicalNotesReportClient, setMedicalNotesReportClient] = useState(null);
+  const [medicalNotesReportPeriod, setMedicalNotesReportPeriod] = useState('all');
+  const [medicalNotesReportFromDate, setMedicalNotesReportFromDate] = useState(null);
+  const [medicalNotesReportToDate, setMedicalNotesReportToDate] = useState(null);
+  const [medicalNotesReportShowFromPicker, setMedicalNotesReportShowFromPicker] = useState(false);
+  const [medicalNotesReportShowToPicker, setMedicalNotesReportShowToPicker] = useState(false);
   const [clientToDelete, setClientToDelete] = useState(null);
   const [currentInvoiceData, setCurrentInvoiceData] = useState(null);
   const [clients, setClients] = useState([]);
+
+  const normalizedSearchQuery = useMemo(() => String(searchQuery || '').trim().toLowerCase(), [searchQuery]);
+  const displayedClients = useMemo(() => {
+    const list = Array.isArray(clients) ? clients : [];
+    if (!normalizedSearchQuery) return list;
+
+    return list.filter((client) => {
+      const name = String(client?.name || '').toLowerCase();
+      const email = String(client?.email || '').toLowerCase();
+      const phone = String(client?.phone || '').toLowerCase();
+      const address = String(client?.address || '').toLowerCase();
+      return (
+        name.includes(normalizedSearchQuery) ||
+        email.includes(normalizedSearchQuery) ||
+        phone.includes(normalizedSearchQuery) ||
+        address.includes(normalizedSearchQuery)
+      );
+    });
+  }, [clients, normalizedSearchQuery]);
   const [clientForm, setClientForm] = useState({
     name: '',
     email: '',
@@ -76,6 +130,364 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
       setRecentInvoicesExpanded(false);
     }
   }, [clientDetailsModalVisible, selectedClient?.id]);
+
+  const openNotePhotoPreview = useCallback((uri) => {
+    if (!uri) return;
+    const normalized = String(uri).trim();
+    if (!normalized) return;
+    setNotePhotoPreviewUri(normalized);
+    setNotePhotoPreviewVisible(true);
+  }, []);
+
+  const closeNotePhotoPreview = useCallback(() => {
+    setNotePhotoPreviewVisible(false);
+    setNotePhotoPreviewUri(null);
+  }, []);
+
+  const openMedicalNotesReportModal = useCallback((client, items) => {
+    setMedicalNotesReportClient(client || null);
+    setMedicalNotesReportItems(Array.isArray(items) ? items : []);
+    setMedicalNotesReportEmail('');
+    setMedicalNotesReportPeriod('all');
+    setMedicalNotesReportFromDate(null);
+    setMedicalNotesReportToDate(null);
+    setMedicalNotesReportShowFromPicker(false);
+    setMedicalNotesReportShowToPicker(false);
+    setMedicalNotesReportModalVisible(true);
+  }, []);
+
+  const closeMedicalNotesReportModal = useCallback(() => {
+    setMedicalNotesReportModalVisible(false);
+    setMedicalNotesReportSending(false);
+    setMedicalNotesReportShowFromPicker(false);
+    setMedicalNotesReportShowToPicker(false);
+  }, []);
+
+  const isValidEmail = (value) => {
+    const v = String(value || '').trim();
+    if (!v) return false;
+    // Simple, pragmatic validation
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v);
+  };
+
+  const formatReportDateTime = (value) => {
+    if (!value) return '';
+    try {
+      const d = value instanceof Date
+        ? value
+        : typeof value === 'object' && typeof value.toDate === 'function'
+          ? value.toDate()
+          : new Date(value);
+      if (!(d instanceof Date) || Number.isNaN(d.getTime())) return '';
+      return d.toLocaleString('en-US', {
+        month: 'short',
+        day: 'numeric',
+        year: 'numeric',
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+    } catch {
+      return '';
+    }
+  };
+
+  const formatReportDateOnly = (value) => {
+    if (!value) return '';
+    try {
+      const d = value instanceof Date
+        ? value
+        : typeof value === 'object' && typeof value.toDate === 'function'
+          ? value.toDate()
+          : new Date(value);
+      if (!(d instanceof Date) || Number.isNaN(d.getTime())) return '';
+      return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    } catch {
+      return '';
+    }
+  };
+
+  const toEpochMs = (value) => {
+    if (!value) return 0;
+
+    if (value instanceof Date) {
+      return Number.isNaN(value.getTime()) ? 0 : value.getTime();
+    }
+
+    if (typeof value === 'object') {
+      if (typeof value.toDate === 'function') {
+        const d = value.toDate();
+        return d instanceof Date && !Number.isNaN(d.getTime()) ? d.getTime() : 0;
+      }
+
+      const seconds =
+        typeof value.seconds === 'number'
+          ? value.seconds
+          : typeof value._seconds === 'number'
+            ? value._seconds
+            : null;
+      if (typeof seconds === 'number' && Number.isFinite(seconds)) {
+        return seconds * 1000;
+      }
+    }
+
+    if (typeof value === 'number' && Number.isFinite(value)) {
+      return value < 1e12 ? value * 1000 : value;
+    }
+
+    if (typeof value === 'string') {
+      const trimmed = value.trim();
+      if (!trimmed) return 0;
+      const asNumber = Number(trimmed);
+      if (Number.isFinite(asNumber)) {
+        return asNumber < 1e12 ? asNumber * 1000 : asNumber;
+      }
+      const parsed = Date.parse(trimmed);
+      return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    const parsed = Date.parse(String(value));
+    return Number.isFinite(parsed) ? parsed : 0;
+  };
+
+  const getMedicalNotesReportItemsForPeriod = (items) => {
+    const list = Array.isArray(items) ? items : [];
+    if (medicalNotesReportPeriod === 'all') return list;
+
+    const now = Date.now();
+    const dayMs = 24 * 60 * 60 * 1000;
+
+    if (medicalNotesReportPeriod === '7d') {
+      const start = now - 7 * dayMs;
+      return list.filter((n) => {
+        const t = toEpochMs(n?.date);
+        return t >= start && t <= now;
+      });
+    }
+
+    if (medicalNotesReportPeriod === '30d') {
+      const start = now - 30 * dayMs;
+      return list.filter((n) => {
+        const t = toEpochMs(n?.date);
+        return t >= start && t <= now;
+      });
+    }
+
+    if (medicalNotesReportPeriod === 'custom') {
+      const fromMs = medicalNotesReportFromDate ? toEpochMs(medicalNotesReportFromDate) : 0;
+      const toMs = medicalNotesReportToDate ? toEpochMs(medicalNotesReportToDate) : now;
+      if (fromMs && toMs && fromMs > toMs) return [];
+      return list.filter((n) => {
+        const t = toEpochMs(n?.date);
+        return t >= (fromMs || 0) && t <= (toMs || now);
+      });
+    }
+
+    return list;
+  };
+
+  const getMedicalNotesReportPeriodLabel = () => {
+    if (medicalNotesReportPeriod === '7d') return 'Last 7 days';
+    if (medicalNotesReportPeriod === '30d') return 'Last 30 days';
+    if (medicalNotesReportPeriod === 'custom') {
+      const fromLabel = medicalNotesReportFromDate ? formatReportDateOnly(medicalNotesReportFromDate) : '';
+      const toLabel = medicalNotesReportToDate ? formatReportDateOnly(medicalNotesReportToDate) : '';
+      if (fromLabel && toLabel) return `${fromLabel} – ${toLabel}`;
+      if (fromLabel) return `From ${fromLabel}`;
+      if (toLabel) return `Up to ${toLabel}`;
+      return 'Custom range';
+    }
+    return 'All time';
+  };
+
+  const escapeHtml = (unsafe) => {
+    const s = String(unsafe ?? '');
+    return s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;')
+      .replace(/'/g, '&#039;');
+  };
+
+  const buildMedicalNotesReportHtml = ({ client, items }) => {
+    const safeClientName = escapeHtml(client?.name || 'Client');
+    const safeClientEmail = escapeHtml(client?.email || '');
+    const generatedAt = formatReportDateTime(new Date());
+    const safeGeneratedAt = escapeHtml(generatedAt);
+
+    const rows = (Array.isArray(items) ? items : []).map((n) => {
+      const dateLabel = escapeHtml(formatReportDateTime(n?.date) || '');
+      const title = escapeHtml(n?.title || 'Note');
+      const subtitle = escapeHtml(n?.subtitle || '');
+      const body = escapeHtml(n?.body || '');
+      const photos = Array.isArray(n?.photoUrls) ? n.photoUrls : [];
+      const photoLinks = photos
+        .filter((u) => typeof u === 'string' && u.trim().length > 0)
+        .map((u) => {
+          const href = escapeHtml(u.trim());
+          return `<li style="margin:0 0 6px 0;"><a href="${href}" style="color:#2f62d7;text-decoration:underline;">${href}</a></li>`;
+        })
+        .join('');
+
+      return `
+        <div style="border:1px solid #e5e7eb;border-radius:10px;padding:14px 14px;margin:0 0 12px 0;">
+          <div style="font-size:12px;color:#6b7280;margin:0 0 6px 0;">${dateLabel}</div>
+          <div style="font-size:14px;font-weight:700;color:#111827;margin:0 0 2px 0;">${title}</div>
+          ${subtitle ? `<div style="font-size:12px;color:#374151;margin:0 0 10px 0;">${subtitle}</div>` : ''}
+          <div style="font-size:13px;white-space:pre-wrap;line-height:1.6;color:#111827;">${body || '&nbsp;'}</div>
+          ${photoLinks ? `
+            <div style="margin-top:12px;">
+              <div style="font-size:12px;font-weight:700;color:#111827;margin:0 0 6px 0;">Photos</div>
+              <ul style="padding-left:18px;margin:0;">${photoLinks}</ul>
+            </div>
+          ` : ''}
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <meta charset="utf-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+          <title>Medical Notes Report</title>
+        </head>
+        <body style="margin:0;padding:0;background-color:#ffffff;font-family:Arial,sans-serif;color:#111827;">
+          <div style="max-width:700px;margin:0 auto;padding:28px 18px;">
+            <div style="margin:0 0 18px 0;">
+              <div style="font-size:18px;font-weight:800;margin:0 0 4px 0;">Medical Notes Report</div>
+              <div style="font-size:12px;color:#6b7280;">Generated: ${safeGeneratedAt}</div>
+            </div>
+            <div style="border:1px solid #e5e7eb;border-radius:10px;padding:14px 14px;margin:0 0 16px 0;background:#fafafa;">
+              <div style="font-size:12px;color:#6b7280;margin:0 0 6px 0;">Client</div>
+              <div style="font-size:14px;font-weight:800;">${safeClientName}</div>
+              ${safeClientEmail ? `<div style="font-size:12px;color:#374151;">${safeClientEmail}</div>` : ''}
+            </div>
+            ${rows || '<div style="font-size:13px;color:#6b7280;">No notes found for this client.</div>'}
+            <div style="margin-top:22px;font-size:11px;color:#9ca3af;line-height:1.6;">
+              This report was generated from the 876 Nurses admin app.
+            </div>
+          </div>
+        </body>
+      </html>
+    `;
+  };
+
+  const buildMedicalNotesReportText = ({ client, items }) => {
+    const safeClientName = String(client?.name || 'Client');
+    const generatedAt = formatReportDateTime(new Date());
+    const list = (Array.isArray(items) ? items : []).map((n) => {
+      const when = formatReportDateTime(n?.date) || '';
+      const title = String(n?.title || 'Note');
+      const subtitle = String(n?.subtitle || '');
+      const body = String(n?.body || '');
+      const photos = Array.isArray(n?.photoUrls)
+        ? n.photoUrls.filter((u) => typeof u === 'string' && u.trim().length > 0)
+        : [];
+      const photoBlock = photos.length ? `\nPhotos:\n- ${photos.join('\n- ')}` : '';
+      return `\n[${when}] ${title}${subtitle ? ` (${subtitle})` : ''}\n${body}${photoBlock}\n`;
+    }).join('\n');
+
+    return `Medical Notes Report\nGenerated: ${generatedAt}\nClient: ${safeClientName}\n\n${list || 'No notes found.'}\n`;
+  };
+
+  const sendMedicalNotesReport = useCallback(async () => {
+    if (medicalNotesReportSending) return;
+
+    const to = String(medicalNotesReportEmail || '').trim();
+    if (!isValidEmail(to)) {
+      Alert.alert('Invalid email', 'Please enter a valid recipient email address.');
+      return;
+    }
+
+    const client = medicalNotesReportClient || selectedClient;
+    const baseItems = Array.isArray(medicalNotesReportItems) ? medicalNotesReportItems : [];
+    const items = getMedicalNotesReportItemsForPeriod(baseItems);
+    if (!client) {
+      Alert.alert('Missing client', 'Please select a client first.');
+      return;
+    }
+
+    if (items.length === 0) {
+      Alert.alert('No notes', 'There are no medical notes to include in this report.');
+      return;
+    }
+
+    if (medicalNotesReportPeriod === 'custom') {
+      const fromMs = medicalNotesReportFromDate ? toEpochMs(medicalNotesReportFromDate) : 0;
+      const toMs = medicalNotesReportToDate ? toEpochMs(medicalNotesReportToDate) : Date.now();
+      if (fromMs && toMs && fromMs > toMs) {
+        Alert.alert('Invalid range', 'The “From” date must be on or before the “To” date.');
+        return;
+      }
+    }
+
+    setMedicalNotesReportSending(true);
+    try {
+      const config = await EmailService.getConfig();
+      const provider = config?.provider || 'firebase';
+
+      // Silent auto-config:
+      // - If email is disabled, enable it.
+      // - If set to backend without an API key, switch to Firebase mail queue.
+      // This avoids any "email service disabled" popup and just queues the report.
+      if (!config?.enabled || (provider === 'backend' && !config?.apiKey)) {
+        const saveRes = await EmailService.saveConfig({
+          ...(config || {}),
+          provider: 'firebase',
+          enabled: true,
+        });
+
+        if (!saveRes?.success) {
+          throw new Error(saveRes?.error || 'Could not enable email sending.');
+        }
+      }
+
+      const periodLabel = getMedicalNotesReportPeriodLabel();
+      const subject = `Medical Notes Report - ${client?.name || 'Client'} - ${periodLabel} (${items.length} notes)`;
+      const html = buildMedicalNotesReportHtml({ client, items });
+      const text = buildMedicalNotesReportText({ client, items });
+
+      const res = await EmailService.send({
+        to,
+        subject,
+        html,
+        text,
+        meta: {
+          type: 'medical_notes_report',
+          clientId: client?.id || null,
+          clientName: client?.name || null,
+          noteCount: items.length,
+          period: medicalNotesReportPeriod,
+          periodLabel,
+        },
+      });
+
+      if (!res?.success) {
+        Alert.alert('Failed to send', res?.error || 'Could not send the medical notes report.');
+        setMedicalNotesReportSending(false);
+        return;
+      }
+
+      Alert.alert('Queued', `Medical notes report queued to send to ${to}.`);
+      setMedicalNotesReportSending(false);
+      closeMedicalNotesReportModal();
+    } catch (e) {
+      Alert.alert('Failed to send', e?.message || 'Could not send the medical notes report.');
+      setMedicalNotesReportSending(false);
+    }
+  }, [
+    medicalNotesReportSending,
+    medicalNotesReportEmail,
+    medicalNotesReportClient,
+    medicalNotesReportItems,
+    medicalNotesReportPeriod,
+    medicalNotesReportFromDate,
+    medicalNotesReportToDate,
+    selectedClient,
+    closeMedicalNotesReportModal,
+  ]);
 
   const sanitizeContactValue = (value) => {
     if (!value && value !== 0) return '';
@@ -191,12 +603,6 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
     return candidates.find(Boolean) || null;
   };
 
-  const offlineUserProfiles = useMemo(() => {
-    if (Array.isArray(offlineUsers)) return offlineUsers;
-    if (offlineUsers && Array.isArray(offlineUsers.users)) return offlineUsers.users;
-    return [];
-  }, []);
-
   const [firebaseUsers, setFirebaseUsers] = useState([]);
   
   // Fetch users from Firebase to get updated profile photos
@@ -217,31 +623,6 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
     
     fetchFirebaseUsers();
   }, []);
-
-  const offlineUserLookups = useMemo(() => {
-    // Merge offline and Firebase users, prioritizing Firebase data
-    const mergedUsers = [...offlineUserProfiles];
-    
-    firebaseUsers.forEach(fbUser => {
-      const existingIndex = mergedUsers.findIndex(u => 
-        String(u._id?.$oid || u.id || u._id) === String(fbUser.id)
-      );
-      
-      if (existingIndex >= 0) {
-        // Update existing user with Firebase data
-        mergedUsers[existingIndex] = {
-          ...mergedUsers[existingIndex],
-          ...fbUser,
-          profilePhoto: fbUser.profilePhoto || fbUser.photoUrl || mergedUsers[existingIndex].profilePhoto,
-        };
-      } else {
-        // Add new Firebase user
-        mergedUsers.push(fbUser);
-      }
-    });
-    
-    return buildUserLookups(mergedUsers);
-  }, [offlineUserProfiles, firebaseUsers]);
 
   // Build clients list from completed appointments - load on focus
   useFocusEffect(
@@ -361,14 +742,8 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
       return false;
     };
 
-    // Merge offline + Firebase users, preferring Firebase values when IDs match.
+    // Build from Firebase users only (offline JSON exports are not included in EAS cloud builds).
     const mergedById = new Map();
-    const offlineList = Array.isArray(offlineUserProfiles) ? offlineUserProfiles : [];
-    offlineList.forEach((u, idx) => {
-      if (!u || !isClientUser(u)) return;
-      const id = getUserId(u, idx);
-      mergedById.set(id, { ...u });
-    });
     (Array.isArray(firebaseUsers) ? firebaseUsers : []).forEach((u, idx) => {
       if (!u || !isClientUser(u)) return;
       const id = getUserId(u, idx);
@@ -430,24 +805,200 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
       });
     });
 
-    // Enrich with appointment counts (not used to decide inclusion)
+    // Attach related appointments + derive medical notes for the Client Details modal.
+    // (Previously `medicalNotes` and `completedAppointments` stayed empty, so the modal showed no notes.)
+    const normalizeId = (value) => {
+      if (value === null || value === undefined) return null;
+      const str = String(value).trim();
+      return str ? str : null;
+    };
+    const normalizeEmailLower = (value) => {
+      const trimmed = sanitizeContactValue(value);
+      return trimmed ? String(trimmed).trim().toLowerCase() : '';
+    };
+    const normalizeNameLower = (value) => {
+      if (value === null || value === undefined) return '';
+      const str = String(value).trim().toLowerCase();
+      return str;
+    };
+
+    const clientsById = new Map();
+    const clientsByEmail = new Map();
+    const clientsByName = new Map();
     clientsMap.forEach((client) => {
-      const clientKey = String(client.id);
-      const related = allApts.filter((apt) => {
-        const aptClientId =
-          apt?.patientId ||
-          apt?.clientId ||
-          apt?.userId ||
-          apt?.patient?.id ||
-          apt?.client?.id ||
-          null;
-        return aptClientId !== null && String(aptClientId) === clientKey;
-      });
-      client.appointments.completed = related.filter((a) => String(a?.status).toLowerCase() === 'completed').length;
+      const idKey = normalizeId(client?.id);
+      if (idKey) clientsById.set(idKey, client);
+      const emailKey = normalizeEmailLower(client?.email);
+      if (emailKey) clientsByEmail.set(emailKey, client);
+      const nameKey = normalizeNameLower(client?.name);
+      if (nameKey) clientsByName.set(nameKey, client);
+    });
+
+    const findClientForAppointment = (apt) => {
+      if (!apt) return null;
+      const idCandidates = [
+        apt?.patientId,
+        apt?.clientId,
+        apt?.userId,
+        apt?.patient?.id,
+        apt?.client?.id,
+        apt?.patient?._id,
+        apt?.client?._id,
+      ]
+        .map(normalizeId)
+        .filter(Boolean);
+
+      for (const idCandidate of idCandidates) {
+        const matched = clientsById.get(idCandidate);
+        if (matched) return matched;
+      }
+
+      const emailCandidates = [
+        apt?.patientEmail,
+        apt?.clientEmail,
+        apt?.email,
+        apt?.patient?.email,
+        apt?.client?.email,
+      ]
+        .map(normalizeEmailLower)
+        .filter(Boolean);
+      for (const emailCandidate of emailCandidates) {
+        const matched = clientsByEmail.get(emailCandidate);
+        if (matched) return matched;
+      }
+
+      const nameCandidates = [apt?.patientName, apt?.clientName, apt?.name]
+        .map(normalizeNameLower)
+        .filter(Boolean);
+      for (const nameCandidate of nameCandidates) {
+        const matched = clientsByName.get(nameCandidate);
+        if (matched) return matched;
+      }
+
+      return null;
+    };
+
+    // First, attach every appointment to its client.
+    (Array.isArray(allApts) ? allApts : []).forEach((apt) => {
+      const client = findClientForAppointment(apt);
+      if (!client) return;
+      client.completedAppointments = Array.isArray(client.completedAppointments) ? client.completedAppointments : [];
+      client.completedAppointments.push(apt);
+    });
+
+    // Then compute counts + nurse medical notes from completed appointments.
+    const pickFirstText = (values) => {
+      const normalizeVal = (val) => {
+        if (val === null || val === undefined) return '';
+        if (Array.isArray(val)) {
+          const inner = val
+            .map((v) => (v === null || v === undefined ? '' : String(v).trim()))
+            .find((t) => Boolean(t));
+          return inner || '';
+        }
+        if (typeof val === 'object') {
+          const candidate = val.text ?? val.body ?? val.note ?? val.value ?? '';
+          return candidate === null || candidate === undefined ? '' : String(candidate).trim();
+        }
+        return String(val).trim();
+      };
+      return (values || []).map(normalizeVal).find((t) => Boolean(t)) || '';
+    };
+
+    const resolveNurseDisplayName = (apt) => {
+      const fromObj = (obj) => {
+        if (!obj || typeof obj !== 'object') return '';
+        return (
+          getNurseName(obj) ||
+          obj.fullName ||
+          obj.name ||
+          obj.nurseName ||
+          ''
+        );
+      };
+      return (
+        String(apt?.nurseName || '').trim() ||
+        String(apt?.assignedNurseName || '').trim() ||
+        fromObj(apt?.assignedNurse) ||
+        fromObj(apt?.nurse) ||
+        ''
+      );
+    };
+
+    clientsMap.forEach((client) => {
+      const related = Array.isArray(client.completedAppointments) ? client.completedAppointments : [];
+
+      client.appointments.completed = related.filter((a) => String(a?.status || '').toLowerCase() === 'completed').length;
       client.appointments.upcoming = related.filter((a) => {
         const s = String(a?.status || '').toLowerCase();
         return s && s !== 'completed' && s !== 'cancelled' && s !== 'canceled' && s !== 'declined';
       }).length;
+
+      const completed = related.filter((a) => String(a?.status || '').toLowerCase() === 'completed');
+      const notes = [];
+
+      const normalizePhotoUrls = (raw) => {
+        if (!raw) return [];
+        const arr = Array.isArray(raw) ? raw : [raw];
+        return arr
+          .map((p) => {
+            if (typeof p === 'string') return p.trim();
+            if (p && typeof p === 'object') {
+              const candidate = p.url || p.uri || p.downloadURL || p.downloadUrl;
+              return candidate ? String(candidate).trim() : '';
+            }
+            return '';
+          })
+          .filter((u) => typeof u === 'string' && u.length > 0)
+          .filter((u) => /^https?:\/\//i.test(u));
+      };
+
+      completed.forEach((apt, idx) => {
+        const text = pickFirstText([
+          apt?.nurseNotes,
+          apt?.completionNotes,
+          apt?.lastCompletionNotes,
+        ]);
+        if (!text) return;
+
+        const nurseName = resolveNurseDisplayName(apt) || 'Assigned Nurse';
+        const dateCandidate =
+          apt?.completedAt ||
+          apt?.actualEndTime ||
+          apt?.updatedAt ||
+          apt?.date ||
+          apt?.scheduledDate ||
+          null;
+
+        notes.push({
+          id: apt?.id || apt?._id || apt?.appointmentId || `apt-note-${client.id}-${idx}`,
+          date: dateCandidate,
+          nurseName,
+          appointmentType: apt?.service || apt?.serviceType || apt?.appointmentType || '',
+          notes: String(text).trim(),
+          photoUrls: normalizePhotoUrls(
+            apt?.nurseNotePhotos ||
+              apt?.shiftDetails?.nurseNotePhotos ||
+              apt?.shift?.nurseNotePhotos ||
+              apt?.activeShift?.nurseNotePhotos ||
+              null
+          ),
+        });
+      });
+
+      client.medicalNotes = notes;
+
+      // Keep most recent appointments first for modal rendering.
+      client.completedAppointments = related.sort((a, b) => {
+        const aDate = a?.date || a?.scheduledDate || a?.createdAt || a?.updatedAt || a?.completedAt || null;
+        const bDate = b?.date || b?.scheduledDate || b?.createdAt || b?.updatedAt || b?.completedAt || null;
+        const aMs = aDate ? Date.parse(aDate) : 0;
+        const bMs = bDate ? Date.parse(bDate) : 0;
+        if (!Number.isFinite(aMs) && !Number.isFinite(bMs)) return 0;
+        if (!Number.isFinite(aMs)) return 1;
+        if (!Number.isFinite(bMs)) return -1;
+        return bMs - aMs;
+      });
     });
 
     // Attach invoices for each client by id/email/name match
@@ -687,6 +1238,7 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
     
     // Close the client details modal before navigating
     setClientDetailsModalVisible(false);
+    closeNotePhotoPreview();
     
     try {
       // First, try to fetch existing invoice for this client from InvoiceService
@@ -952,17 +1504,16 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
 
       <View style={styles.content}>
         <ScrollView style={styles.scrollContent} showsVerticalScrollIndicator={false}>
-          {clients.length === 0 ? (
+          {displayedClients.length === 0 ? (
             <View style={styles.emptyState}>
               <MaterialCommunityIcons name="account-group" size={80} color={COLORS.border} />
-              <Text style={styles.emptyTitle}>No Subscribed Clients</Text>
               <Text style={styles.emptyText}>
-                Subscribed clients will appear here
+                {normalizedSearchQuery ? 'No matching clients found' : 'Subscribed clients will appear here'}
               </Text>
             </View>
           ) : (
             <View style={styles.listContainer}>
-              {clients.map((client, index) => {
+              {displayedClients.map((client, index) => {
                 const photoUri = client.profilePhoto || client.profileImage || client.photoUrl || client.avatar || client.photo || client.imageUrl || client.photoURL;
                 
                 return (
@@ -1150,7 +1701,11 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
         visible={clientDetailsModalVisible}
         animationType="slide"
         transparent={true}
-        onRequestClose={() => setClientDetailsModalVisible(false)}
+        onRequestClose={() => {
+          setClientDetailsModalVisible(false);
+          closeNotePhotoPreview();
+          closeMedicalNotesReportModal();
+        }}
       >
         <View style={styles.modalOverlay}>
           <View style={styles.detailsModalContainer}>
@@ -1158,11 +1713,351 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
               <Text style={styles.modalTitle}>Client Details</Text>
               <TouchableWeb
                 style={styles.closeButton}
-                onPress={() => setClientDetailsModalVisible(false)}
+                onPress={() => {
+                  setClientDetailsModalVisible(false);
+                  closeNotePhotoPreview();
+                  closeMedicalNotesReportModal();
+                }}
               >
                 <MaterialCommunityIcons name="close" size={24} color={COLORS.text} />
               </TouchableWeb>
             </View>
+
+            {notePhotoPreviewVisible && notePhotoPreviewUri ? (
+              <View style={styles.notePhotoPreviewOverlayInModal}>
+                <TouchableOpacity
+                  style={styles.notePhotoPreviewOverlayTapArea}
+                  activeOpacity={1}
+                  onPress={closeNotePhotoPreview}
+                >
+                  <TouchableOpacity
+                    activeOpacity={1}
+                    style={styles.notePhotoPreviewImageFrame}
+                    onPress={() => {}}
+                  >
+                    <Image
+                      source={{ uri: notePhotoPreviewUri }}
+                      style={styles.notePhotoPreviewImage}
+                      resizeMode="contain"
+                    />
+                  </TouchableOpacity>
+                </TouchableOpacity>
+              </View>
+            ) : null}
+
+            {medicalNotesReportModalVisible ? (
+              <View style={styles.medicalNotesReportOverlayInModal}>
+                <TouchableOpacity
+                  style={styles.medicalNotesReportOverlayTapArea}
+                  activeOpacity={1}
+                  onPress={() => {
+                    Keyboard.dismiss();
+                    closeMedicalNotesReportModal();
+                  }}
+                >
+                  <KeyboardAvoidingView
+                    style={styles.medicalNotesReportKav}
+                    behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+                    keyboardVerticalOffset={Platform.OS === 'ios' ? 80 : 0}
+                  >
+                    <TouchableOpacity
+                      activeOpacity={1}
+                      style={[styles.medicalNotesReportModal, { height: medicalNotesReportModalHeight }]}
+                      onPress={() => Keyboard.dismiss()}
+                    >
+                      <View style={styles.medicalNotesReportContent}>
+                        <ScrollView
+                          style={styles.medicalNotesReportScroll}
+                          showsVerticalScrollIndicator={false}
+                          keyboardShouldPersistTaps="handled"
+                          contentContainerStyle={styles.medicalNotesReportScrollContent}
+                        >
+                          <Text style={styles.medicalNotesReportTitle}>Email Medical Notes Report</Text>
+                          <Text style={styles.medicalNotesReportSubtitle}>
+                            Enter the recipient email address.
+                          </Text>
+
+                          <View style={styles.medicalNotesReportPeriodRow}>
+                            <TouchableWeb
+                              style={styles.medicalNotesReportPeriodPill}
+                              onPress={() => setMedicalNotesReportPeriod('all')}
+                              activeOpacity={0.85}
+                            >
+                              {medicalNotesReportPeriod === 'all' ? (
+                                <LinearGradient
+                                  colors={GRADIENTS.header}
+                                  start={{ x: 0, y: 0 }}
+                                  end={{ x: 0, y: 1 }}
+                                  style={styles.medicalNotesReportPeriodPillGradient}
+                                >
+                                  <Text style={styles.medicalNotesReportPeriodPillTextActive}>All</Text>
+                                </LinearGradient>
+                              ) : (
+                                <View style={styles.medicalNotesReportPeriodPillInner}>
+                                  <Text style={styles.medicalNotesReportPeriodPillText}>All</Text>
+                                </View>
+                              )}
+                            </TouchableWeb>
+
+                            <TouchableWeb
+                              style={styles.medicalNotesReportPeriodPill}
+                              onPress={() => setMedicalNotesReportPeriod('7d')}
+                              activeOpacity={0.85}
+                            >
+                              {medicalNotesReportPeriod === '7d' ? (
+                                <LinearGradient
+                                  colors={GRADIENTS.header}
+                                  start={{ x: 0, y: 0 }}
+                                  end={{ x: 0, y: 1 }}
+                                  style={styles.medicalNotesReportPeriodPillGradient}
+                                >
+                                  <Text style={styles.medicalNotesReportPeriodPillTextActive}>7d</Text>
+                                </LinearGradient>
+                              ) : (
+                                <View style={styles.medicalNotesReportPeriodPillInner}>
+                                  <Text style={styles.medicalNotesReportPeriodPillText}>7d</Text>
+                                </View>
+                              )}
+                            </TouchableWeb>
+
+                            <TouchableWeb
+                              style={styles.medicalNotesReportPeriodPill}
+                              onPress={() => setMedicalNotesReportPeriod('30d')}
+                              activeOpacity={0.85}
+                            >
+                              {medicalNotesReportPeriod === '30d' ? (
+                                <LinearGradient
+                                  colors={GRADIENTS.header}
+                                  start={{ x: 0, y: 0 }}
+                                  end={{ x: 0, y: 1 }}
+                                  style={styles.medicalNotesReportPeriodPillGradient}
+                                >
+                                  <Text style={styles.medicalNotesReportPeriodPillTextActive}>30d</Text>
+                                </LinearGradient>
+                              ) : (
+                                <View style={styles.medicalNotesReportPeriodPillInner}>
+                                  <Text style={styles.medicalNotesReportPeriodPillText}>30d</Text>
+                                </View>
+                              )}
+                            </TouchableWeb>
+
+                            <TouchableWeb
+                              style={styles.medicalNotesReportPeriodPill}
+                              onPress={() => setMedicalNotesReportPeriod('custom')}
+                              activeOpacity={0.85}
+                            >
+                              {medicalNotesReportPeriod === 'custom' ? (
+                                <LinearGradient
+                                  colors={GRADIENTS.header}
+                                  start={{ x: 0, y: 0 }}
+                                  end={{ x: 0, y: 1 }}
+                                  style={styles.medicalNotesReportPeriodPillGradient}
+                                >
+                                  <Text style={styles.medicalNotesReportPeriodPillTextActive}>Custom</Text>
+                                </LinearGradient>
+                              ) : (
+                                <View style={styles.medicalNotesReportPeriodPillInner}>
+                                  <Text style={styles.medicalNotesReportPeriodPillText}>Custom</Text>
+                                </View>
+                              )}
+                            </TouchableWeb>
+                          </View>
+
+                          {medicalNotesReportPeriod === 'custom' ? (
+                            <View style={styles.medicalNotesReportRangeColumns}>
+                              <View style={styles.medicalNotesReportRangeColumn}>
+                                <Text style={styles.medicalNotesReportRangeLabel}>From</Text>
+                                <TouchableWeb
+                                  style={styles.medicalNotesReportRangeButton}
+                                  onPress={() => setMedicalNotesReportShowFromPicker(true)}
+                                  activeOpacity={0.85}
+                                >
+                                  <Text style={styles.medicalNotesReportRangeButtonText}>
+                                    {medicalNotesReportFromDate
+                                      ? formatReportDateOnly(medicalNotesReportFromDate)
+                                      : 'Select date'}
+                                  </Text>
+                                </TouchableWeb>
+                              </View>
+
+                              <View style={styles.medicalNotesReportRangeColumn}>
+                                <Text style={styles.medicalNotesReportRangeLabel}>To</Text>
+                                <TouchableWeb
+                                  style={styles.medicalNotesReportRangeButton}
+                                  onPress={() => setMedicalNotesReportShowToPicker(true)}
+                                  activeOpacity={0.85}
+                                >
+                                  <Text style={styles.medicalNotesReportRangeButtonText}>
+                                    {medicalNotesReportToDate
+                                      ? formatReportDateOnly(medicalNotesReportToDate)
+                                      : 'Select date'}
+                                  </Text>
+                                </TouchableWeb>
+                              </View>
+                            </View>
+                          ) : null}
+
+                          <TextInput
+                            style={[styles.input, styles.medicalNotesReportEmailInput]}
+                            placeholder="Recipient email"
+                            value={medicalNotesReportEmail}
+                            onChangeText={setMedicalNotesReportEmail}
+                            autoCapitalize="none"
+                            keyboardType="email-address"
+                            placeholderTextColor={COLORS.textLight}
+                            returnKeyType="done"
+                            onSubmitEditing={() => Keyboard.dismiss()}
+                          />
+
+                          <Text style={styles.medicalNotesReportHint}>
+                            Notes included: {getMedicalNotesReportItemsForPeriod(medicalNotesReportItems).length}
+                          </Text>
+                        </ScrollView>
+
+                        <View style={styles.medicalNotesReportFooter}>
+                          <View style={styles.medicalNotesReportActions}>
+                            <TouchableWeb
+                              style={styles.cancelButton}
+                              onPress={closeMedicalNotesReportModal}
+                              activeOpacity={0.8}
+                              disabled={medicalNotesReportSending}
+                            >
+                              <Text style={styles.cancelButtonText}>Cancel</Text>
+                            </TouchableWeb>
+
+                            <TouchableWeb
+                              style={styles.medicalNotesReportSendButton}
+                              onPress={sendMedicalNotesReport}
+                              activeOpacity={0.8}
+                              disabled={medicalNotesReportSending}
+                            >
+                              <LinearGradient
+                                colors={GRADIENTS.header}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 0, y: 1 }}
+                                style={styles.medicalNotesReportSendButtonGradient}
+                              >
+                                {medicalNotesReportSending ? (
+                                  <ActivityIndicator color={COLORS.white} />
+                                ) : (
+                                  <Text style={styles.medicalNotesReportSendButtonText}>Send</Text>
+                                )}
+                              </LinearGradient>
+                            </TouchableWeb>
+                          </View>
+                        </View>
+                      </View>
+
+                      {/* Android pickers (native modal) */}
+                      {medicalNotesReportShowFromPicker && Platform.OS === 'android' ? (
+                        <DateTimePicker
+                          value={medicalNotesReportFromDate || new Date()}
+                          mode="date"
+                          display="default"
+                          onChange={(event, date) => {
+                            setMedicalNotesReportShowFromPicker(false);
+                            if (event?.type === 'dismissed') return;
+                            if (date) setMedicalNotesReportFromDate(date);
+                          }}
+                        />
+                      ) : null}
+
+                      {medicalNotesReportShowToPicker && Platform.OS === 'android' ? (
+                        <DateTimePicker
+                          value={medicalNotesReportToDate || new Date()}
+                          mode="date"
+                          display="default"
+                          onChange={(event, date) => {
+                            setMedicalNotesReportShowToPicker(false);
+                            if (event?.type === 'dismissed') return;
+                            if (date) setMedicalNotesReportToDate(date);
+                          }}
+                        />
+                      ) : null}
+
+                      {/* iOS pickers styled like other screens */}
+                      {medicalNotesReportShowFromPicker && Platform.OS === 'ios' ? (
+                        <View style={styles.medicalNotesReportPickerOverlay}>
+                          <View style={styles.medicalNotesReportPickerContainer}>
+                            <View style={styles.medicalNotesReportPickerHeader}>
+                              <Text style={styles.medicalNotesReportPickerTitle}>Select From Date</Text>
+                              <TouchableWeb
+                                onPress={() => setMedicalNotesReportShowFromPicker(false)}
+                                style={styles.medicalNotesReportPickerCloseButton}
+                              >
+                                <MaterialCommunityIcons name="close" size={22} color={COLORS.text} />
+                              </TouchableWeb>
+                            </View>
+                            <DateTimePicker
+                              value={medicalNotesReportFromDate || new Date()}
+                              mode="date"
+                              display="spinner"
+                              onChange={(event, date) => {
+                                if (event?.type === 'dismissed') return;
+                                if (date) setMedicalNotesReportFromDate(date);
+                              }}
+                              textColor={COLORS.text}
+                            />
+                            <TouchableWeb
+                              style={styles.medicalNotesReportPickerConfirmButton}
+                              onPress={() => setMedicalNotesReportShowFromPicker(false)}
+                            >
+                              <LinearGradient
+                                colors={GRADIENTS.header}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 0, y: 1 }}
+                                style={styles.medicalNotesReportPickerConfirmGradient}
+                              >
+                                <Text style={styles.medicalNotesReportPickerConfirmText}>Done</Text>
+                              </LinearGradient>
+                            </TouchableWeb>
+                          </View>
+                        </View>
+                      ) : null}
+
+                      {medicalNotesReportShowToPicker && Platform.OS === 'ios' ? (
+                        <View style={styles.medicalNotesReportPickerOverlay}>
+                          <View style={styles.medicalNotesReportPickerContainer}>
+                            <View style={styles.medicalNotesReportPickerHeader}>
+                              <Text style={styles.medicalNotesReportPickerTitle}>Select To Date</Text>
+                              <TouchableWeb
+                                onPress={() => setMedicalNotesReportShowToPicker(false)}
+                                style={styles.medicalNotesReportPickerCloseButton}
+                              >
+                                <MaterialCommunityIcons name="close" size={22} color={COLORS.text} />
+                              </TouchableWeb>
+                            </View>
+                            <DateTimePicker
+                              value={medicalNotesReportToDate || new Date()}
+                              mode="date"
+                              display="spinner"
+                              onChange={(event, date) => {
+                                if (event?.type === 'dismissed') return;
+                                if (date) setMedicalNotesReportToDate(date);
+                              }}
+                              textColor={COLORS.text}
+                            />
+                            <TouchableWeb
+                              style={styles.medicalNotesReportPickerConfirmButton}
+                              onPress={() => setMedicalNotesReportShowToPicker(false)}
+                            >
+                              <LinearGradient
+                                colors={GRADIENTS.header}
+                                start={{ x: 0, y: 0 }}
+                                end={{ x: 0, y: 1 }}
+                                style={styles.medicalNotesReportPickerConfirmGradient}
+                              >
+                                <Text style={styles.medicalNotesReportPickerConfirmText}>Done</Text>
+                              </LinearGradient>
+                            </TouchableWeb>
+                          </View>
+                        </View>
+                      ) : null}
+                    </TouchableOpacity>
+                  </KeyboardAvoidingView>
+                </TouchableOpacity>
+              </View>
+            ) : null}
 
             <ScrollView style={styles.detailsModalContent} showsVerticalScrollIndicator={false}>
               {selectedClient && (
@@ -1243,6 +2138,7 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
                                   style={styles.invoiceCard}
                                   onPress={() => {
                                     setClientDetailsModalVisible(false);
+                                    closeNotePhotoPreview();
                                     setTimeout(() => {
                                       navigation.navigate('InvoiceDisplay', {
                                         invoiceData: invoice.invoiceRecord,
@@ -1363,29 +2259,72 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
                         title: note?.nurseName || 'Assigned Nurse',
                         subtitle: note?.appointmentType || '',
                         body: note?.notes || '',
+                        photoUrls: Array.isArray(note?.photoUrls) ? note.photoUrls : [],
                       }));
 
                       const patientNoteItems = (selectedClient.completedAppointments || []).map((apt, index) => {
-                        const candidates = [
+                        const pickFirstNonEmptyText = (values) => {
+                          const normalizeVal = (val) => {
+                            if (val === null || val === undefined) return '';
+                            if (Array.isArray(val)) {
+                              const inner = val
+                                .map((v) => {
+                                  if (v === null || v === undefined) return '';
+                                  if (typeof v === 'string' || typeof v === 'number') return String(v).trim();
+                                  if (typeof v === 'object') {
+                                    const candidate = v.text ?? v.body ?? v.note ?? v.value ?? '';
+                                    return candidate === null || candidate === undefined ? '' : String(candidate).trim();
+                                  }
+                                  return '';
+                                })
+                                .find((t) => Boolean(t));
+                              return inner || '';
+                            }
+                            if (typeof val === 'object') {
+                              const candidate = val.text ?? val.body ?? val.note ?? val.value ?? '';
+                              return candidate === null || candidate === undefined ? '' : String(candidate).trim();
+                            }
+                            return String(val).trim();
+                          };
+
+                          const found = (values || []).map(normalizeVal).find((text) => Boolean(text));
+                          return found || '';
+                        };
+
+                        const patientBookingNotesText = pickFirstNonEmptyText([
                           apt?.patientNotes,
+                          apt?.patientNote,
                           apt?.bookingNotes,
+                          apt?.bookingNote,
                           apt?.clientNotes,
                           apt?.specialInstructions,
-                        ];
-                        const raw = candidates.find((value) => {
-                          if (value === null || value === undefined) return false;
-                          const text = String(value).trim();
-                          return Boolean(text);
-                        });
-                        const legacyNotes = (apt?.notes && String(apt.notes).trim()) || '';
-                        const hasNurseNotes = Boolean(
-                          (apt?.nurseNotes && String(apt.nurseNotes).trim().length) ||
-                          (apt?.completionNotes && String(apt.completionNotes).trim().length) ||
-                          (apt?.lastCompletionNotes && String(apt.lastCompletionNotes).trim().length)
-                        );
-                        const text = raw === null || raw === undefined
-                          ? (!hasNurseNotes ? legacyNotes : '')
-                          : String(raw).trim();
+                          apt?.instructions,
+                          apt?.patient?.notes,
+                          apt?.patient?.patientNotes,
+                          apt?.client?.notes,
+                          apt?.client?.patientNotes,
+                          apt?.clientSnapshot?.notes,
+                          apt?.clientSnapshot?.patientNotes,
+                          apt?.patientSnapshot?.notes,
+                          apt?.patientSnapshot?.patientNotes,
+                          apt?.clientData?.notes,
+                          apt?.clientData?.patientNotes,
+                          apt?.patientData?.notes,
+                          apt?.patientData?.patientNotes,
+                        ]);
+
+                        const legacyNotes = pickFirstNonEmptyText([apt?.notes]);
+                        const nurseNotesText = pickFirstNonEmptyText([
+                          apt?.nurseNotes,
+                          apt?.completionNotes,
+                          apt?.lastCompletionNotes,
+                        ]);
+
+                        // If legacy `notes` is actually the same as the nurse note, treat it as nurse-side and don't show it under Patient Notes.
+                        const legacyLooksLikeNurseNotes =
+                          Boolean(legacyNotes && nurseNotesText) && legacyNotes === nurseNotesText;
+
+                        const text = patientBookingNotesText || (legacyLooksLikeNurseNotes ? '' : legacyNotes);
 
                         if (!text) return null;
 
@@ -1427,21 +2366,66 @@ export default function AdminClientsScreen({ navigation, route, isEmbedded = fal
                         });
                       });
 
+                      const toEpochMs = (value) => {
+                        if (!value) return 0;
+
+                        if (value instanceof Date) {
+                          return Number.isNaN(value.getTime()) ? 0 : value.getTime();
+                        }
+
+                        if (typeof value === 'object') {
+                          if (typeof value.toDate === 'function') {
+                            const d = value.toDate();
+                            return d instanceof Date && !Number.isNaN(d.getTime()) ? d.getTime() : 0;
+                          }
+
+                          const seconds =
+                            typeof value.seconds === 'number'
+                              ? value.seconds
+                              : typeof value._seconds === 'number'
+                                ? value._seconds
+                                : null;
+                          if (typeof seconds === 'number' && Number.isFinite(seconds)) {
+                            return seconds * 1000;
+                          }
+                        }
+
+                        if (typeof value === 'number' && Number.isFinite(value)) {
+                          return value < 1e12 ? value * 1000 : value;
+                        }
+
+                        if (typeof value === 'string') {
+                          const trimmed = value.trim();
+                          if (!trimmed) return 0;
+                          const asNumber = Number(trimmed);
+                          if (Number.isFinite(asNumber)) {
+                            return asNumber < 1e12 ? asNumber * 1000 : asNumber;
+                          }
+                          const parsed = Date.parse(trimmed);
+                          return Number.isFinite(parsed) ? parsed : 0;
+                        }
+
+                        const parsed = Date.parse(String(value));
+                        return Number.isFinite(parsed) ? parsed : 0;
+                      };
+
                       const allNoteItems = [...nurseNoteItems, ...dedupedPatientNotes].sort((a, b) => {
-                        const aTime = a?.date ? Date.parse(a.date) : 0;
-                        const bTime = b?.date ? Date.parse(b.date) : 0;
-                        if (!Number.isFinite(aTime) && !Number.isFinite(bTime)) return 0;
-                        if (!Number.isFinite(aTime)) return 1;
-                        if (!Number.isFinite(bTime)) return -1;
+                        const aTime = toEpochMs(a?.date);
+                        const bTime = toEpochMs(b?.date);
                         return bTime - aTime;
                       });
 
                       return (
                         <>
-                          <Text style={styles.sectionTitle}>Medical Notes ({allNoteItems.length})</Text>
+                          <View style={styles.medicalNotesHeaderRow}>
+                            <Text style={[styles.sectionTitle, styles.medicalNotesHeaderTitle]}>
+                              Medical Notes ({allNoteItems.length})
+                            </Text>
+                          </View>
                           <NotesAccordionList
                             items={allNoteItems}
                             emptyText="No medical notes available yet"
+                            onPhotoPress={openNotePhotoPreview}
                           />
                           {allNoteItems.length === 0 && (
                       <View style={styles.noNotesContainer}>
@@ -1979,6 +2963,259 @@ const styles = StyleSheet.create({
     shadowRadius: 20,
     elevation: 10,
     flexDirection: 'column',
+    position: 'relative',
+  },
+  medicalNotesHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 10,
+    marginBottom: 12,
+  },
+  medicalNotesHeaderTitle: {
+    flex: 1,
+    marginBottom: 0,
+  },
+  medicalNotesReportOverlayInModal: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    zIndex: 10000,
+    elevation: 10000,
+  },
+  medicalNotesReportOverlayTapArea: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  medicalNotesReportKav: {
+    flex: 1,
+    width: '100%',
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  medicalNotesReportModal: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    width: '100%',
+    maxWidth: 380,
+    minHeight: 340,
+    padding: 18,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    elevation: 10,
+  },
+  medicalNotesReportContent: {
+    flex: 1,
+  },
+  medicalNotesReportScroll: {
+    flex: 1,
+  },
+  medicalNotesReportScrollContent: {
+    paddingBottom: 16,
+  },
+  medicalNotesReportTitle: {
+    fontSize: 16,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.text,
+    marginBottom: 6,
+  },
+  medicalNotesReportSubtitle: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textLight,
+    marginBottom: 12,
+  },
+  medicalNotesReportPeriodRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginBottom: 16,
+  },
+  medicalNotesReportPeriodPill: {
+    borderRadius: 999,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    overflow: 'hidden',
+  },
+  medicalNotesReportPeriodPillInner: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    backgroundColor: COLORS.lightGray,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  medicalNotesReportPeriodPillGradient: {
+    paddingVertical: 6,
+    paddingHorizontal: 10,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  medicalNotesReportPeriodPillText: {
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+  },
+  medicalNotesReportPeriodPillTextActive: {
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.white,
+  },
+  medicalNotesReportRangeColumns: {
+    flexDirection: 'row',
+    gap: 10,
+    marginBottom: 16,
+  },
+  medicalNotesReportRangeColumn: {
+    flex: 1,
+    gap: 6,
+  },
+  medicalNotesReportRangeLabel: {
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.textLight,
+  },
+  medicalNotesReportRangeButton: {
+    backgroundColor: COLORS.lightGray,
+    borderRadius: 12,
+    paddingVertical: 12,
+    paddingHorizontal: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  medicalNotesReportRangeButtonText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+  },
+  medicalNotesReportHint: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.textLight,
+    marginTop: 2,
+  },
+  medicalNotesReportEmailInput: {
+    marginTop: 2,
+  },
+  medicalNotesReportFooter: {
+    paddingTop: 12,
+  },
+  medicalNotesReportActions: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 0,
+  },
+  medicalNotesReportSendButton: {
+    flex: 1,
+    borderRadius: 12,
+    overflow: 'hidden',
+    alignItems: 'center',
+  },
+  medicalNotesReportSendButtonGradient: {
+    width: '100%',
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  medicalNotesReportSendButtonText: {
+    fontSize: 16,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.white,
+  },
+
+  medicalNotesReportPickerOverlay: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+    zIndex: 20000,
+    elevation: 20000,
+  },
+  medicalNotesReportPickerContainer: {
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    width: '100%',
+    maxWidth: 380,
+    padding: 14,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 10 },
+    shadowOpacity: 0.25,
+    shadowRadius: 20,
+    elevation: 12,
+  },
+  medicalNotesReportPickerHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    marginBottom: 10,
+  },
+  medicalNotesReportPickerTitle: {
+    fontSize: 16,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.text,
+  },
+  medicalNotesReportPickerCloseButton: {
+    width: 38,
+    height: 38,
+    borderRadius: 19,
+    backgroundColor: COLORS.lightGray,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  medicalNotesReportPickerConfirmButton: {
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginTop: 10,
+  },
+  medicalNotesReportPickerConfirmGradient: {
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  medicalNotesReportPickerConfirmText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.white,
+  },
+  notePhotoPreviewOverlayInModal: {
+    position: 'absolute',
+    left: 0,
+    right: 0,
+    top: 0,
+    bottom: 0,
+    zIndex: 9999,
+    elevation: 9999,
+  },
+  notePhotoPreviewOverlayTapArea: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.85)',
+    alignItems: 'center',
+    justifyContent: 'center',
+    padding: 16,
+  },
+  notePhotoPreviewImageFrame: {
+    width: '100%',
+    height: '75%',
+    maxWidth: 360,
+    borderRadius: 12,
+    overflow: 'hidden',
+    backgroundColor: 'rgba(0,0,0,0.2)',
+  },
+  notePhotoPreviewImage: {
+    width: '100%',
+    height: '100%',
   },
   detailsModalContent: {
     padding: 20,

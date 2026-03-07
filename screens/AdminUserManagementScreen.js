@@ -1,6 +1,6 @@
 import TouchableWeb from "../components/TouchableWeb";
 import React, { useState, useEffect, useRef } from 'react';
-import { View, Text, StyleSheet, Image } from 'react-native';
+import { View, Text, StyleSheet, Image, TextInput } from 'react-native';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
@@ -13,7 +13,14 @@ import AdminAnalyticsScreen from './AdminAnalyticsScreen';
 export default function AdminUserManagementScreen({ navigation, route }) {
   const insets = useSafeAreaInsets();
   const [activeFilter, setActiveFilter] = useState('clients');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [showSearch, setShowSearch] = useState(false);
   const addStaffFunctionRef = useRef(null);
+  const searchInputRef = useRef(null);
+  const handleCloseSearch = () => {
+    setShowSearch(false);
+    setSearchQuery('');
+  };
 
   // Get client and staff counts (you can enhance this with real data)
   const [clientCount, setClientCount] = useState(0);
@@ -23,6 +30,16 @@ export default function AdminUserManagementScreen({ navigation, route }) {
   const handleSetAddStaffFunction = (addFunction) => {
     addStaffFunctionRef.current = addFunction;
   };
+
+  useEffect(() => {
+    if (!showSearch) return;
+    const t = setTimeout(() => {
+      if (searchInputRef?.current?.focus) {
+        searchInputRef.current.focus();
+      }
+    }, 50);
+    return () => clearTimeout(t);
+  }, [showSearch]);
 
   // Filter Pills Component
   const FilterPills = () => (
@@ -102,7 +119,14 @@ export default function AdminUserManagementScreen({ navigation, route }) {
         style={[styles.header, { paddingTop: insets.top + 20 }]}
       >
         <View style={styles.headerRow}>
-          <View style={{ width: 44 }} />
+          <TouchableWeb
+            style={styles.actionButton}
+            onPress={() => setShowSearch((prev) => !prev)}
+            activeOpacity={0.7}
+          >
+            <MaterialCommunityIcons name="magnify" size={24} color={COLORS.white} />
+          </TouchableWeb>
+
           <Text style={styles.welcomeText}>User Management</Text>
           {/* Add action button based on active filter */}
           {activeFilter === 'staff' ? (
@@ -121,6 +145,30 @@ export default function AdminUserManagementScreen({ navigation, route }) {
             <View style={{ width: 44 }} />
           )}
         </View>
+
+        {/* Header Search (toggled) */}
+        {showSearch && (
+          <View style={styles.searchRow}>
+            <TextInput
+              ref={searchInputRef}
+              value={searchQuery}
+              onChangeText={setSearchQuery}
+              placeholder={activeFilter === 'staff' ? 'Search staff...' : 'Search clients...'}
+              placeholderTextColor="rgba(255,255,255,0.75)"
+              style={styles.searchInput}
+              autoCapitalize="none"
+              autoCorrect={false}
+              returnKeyType="search"
+            />
+            <TouchableWeb
+              style={styles.searchCloseButton}
+              onPress={handleCloseSearch}
+              activeOpacity={0.7}
+            >
+              <MaterialCommunityIcons name="close" size={20} color={COLORS.white} />
+            </TouchableWeb>
+          </View>
+        )}
         
         {/* Filter Pills */}
         <FilterPills />
@@ -133,6 +181,7 @@ export default function AdminUserManagementScreen({ navigation, route }) {
             navigation={navigation} 
             route={route}
             isEmbedded={true}
+            searchQuery={searchQuery}
           />
         ) : (
           <AdminAnalyticsScreen 
@@ -140,6 +189,7 @@ export default function AdminUserManagementScreen({ navigation, route }) {
             route={route}
             isEmbedded={true}
             onAddPress={handleSetAddStaffFunction}
+            searchQuery={searchQuery}
           />
         )}
       </View>
@@ -185,6 +235,31 @@ const styles = StyleSheet.create({
     borderRadius: 25,
     padding: 4,
     marginHorizontal: SPACING.md,
+  },
+  searchRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginBottom: SPACING.md,
+    marginHorizontal: SPACING.md,
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderRadius: 14,
+    backgroundColor: 'rgba(255,255,255,0.12)',
+  },
+  searchInput: {
+    flex: 1,
+    fontSize: 14,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.white,
+    paddingVertical: 0,
+  },
+  searchCloseButton: {
+    width: 34,
+    height: 34,
+    borderRadius: 17,
+    alignItems: 'center',
+    justifyContent: 'center',
+    marginLeft: 8,
   },
   filterPill: {
     flex: 1,

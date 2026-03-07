@@ -29,7 +29,8 @@ export default function NurseInfoCard({
   avatarSize = 60,
   actionButton = null,
   hideSpecialty = false,
-  hideCode = false
+  hideCode = false,
+  contextType = 'admin',
 }) {
   const [showDetailsModal, setShowDetailsModal] = useState(false);
 
@@ -165,6 +166,7 @@ export default function NurseInfoCard({
         nurse={nurse}
         nursesRoster={nursesRoster}
         title={nurseName}
+        showQualificationsRequest={contextType === 'patient'}
       />
     </>
   );

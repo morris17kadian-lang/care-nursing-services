@@ -39,6 +39,12 @@ export default function InvoiceManagementScreen({ navigation }) {
   const [selectedPaymentMethod, setSelectedPaymentMethod] = useState('');
   const [invoiceToMarkPaid, setInvoiceToMarkPaid] = useState(null);
 
+  const closePaymentMethodModal = () => {
+    setPaymentMethodModalVisible(false);
+    setSelectedPaymentMethod('');
+    setInvoiceToMarkPaid(null);
+  };
+
   const coerceInvoiceDateString = (value) => {
     const parsed = InvoiceService.parseDateInput(value);
     return parsed ? InvoiceService.formatDateForInvoice(parsed) : null;
@@ -596,11 +602,13 @@ export default function InvoiceManagementScreen({ navigation }) {
       Alert.alert('Error', 'Please select a payment method');
       return;
     }
-    
-    setPaymentMethodModalVisible(false);
-    await handleStatusUpdate(invoiceToMarkPaid.invoiceId, 'Paid', selectedPaymentMethod);
-    setSelectedPaymentMethod('');
-    setInvoiceToMarkPaid(null);
+
+    const invoice = invoiceToMarkPaid;
+    const method = selectedPaymentMethod;
+    closePaymentMethodModal();
+
+    if (!invoice?.invoiceId) return;
+    await handleStatusUpdate(invoice.invoiceId, 'Paid', method);
   };
 
   const handleShareInvoice = async (invoice) => {
@@ -1033,7 +1041,7 @@ export default function InvoiceManagementScreen({ navigation }) {
                             </LinearGradient>
                           </TouchableWeb>
                           
-                          {invoice.status === 'Pending' && (
+                          {(invoice.status === 'Pending' || invoice.status === 'Overdue') && (
                             <TouchableWeb
                               style={styles.paidButton}
                               onPress={() => handleMarkAsPaid(invoice)}
@@ -1047,17 +1055,6 @@ export default function InvoiceManagementScreen({ navigation }) {
                                 <Text style={styles.paidButtonText}>Paid</Text>
                               </LinearGradient>
                             </TouchableWeb>
-                          )}
-
-                          {invoice.status === 'Paid' && (
-                            <LinearGradient
-                              colors={['#10b981', '#059669']}
-                              start={{ x: 0, y: 0 }}
-                              end={{ x: 0, y: 1 }}
-                              style={styles.paidStatusPill}
-                            >
-                              <Text style={styles.paidStatusPillText}>Paid</Text>
-                            </LinearGradient>
                           )}
                         </View>
                       </View>
@@ -1211,77 +1208,79 @@ export default function InvoiceManagementScreen({ navigation }) {
         visible={paymentMethodModalVisible}
         transparent={true}
         animationType="fade"
-        onRequestClose={() => setPaymentMethodModalVisible(false)}
+        onRequestClose={closePaymentMethodModal}
       >
         <View style={styles.paymentMethodOverlay}>
-          <TouchableWeb 
+          <TouchableOpacity
             style={styles.paymentMethodBackdrop}
             activeOpacity={1}
-            onPress={() => setPaymentMethodModalVisible(false)}
+            onPress={closePaymentMethodModal}
           />
-          <TouchableWeb 
-            activeOpacity={1}
-            onPress={(e) => e.stopPropagation()}
-          >
-            <View style={styles.paymentMethodModal}>
-              <Text style={styles.paymentMethodTitle}>Select Payment Method</Text>
-              <Text style={styles.paymentMethodSubtitle}>
-                How did the client pay for this invoice?
-              </Text>
 
-              <View style={styles.paymentMethods}>
-                {['Debit/Credit Card', 'Bank Transfer', 'Cash'].map((method) => (
+          <View style={styles.paymentMethodModal}>
+            <Text style={styles.paymentMethodTitle}>Select Payment Method</Text>
+            <Text style={styles.paymentMethodSubtitle}>
+              How did the client pay for this invoice?
+            </Text>
+
+            <View style={styles.paymentMethods}>
+              {['Debit/Credit Card', 'Bank Transfer', 'Cash'].map((method) => {
+                const isSelected = selectedPaymentMethod === method;
+                return (
                   <TouchableWeb
                     key={method}
-                    style={[
-                      styles.paymentMethodOption,
-                      selectedPaymentMethod === method && styles.paymentMethodOptionSelected
-                    ]}
+                    style={[styles.paymentMethodOption, isSelected && styles.paymentMethodOptionSelected]}
                     onPress={() => setSelectedPaymentMethod(method)}
                   >
-                    <MaterialCommunityIcons 
+                    {isSelected && (
+                      <LinearGradient
+                        colors={GRADIENTS.header}
+                        start={{ x: 0, y: 0 }}
+                        end={{ x: 0, y: 1 }}
+                        style={styles.paymentMethodOptionGradient}
+                      />
+                    )}
+                    <MaterialCommunityIcons
                       name={
-                        method === 'Debit/Credit Card' ? 'credit-card' :
-                        method === 'Bank Transfer' ? 'bank-transfer' :
-                        'cash'
+                        method === 'Debit/Credit Card'
+                          ? 'credit-card'
+                          : method === 'Bank Transfer'
+                            ? 'bank-transfer'
+                            : 'cash'
                       }
                       size={24}
-                      color={selectedPaymentMethod === method ? COLORS.white : COLORS.primary}
+                      color={isSelected ? COLORS.white : COLORS.primary}
                     />
-                    <Text style={[
-                      styles.paymentMethodText,
-                      selectedPaymentMethod === method && styles.paymentMethodTextSelected
-                    ]}>
+                    <Text style={[styles.paymentMethodText, isSelected && styles.paymentMethodTextSelected]}>
                       {method}
                     </Text>
                   </TouchableWeb>
-                ))}
-              </View>
-
-              <View style={styles.paymentMethodButtons}>
-                <TouchableWeb
-                  style={styles.paymentMethodCancelButton}
-                  onPress={() => {
-                    setPaymentMethodModalVisible(false);
-                    setSelectedPaymentMethod('');
-                  }}
-                >
-                  <Text style={styles.paymentMethodCancelText}>Cancel</Text>
-                </TouchableWeb>
-                <TouchableWeb
-                  style={[styles.paymentMethodConfirmButton, styles.paidActionButton]}
-                  onPress={confirmMarkAsPaid}
-                >
-                  <LinearGradient
-                    colors={['#10b981', '#059669']}
-                    style={[styles.paymentMethodConfirmGradient, styles.paidActionButtonGradient]}
-                  >
-                    <Text style={[styles.paymentMethodConfirmText, styles.paidActionButtonText]}>Confirm Payment</Text>
-                  </LinearGradient>
-                </TouchableWeb>
-              </View>
+                );
+              })}
             </View>
-          </TouchableWeb>
+
+            <View style={styles.paymentMethodButtons}>
+              <TouchableWeb style={styles.paymentMethodCancelButton} onPress={closePaymentMethodModal}>
+                <Text style={styles.paymentMethodCancelText}>Cancel</Text>
+              </TouchableWeb>
+              <TouchableWeb
+                style={[
+                  styles.paidActionButton,
+                  styles.paymentMethodConfirmButton,
+                ]}
+                onPress={confirmMarkAsPaid}
+              >
+                <LinearGradient
+                  colors={['#10b981', '#059669']}
+                  style={[styles.paidActionButtonGradient, styles.paymentMethodConfirmGradient]}
+                >
+                  <Text style={[styles.paymentMethodConfirmText, styles.paidActionButtonText]}>
+                    Confirm Payment
+                  </Text>
+                </LinearGradient>
+              </TouchableWeb>
+            </View>
+          </View>
         </View>
       </Modal>
     </SafeAreaView>
@@ -1516,6 +1515,7 @@ const styles = StyleSheet.create({
     marginBottom: 24,
   },
   paymentMethodOption: {
+    position: 'relative',
     flexDirection: 'row',
     alignItems: 'center',
     padding: 16,
@@ -1525,8 +1525,11 @@ const styles = StyleSheet.create({
     gap: 12,
   },
   paymentMethodOptionSelected: {
-    backgroundColor: COLORS.primary,
     borderColor: COLORS.primary,
+  },
+  paymentMethodOptionGradient: {
+    ...StyleSheet.absoluteFillObject,
+    borderRadius: 10,
   },
   paymentMethodText: {
     fontSize: 16,
@@ -1565,7 +1568,7 @@ const styles = StyleSheet.create({
     borderRadius: 12,
   },
   paymentMethodConfirmText: {
-    fontSize: 14,
+    fontSize: 16,
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.white,
   },

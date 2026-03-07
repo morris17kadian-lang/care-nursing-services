@@ -25,6 +25,16 @@ import EmailService from './EmailService';
 import FirebaseEmailQueueService from './FirebaseEmailQueueService';
 
 class InvoiceService {
+  static ADMIN_PAYMENT_GENERAL_SETTINGS_KEY = 'adminPaymentGeneralSettings';
+
+  static async _getAdminPaymentGeneralSettings() {
+    try {
+      const raw = await AsyncStorage.getItem(this.ADMIN_PAYMENT_GENERAL_SETTINGS_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch {
+      return null;
+    }
+  }
   static ADMIN_NOTIFICATION_CATEGORIES = {
     ALL: 'all',
     SCHEDULING: 'scheduling',
@@ -676,6 +686,7 @@ class InvoiceService {
     'General Nursing': 18100,
     'Emergency Care': 22575,
     'Consultation': 13575,
+    'Consultation Call (Phone Advice)': 1500,
   };
 
   // Company information
@@ -1610,14 +1621,19 @@ class InvoiceService {
         dueDateBase = new Date(nextServiceDate.getTime() - threeDaysMs);
       }
 
+      const generalSettings = await this._getAdminPaymentGeneralSettings();
+      const termsDaysRaw = generalSettings?.defaultPaymentTermsDays;
+      const termsDays = Number.isFinite(termsDaysRaw) && Number(termsDaysRaw) > 0 ? Number(termsDaysRaw) : 7;
+      const termsMs = termsDays * 24 * 60 * 60 * 1000;
+
       if (!(dueDateBase instanceof Date) || isNaN(dueDateBase.getTime())) {
-        // Fallback: 7 days from service date if calculation failed
-        dueDateBase = new Date(serviceDate.getTime() + (7 * 24 * 60 * 60 * 1000));
+        // Fallback: use default payment terms from settings
+        dueDateBase = new Date(serviceDate.getTime() + termsMs);
       }
 
       // Ensure due date is after service date
       if (dueDateBase.getTime() <= serviceDate.getTime()) {
-        dueDateBase = new Date(serviceDate.getTime() + (7 * 24 * 60 * 60 * 1000));
+        dueDateBase = new Date(serviceDate.getTime() + termsMs);
       }
 
       const dueDate = this.formatDateForInvoice(dueDateBase); // Use same format as service date
@@ -1708,11 +1724,11 @@ class InvoiceService {
         fileName
       };
 
-      await this.saveInvoiceRecord(invoiceRecord);
+      const savedInvoice = await this.saveInvoiceRecord(invoiceRecord);
 
       return {
         success: true,
-        invoice: invoiceRecord
+        invoice: savedInvoice,
       };
     } catch (error) {
       // Error creating invoice

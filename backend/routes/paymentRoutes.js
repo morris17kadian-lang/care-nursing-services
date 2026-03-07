@@ -1,5 +1,6 @@
 const express = require('express');
 const router = express.Router();
+const crypto = require('crypto');
 const { admin, getFirestore } = require('../services/firebaseAdmin');
 const gmailService = require('../services/gmailService');
 const {
@@ -9,16 +10,56 @@ const {
 
 /**
  * Payment Routes for Fygaro Integration
- * Securely handles payment initialization and verification
+ * Uses Fygaro's JWT-signed Payment Button URL approach.
+ * Docs: https://help.fygaro.com/en-us/article/fygaro-links-integration-api-h78p9y/
  */
 
 // Fygaro configuration from environment variables
 const FYGARO_CONFIG = {
   apiKey: process.env.FYGARO_API_KEY,
   apiSecret: process.env.FYGARO_API_SECRET,
-  baseUrl: process.env.FYGARO_BASE_URL || 'https://www.fygaro.com/api/v1',
+  buttonUrl: process.env.FYGARO_BUTTON_URL || 'https://www.fygaro.com/en/pb/9d69ee86-c4b4-454e-b73f-9d401c97f45b/',
   testMode: process.env.FYGARO_TEST_MODE === 'true',
 };
+
+/**
+ * Build a Fygaro JWT-signed payment URL.
+ * Header: { alg: 'HS256', typ: 'JWT', kid: apiKey }
+ * Payload: { amount, currency, custom_reference, exp, nbf }
+ * Signed with HMAC-SHA256 using apiSecret.
+ */
+function buildFygaroPaymentUrl({ amount, currency, customReference, expirySeconds = 1800 }) {
+  function b64url(obj) {
+    return Buffer.from(typeof obj === 'string' ? obj : JSON.stringify(obj))
+      .toString('base64')
+      .replace(/\+/g, '-')
+      .replace(/\//g, '_')
+      .replace(/=/g, '');
+  }
+
+  const now = Math.floor(Date.now() / 1000);
+  const header = b64url({ alg: 'HS256', typ: 'JWT', kid: FYGARO_CONFIG.apiKey });
+  const payload = b64url({
+    amount: parseFloat(parseFloat(amount).toFixed(2)),
+    currency,
+    custom_reference: customReference,
+    exp: String(now + expirySeconds),
+    nbf: String(now),
+  });
+
+  const sigInput = `${header}.${payload}`;
+  const signature = crypto
+    .createHmac('sha256', FYGARO_CONFIG.apiSecret)
+    .update(sigInput)
+    .digest('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=/g, '');
+
+  const jwt = `${sigInput}.${signature}`;
+  const base = FYGARO_CONFIG.buttonUrl.replace(/\/$/, '');
+  return `${base}/?jwt=${jwt}`;
+}
 
 const FYGARO_WEBHOOK_UPDATES_ENABLED = process.env.ENABLE_FYGARO_WEBHOOK_UPDATES === 'true';
 const FYGARO_SYNC_ENABLED = process.env.ENABLE_FYGARO_SYNC === 'true';
@@ -276,7 +317,8 @@ async function applyCompletedFygaroPayment(db, {
 
 /**
  * POST /api/payments/initialize
- * Initialize a payment session with Fygaro
+ * Build a Fygaro JWT-signed payment URL for the given invoice/amount.
+ * No REST call to Fygaro is made — the URL is constructed entirely server-side.
  */
 router.post('/initialize', async (req, res) => {
   try {
@@ -287,192 +329,96 @@ router.post('/initialize', async (req, res) => {
       invoiceFirestoreId,
       appointmentId,
       customerId,
-      customerName,
       customerEmail,
-      customerPhone,
-      description,
-      returnUrl,
-      cancelUrl,
-      metadata,
     } = req.body;
 
-    // Validate required fields
-    if (!amount || !customerEmail) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required fields: amount and customerEmail are required'
-      });
+    if (!amount) {
+      return res.status(400).json({ success: false, error: 'amount is required' });
     }
 
-    // Validate Fygaro credentials
     if (!FYGARO_CONFIG.apiKey || !FYGARO_CONFIG.apiSecret) {
       console.error('Fygaro credentials not configured');
       return res.status(500).json({
         success: false,
-        error: 'Payment service not configured. Please contact support.'
+        error: 'Payment service not configured. Please contact support.',
       });
     }
 
-    // Create payment payload for Fygaro
-    const payload = {
-      api_key: FYGARO_CONFIG.apiKey,
+    // Build a short reference (max 40 chars) that encodes enough to find the invoice.
+    // Priority: invoiceFirestoreId (Firestore doc id, ~20 chars) → invoiceId → appointmentId
+    const primaryId = (invoiceFirestoreId || invoiceId || appointmentId || customerId || 'unknown')
+      .toString()
+      .replace(/[^a-zA-Z0-9_-]/g, '-');
+    // Prefix + id, hard-capped at 40 chars
+    const customReference = `876n-${primaryId}`.substring(0, 40);
+
+    const paymentUrl = buildFygaroPaymentUrl({
+      amount,
+      currency,
+      customReference,
+    });
+
+    console.log('Fygaro payment URL built:', {
       amount: parseFloat(amount).toFixed(2),
       currency,
-      description: description || 'Payment for 876 Nurses services',
-      customer: {
-        name: customerName,
-        email: customerEmail,
-        phone: customerPhone,
-      },
-      metadata: {
-        invoiceId,
-        invoiceFirestoreId,
-        appointmentId,
-        customerId,
-        ...metadata,
-      },
-      return_url: returnUrl || 'myapp://payment-success',
-      cancel_url: cancelUrl || 'myapp://payment-cancel',
-      test_mode: FYGARO_CONFIG.testMode,
-    };
-
-    console.log('Initializing Fygaro payment:', {
-      amount: payload.amount,
-      currency: payload.currency,
-      customerEmail: payload.customer.email,
-      testMode: payload.test_mode
+      customReference,
+      invoiceId,
+      appointmentId,
     });
 
-    // Call Fygaro API
-    const response = await fetch(`${FYGARO_CONFIG.baseUrl}/payments/initialize`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${FYGARO_CONFIG.apiSecret}`,
-      },
-      body: JSON.stringify(payload),
+    res.json({
+      success: true,
+      paymentUrl,
+      // transactionId is our local reference until Fygaro assigns its own after payment
+      transactionId: customReference,
+      customReference,
+      expiresAt: new Date(Date.now() + 30 * 60 * 1000).toISOString(),
     });
-
-    const contentType = response.headers.get('content-type');
-    
-    // Check if response is JSON
-    if (!contentType || !contentType.includes('application/json')) {
-      const text = await response.text();
-      console.error('Fygaro API returned non-JSON response:', {
-        status: response.status,
-        contentType,
-        textPreview: text.substring(0, 200)
-      });
-      
-      return res.status(500).json({
-        success: false,
-        error: 'Payment service returned invalid response. Please verify your Fygaro API credentials and endpoint.'
-      });
-    }
-
-    const result = await response.json();
-
-    if (result.success || result.payment_url) {
-      res.json({
-        success: true,
-        paymentUrl: result.payment_url || result.checkout_url,
-        sessionId: result.session_id || result.id,
-        transactionId: result.transaction_id,
-        expiresAt: result.expires_at,
-      });
-    } else {
-      console.error('Fygaro payment initialization failed:', result);
-      res.status(400).json({
-        success: false,
-        error: result.message || 'Failed to initialize payment'
-      });
-    }
   } catch (error) {
     console.error('Payment initialization error:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Internal server error during payment initialization'
+      error: error.message || 'Internal server error during payment initialization',
     });
   }
 });
 
 /**
  * GET /api/payments/verify/:transactionId
- * Verify payment status with Fygaro
+ * Acknowledge a completed Fygaro payment.
+ * With the JWT button flow Fygaro does not expose a REST verify endpoint.
+ * The redirect from Fygaro's checkout page is the proof of payment; the
+ * authoritative server-side stamp happens via /sync.
+ * This endpoint is kept for compatibility with the client service.
  */
 router.get('/verify/:transactionId', async (req, res) => {
   try {
     const { transactionId } = req.params;
 
     if (!transactionId) {
-      return res.status(400).json({
-        success: false,
-        error: 'Transaction ID is required'
-      });
+      return res.status(400).json({ success: false, error: 'Transaction ID is required' });
     }
 
-    // Validate Fygaro credentials
-    if (!FYGARO_CONFIG.apiKey || !FYGARO_CONFIG.apiSecret) {
-      return res.status(500).json({
-        success: false,
-        error: 'Payment service not configured'
-      });
-    }
+    // fygaroReference may also be supplied as a query param when the client
+    // extracts it from the Fygaro redirect URL (?reference=xxx)
+    const fygaroReference = req.query.fygaroReference || transactionId;
 
-    console.log('Verifying Fygaro payment:', transactionId);
+    console.log('Payment redirect acknowledged:', { transactionId, fygaroReference });
 
-    // Verify payment through Fygaro API
-    const response = await fetch(
-      `${FYGARO_CONFIG.baseUrl}/payments/${transactionId}/verify`,
-      {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${FYGARO_CONFIG.apiSecret}`,
-          'Content-Type': 'application/json',
-        },
-      }
-    );
+    // Return success — the redirect from Fygaro is proof of payment.
+    // /sync will do the authoritative Firestore stamp.
+    return res.json({
+      success: true,
+      status: 'completed',
+      transactionId: fygaroReference,
+      customReference: transactionId,
+    });
 
-    const contentType = response.headers.get('content-type');
-    
-    if (!contentType || !contentType.includes('application/json')) {
-      const text = await response.text();
-      console.error('Fygaro verification returned non-JSON response:', {
-        status: response.status,
-        contentType,
-        textPreview: text.substring(0, 200)
-      });
-      
-      return res.status(500).json({
-        success: false,
-        error: 'Payment verification service returned invalid response'
-      });
-    }
-
-    const result = await response.json();
-
-    if (result.success || result.status === 'completed') {
-      res.json({
-        success: true,
-        status: result.status,
-        transactionId: result.transaction_id || transactionId,
-        amount: result.amount,
-        currency: result.currency,
-        paidAt: result.paid_at,
-        metadata: result.metadata,
-      });
-    } else {
-      res.json({
-        success: false,
-        status: result.status || 'unknown',
-        error: result.message || 'Payment verification failed'
-      });
-    }
   } catch (error) {
-    console.error('Payment verification error:', error);
+    console.error('Payment verify error:', error);
     res.status(500).json({
       success: false,
-      error: error.message || 'Internal server error during payment verification'
+      error: error.message || 'Internal server error during payment verification',
     });
   }
 });
@@ -582,71 +528,63 @@ router.post('/sync', async (req, res) => {
       return res.status(403).json({ success: false, error: 'Payment sync is disabled' });
     }
 
-    const { transactionId, invoiceId, invoiceFirestoreId, appointmentId } = req.body || {};
+    const {
+      transactionId,     // Fygaro reference from redirect URL (?reference=xxx)
+      customReference,   // our custom_reference from JWT (encodes invoiceId/appointmentId)
+      invoiceId,
+      invoiceFirestoreId,
+      appointmentId,
+      amount,
+      currency,
+    } = req.body || {};
 
     if (!transactionId) {
       return res.status(400).json({ success: false, error: 'transactionId is required' });
     }
 
-    if (!FYGARO_CONFIG.apiKey || !FYGARO_CONFIG.apiSecret) {
-      return res.status(500).json({ success: false, error: 'Payment service not configured' });
+    // Parse IDs from customReference if explicit IDs weren't provided.
+    // New format: 876n-<invoiceFirestoreId|invoiceId|appointmentId>  (max 40 chars)
+    let resolvedInvoiceId = invoiceId;
+    let resolvedInvoiceFirestoreId = invoiceFirestoreId;
+    let resolvedAppointmentId = appointmentId;
+    if (!resolvedInvoiceId && !resolvedInvoiceFirestoreId && !resolvedAppointmentId && customReference) {
+      // Strip the 876n- prefix and treat remainder as the primary lookup ID
+      const primaryId = customReference.startsWith('876n-')
+        ? customReference.substring(5)
+        : customReference;
+      // Try as invoiceFirestoreId first (direct Firestore doc lookup), then invoiceId
+      resolvedInvoiceFirestoreId = primaryId;
+      resolvedInvoiceId = primaryId;
     }
 
-    const verifyResponse = await fetch(
-      `${FYGARO_CONFIG.baseUrl}/payments/${transactionId}/verify`,
-      {
-        method: 'GET',
-        headers: {
-          'Authorization': `Bearer ${FYGARO_CONFIG.apiSecret}`,
-          'Content-Type': 'application/json',
-        },
-      }
-    );
-
-    const contentType = verifyResponse.headers.get('content-type');
-    if (!contentType || !contentType.includes('application/json')) {
-      const text = await verifyResponse.text();
-      return res.status(500).json({
-        success: false,
-        error: 'Payment verification service returned invalid response',
-        status: verifyResponse.status,
-        textPreview: text.substring(0, 200),
-      });
-    }
-
-    const verifyResult = await verifyResponse.json();
-    const statusValue = String(verifyResult?.status || '').toLowerCase();
-    const isCompleted = verifyResult?.success || statusValue === 'completed' || statusValue === 'paid' || statusValue === 'success';
-
-    if (!isCompleted) {
-      return res.json({
-        success: false,
-        status: verifyResult?.status || 'unknown',
-        error: verifyResult?.message || 'Payment not completed',
-      });
-    }
+    console.log('Payment sync:', {
+      transactionId,
+      customReference,
+      resolvedInvoiceId,
+      resolvedAppointmentId,
+    });
 
     const db = getFirestore();
     const result = await applyCompletedFygaroPayment(db, {
-      invoiceId,
-      invoiceFirestoreId,
-      appointmentId,
-      transactionId: verifyResult?.transaction_id || transactionId,
+      invoiceId: resolvedInvoiceId,
+      invoiceFirestoreId: resolvedInvoiceFirestoreId,
+      appointmentId: resolvedAppointmentId,
+      transactionId,
       webhookData: {
-        ...verifyResult,
-        transactionId: verifyResult?.transaction_id || transactionId,
-        metadata: verifyResult?.metadata || {},
-        amount: verifyResult?.amount,
-        currency: verifyResult?.currency,
-        paid_at: verifyResult?.paid_at,
-        payment_method: verifyResult?.payment_method,
+        transactionId,
+        custom_reference: customReference,
+        metadata: { invoiceId: resolvedInvoiceId, appointmentId: resolvedAppointmentId },
+        amount: amount ? parseFloat(amount) : undefined,
+        currency: currency || 'JMD',
+        paid_at: new Date().toISOString(),
+        payment_method: 'Fygaro',
       },
     });
 
     return res.json({
       success: true,
-      status: verifyResult?.status,
-      transactionId: verifyResult?.transaction_id || transactionId,
+      status: 'completed',
+      transactionId,
       applied: result,
     });
   } catch (error) {

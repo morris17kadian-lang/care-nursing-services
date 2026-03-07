@@ -8,6 +8,17 @@ import { Platform } from 'react-native';
  * Documentation: https://www.fygaro.com
  */
 class FygaroPaymentService {
+  // Global kill-switch for Fygaro payments.
+  // Set to true only when Fygaro backend + redirects are confirmed working.
+  static PAYMENTS_ENABLED = true;
+
+  static disabledResult() {
+    return {
+      success: false,
+      error: 'Online payment processing is temporarily disabled. Please contact support for alternative payment arrangements.',
+    };
+  }
+
   static getBackendPaymentUrl(path = '') {
     const base = getBackendBaseUrl().replace(/\/$/, '');
     const normalizedPath = path ? `/${path.replace(/^\//, '')}` : '';
@@ -21,6 +32,10 @@ class FygaroPaymentService {
    */
   static async initializePayment(paymentData) {
     try {
+      if (!FygaroPaymentService.PAYMENTS_ENABLED) {
+        return FygaroPaymentService.disabledResult();
+      }
+
       const {
         amount,
         currency = 'JMD',
@@ -45,6 +60,9 @@ class FygaroPaymentService {
         };
       }
 
+      const defaultReturnUrl = 'https://876nurses.app/payment-success';
+      const defaultCancelUrl = 'https://876nurses.app/payment-cancel';
+
       // Create payment payload
       const payload = {
         amount: parseFloat(amount).toFixed(2),
@@ -57,8 +75,8 @@ class FygaroPaymentService {
         customerEmail,
         customerPhone,
         description: description || `Payment for 876 Nurses services`,
-        returnUrl: returnUrl || 'myapp://payment-success',
-        cancelUrl: cancelUrl || 'myapp://payment-cancel',
+        returnUrl: returnUrl || defaultReturnUrl,
+        cancelUrl: cancelUrl || defaultCancelUrl,
         metadata: {
           platform: Platform.OS,
           ...additionalMetadata,
@@ -121,6 +139,10 @@ class FygaroPaymentService {
    */
   static async verifyPayment(transactionId) {
     try {
+      if (!FygaroPaymentService.PAYMENTS_ENABLED) {
+        return FygaroPaymentService.disabledResult();
+      }
+
       if (!transactionId) {
         return {
           success: false,
@@ -289,7 +311,7 @@ class FygaroPaymentService {
    * Sync a completed transaction to Firestore via backend.
    * This stamps the invoice as Paid server-side (no client write).
    */
-  static async syncCompletedPayment({ transactionId, invoiceId, invoiceFirestoreId, appointmentId } = {}) {
+  static async syncCompletedPayment({ transactionId, customReference, invoiceId, invoiceFirestoreId, appointmentId, amount, currency } = {}) {
     try {
       if (!transactionId) {
         return { success: false, error: 'Transaction ID is required' };
@@ -303,9 +325,12 @@ class FygaroPaymentService {
         },
         body: JSON.stringify({
           transactionId,
+          customReference,
           invoiceId,
           invoiceFirestoreId,
           appointmentId,
+          amount,
+          currency,
         }),
       });
 

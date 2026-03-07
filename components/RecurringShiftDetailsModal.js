@@ -158,6 +158,34 @@ const looksLikeFirebaseUid = (value) => {
 
 const formatDate = (value) => {
   if (!value) return 'N/A';
+
+  // Handle Firestore Timestamp objects (with toDate(), ._seconds, or .seconds)
+  if (value && typeof value === 'object' && !(value instanceof Date)) {
+    if (typeof value.toDate === 'function') {
+      try {
+        const d = value.toDate();
+        if (!Number.isNaN(d.getTime()))
+          return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+      } catch (e) { /* ignore */ }
+    }
+    const secs = value._seconds ?? value.seconds;
+    if (typeof secs === 'number') {
+      const d = new Date(secs * 1000);
+      if (!Number.isNaN(d.getTime()))
+        return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    }
+  }
+
+  // Handle ISO date-only strings like "2026-03-07" as LOCAL dates to avoid UTC off-by-one
+  if (typeof value === 'string') {
+    const iso = value.trim().match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (iso) {
+      const local = new Date(parseInt(iso[1], 10), parseInt(iso[2], 10) - 1, parseInt(iso[3], 10));
+      if (!Number.isNaN(local.getTime()))
+        return local.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+    }
+  }
+
   const d = value instanceof Date ? value : new Date(value);
   if (Number.isNaN(d.getTime())) return 'N/A';
   return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
@@ -221,7 +249,21 @@ export default function RecurringShiftDetailsModal({
   onClockOut,
 }) {
   const [selectedNurseForDetails, setSelectedNurseForDetails] = useState(null);
+  const [photoPreviewVisible, setPhotoPreviewVisible] = useState(false);
+  const [photoPreviewUri, setPhotoPreviewUri] = useState('');
   const activeShift = shift || {};
+
+  const openPhotoPreview = (uri) => {
+    const target = typeof uri === 'string' ? uri.trim() : '';
+    if (!target) return;
+    setPhotoPreviewUri(target);
+    setPhotoPreviewVisible(true);
+  };
+
+  const closePhotoPreview = () => {
+    setPhotoPreviewVisible(false);
+    setPhotoPreviewUri('');
+  };
 
   const debugBackupClock = useMemo(() => {
     try {
@@ -289,6 +331,10 @@ export default function RecurringShiftDetailsModal({
       const nurseIdentifiers = [];
       Object.entries(responses).forEach(([k, v]) => {
         if (v && typeof v === 'object') {
+          // Exclude declined responses - they shouldn't count toward split schedule detection
+          const status = normalizeStatus(v.status);
+          if (status === 'declined') return;
+          
           const id = normalizeId(v.nurseId || v.uid);
           const code = normalizeCode(v.nurseCode || v.staffCode || v.code);
           if (id || code) {
@@ -296,6 +342,8 @@ export default function RecurringShiftDetailsModal({
           }
         }
       });
+      
+      console.log('[RecurringShiftDetailsModal] isSplitScheduleShift check - nurseIdentifiers:', nurseIdentifiers);
       
       if (nurseIdentifiers.length > 1) {
         const firstNurse = nurseIdentifiers[0];
@@ -616,24 +664,27 @@ export default function RecurringShiftDetailsModal({
         return Boolean(schedule && typeof schedule === 'object' && Object.keys(schedule).length > 0);
       })();
 
-      const daysRaw = 
-        activeShift?.daysOfWeek ||
-        activeShift?.recurringDaysOfWeek ||
-        activeShift?.recurringDaysOfWeekList ||
-        activeShift?.selectedDays ||
-        activeShift?.recurringDays ||
-        null;
-      
+      const daysRaw = [
+        activeShift?.daysOfWeek,
+        activeShift?.recurringDaysOfWeek,
+        activeShift?.recurringDaysOfWeekList,
+        activeShift?.selectedDays,
+        activeShift?.recurringDays,
+        activeShift?.recurringPattern?.daysOfWeek,
+        activeShift?.recurringPattern?.selectedDays,
+        activeShift?.schedule?.daysOfWeek,
+        activeShift?.schedule?.selectedDays,
+        activeShift?.recurringSchedule?.daysOfWeek,
+        activeShift?.recurringSchedule?.selectedDays,
+      ]
+        .filter(Boolean)
+        .flatMap((value) => (Array.isArray(value) ? value : [value]));
+
       const days = [];
-      if (Array.isArray(daysRaw)) {
-        daysRaw.forEach(d => {
-          const mapped = mapDayValueToIndex(d);
-          if (mapped !== null) days.push(mapped);
-        });
-      } else if (daysRaw !== null && daysRaw !== undefined) {
-        const mapped = mapDayValueToIndex(daysRaw);
+      daysRaw.forEach((d) => {
+        const mapped = mapDayValueToIndex(d);
         if (mapped !== null) days.push(mapped);
-      }
+      });
 
       // Split-schedule: only allow clock-in on the weekdays assigned to *this* nurse.
       if (isSplitSchedule) {
@@ -910,6 +961,11 @@ export default function RecurringShiftDetailsModal({
     );
   })();
 
+  const shiftNurseNotePhotos = useMemo(() => {
+    const list = Array.isArray(activeShift?.nurseNotePhotos) ? activeShift.nurseNotePhotos : [];
+    return list.filter((u) => typeof u === 'string' && u.trim().length > 0);
+  }, [activeShift]);
+
   const startTime =
     activeShift?.recurringStartTime ||
     activeShift?.startTime ||
@@ -1151,6 +1207,20 @@ export default function RecurringShiftDetailsModal({
 
     if (responses && typeof responses === 'object') {
       Object.entries(responses).forEach(([k, v]) => {
+        // Skip declined responses - they shouldn't appear in nurse cards
+        if (v && typeof v === 'object') {
+          const status = normalizeStatus(v.status);
+          if (status === 'declined') {
+            console.log('[RecurringShiftDetailsModal] Skipping declined nurse in nurseCards:', {
+              key: k,
+              nurseId: v.nurseId,
+              nurseName: v.nurseName,
+              status: v.status,
+            });
+            return;
+          }
+        }
+        
         const fromValue = v && typeof v === 'object' ? (v.nurseId || v.uid) : null;
         const fromKey = looksLikeFirebaseUid(k) ? k : null;
         const id = resolveCanonicalId(fromValue || fromKey || k, v);
@@ -2013,6 +2083,77 @@ export default function RecurringShiftDetailsModal({
   const isPatientPending =
     isPatientContext && String(activeShift?.status || '').toLowerCase() === 'pending';
 
+  const patientAlertsBanner = useMemo(() => {
+    const status = String(activeShift?.status || '').toLowerCase();
+    
+    // For patients: show only for pending appointments
+    // For nurses/admins: show for all active appointments (not completed/cancelled)
+    const shouldShow = isPatientContext 
+      ? status === 'pending'
+      : !['completed', 'cancelled', 'canceled', 'declined', 'rejected'].includes(status);
+    
+    if (!shouldShow) return null;
+
+    const patientAlerts =
+      activeShift?.patientAlerts ||
+      activeShift?.shiftDetails?.patientAlerts ||
+      activeShift?.clockDetails?.patientAlerts ||
+      activeShift?.clinicalInfo ||
+      null;
+
+    const allergiesRaw = patientAlerts?.allergies || activeShift?.allergies || null;
+    const allergies = Array.isArray(allergiesRaw)
+      ? allergiesRaw.map((a) => String(a).trim()).filter(Boolean)
+      : [];
+    const allergyOther = String(patientAlerts?.allergyOther || '').trim();
+
+    const vitals = patientAlerts?.vitals || activeShift?.vitals || null;
+    const bpSys = String(vitals?.bpSystolic || '').trim();
+    const bpDia = String(vitals?.bpDiastolic || '').trim();
+    const hr = String(vitals?.heartRate || '').trim();
+    const temp = String(vitals?.temperature || '').trim();
+    const spo2 = String(vitals?.oxygenSaturation || '').trim();
+
+    const allergiesFiltered = allergies
+      .map((a) => String(a).trim())
+      .filter((a) => a && a.toLowerCase() !== 'none')
+      .filter((a) => !(a === 'Other' && allergyOther));
+
+    const hasAllergies = allergiesFiltered.length > 0 || Boolean(allergyOther);
+    const hasVitals = Boolean(bpSys || bpDia || hr || temp || spo2);
+    if (!hasAllergies && !hasVitals) return null;
+
+    const allergyParts = [...allergiesFiltered];
+    if (allergyOther && !allergyParts.includes(allergyOther)) allergyParts.push(allergyOther);
+    const allergyText = allergyParts.join(', ');
+
+    const vitalsParts = [];
+    if (bpSys || bpDia) vitalsParts.push(`BP ${bpSys || '?'} / ${bpDia || '?'}`);
+    if (hr) vitalsParts.push(`HR ${hr}`);
+    if (temp) vitalsParts.push(`Temp ${temp}`);
+    if (spo2) vitalsParts.push(`SpO₂ ${spo2}%`);
+    const vitalsText = vitalsParts.join(' • ');
+
+    return (
+      <View style={styles.patientAlertsBanner}>
+        <MaterialCommunityIcons name="alert-circle" size={18} color={COLORS.error} />
+        <View style={{ flex: 1 }}>
+          <Text style={styles.patientAlertsTitle}>Patient Alerts</Text>
+          {hasAllergies ? (
+            <Text style={styles.patientAlertsText} numberOfLines={3}>
+              Patient is allergic to: {allergyText || '—'}
+            </Text>
+          ) : null}
+          {hasVitals ? (
+            <Text style={styles.patientAlertsText} numberOfLines={3}>
+              Vitals are: {vitalsText}
+            </Text>
+          ) : null}
+        </View>
+      </View>
+    );
+  }, [activeShift, isPatientContext]);
+
   return (
     <Modal visible={!!visible} animationType="slide" transparent onRequestClose={onClose}>
       <View style={styles.overlay}>
@@ -2028,6 +2169,9 @@ export default function RecurringShiftDetailsModal({
             {pendingCoverageForCurrentNurse ? (
               <Text style={styles.emergencyTextOnly}>Emergency backup request for this shift</Text>
             ) : null}
+
+            {patientAlertsBanner}
+
             {!isPatientContext && !isPatientPending ? (
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Client Information</Text>
@@ -2673,6 +2817,7 @@ export default function RecurringShiftDetailsModal({
                         openDetailsOnPress={!(hasClockIn && canViewClockDetails)}
                         hideSpecialty={true}
                         hideCode={true}
+                        contextType={contextType}
                         style={[
                           isActivelyClockedIn ? styles.cardClockedIn : undefined,
                           shiftIsPending && !isActivelyClockedIn && contextType !== 'nurse'
@@ -2809,8 +2954,10 @@ export default function RecurringShiftDetailsModal({
                           title: item.nurseName,
                           subtitle: item.nurseCode || item.nurseId || '',
                           body: item.note || '',
+                          photoUrls: shiftNurseNotePhotos,
                         }))}
                         emptyText="No notes yet"
+                        onPhotoPress={openPhotoPreview}
                       />
                     ) : (
                       <View style={styles.notesRow}>
@@ -2891,6 +3038,7 @@ export default function RecurringShiftDetailsModal({
                       },
                     ]}
                     emptyText="No notes yet"
+                    onPhotoPress={openPhotoPreview}
                   />
                 </View>
               );
@@ -2951,6 +3099,7 @@ export default function RecurringShiftDetailsModal({
                           title: item.nurseName,
                           subtitle: item.nurseCode || item.nurseId || '',
                           body: item.note || '',
+                          photoUrls: shiftNurseNotePhotos,
                         }));
                       }
 
@@ -2992,10 +3141,12 @@ export default function RecurringShiftDetailsModal({
                           title: nurseTitle,
                           subtitle: nurseSubtitle,
                           body: nurseNotesText,
+                          photoUrls: shiftNurseNotePhotos,
                         },
                       ];
                     })()}
                     emptyText="No notes yet"
+                    onPhotoPress={openPhotoPreview}
                   />
                 </View>
               );
@@ -3096,7 +3247,17 @@ export default function RecurringShiftDetailsModal({
           )}
         </View>
 
-        <NurseDetailsModal visible={!!selectedNurseForDetails} nurse={selectedNurseForDetails} nursesRoster={nurses} onClose={() => setSelectedNurseForDetails(null)} />
+
+          {photoPreviewVisible && photoPreviewUri ? (
+            <View style={styles.photoPreviewOverlayInModal}>
+              <TouchableWeb style={styles.photoPreviewOverlayTapArea} activeOpacity={1} onPress={closePhotoPreview}>
+                <View style={styles.photoPreviewImageFrame}>
+                  <Image source={{ uri: photoPreviewUri }} style={styles.photoPreviewImage} resizeMode="contain" />
+                </View>
+              </TouchableWeb>
+            </View>
+          ) : null}
+        <NurseDetailsModal visible={!!selectedNurseForDetails} nurse={selectedNurseForDetails} nursesRoster={nurses} onClose={() => setSelectedNurseForDetails(null)} showQualificationsRequest={contextType === 'patient'} />
       </View>
     </Modal>
   );
@@ -3116,6 +3277,7 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 380,
     maxHeight: Platform.OS === 'android' ? '93%' : '85%',
+    position: 'relative',
     overflow: 'hidden',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 10 },
@@ -3124,6 +3286,35 @@ const styles = StyleSheet.create({
     elevation: 10,
     display: 'flex',
     flexDirection: 'column',
+  },
+  photoPreviewOverlayInModal: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+    zIndex: 50,
+    elevation: 50,
+  },
+  photoPreviewOverlayTapArea: {
+    flex: 1,
+    width: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  photoPreviewImageFrame: {
+    width: '100%',
+    height: '85%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  photoPreviewImage: {
+    width: '100%',
+    height: '100%',
   },
   containerWide: {
     width: '95%',
@@ -3160,6 +3351,28 @@ const styles = StyleSheet.create({
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.error,
     marginBottom: SPACING.md,
+  },
+  patientAlertsBanner: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: COLORS.errorLight,
+    borderWidth: 1,
+    borderColor: COLORS.error,
+    marginBottom: SPACING.lg,
+  },
+  patientAlertsTitle: {
+    fontSize: 13,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.error,
+    marginBottom: 2,
+  },
+  patientAlertsText: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.text,
   },
   subTitle: {
     fontSize: 16,

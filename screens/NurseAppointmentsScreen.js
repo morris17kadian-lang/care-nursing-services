@@ -18,7 +18,8 @@ import {
   Animated,
   PanResponder,
   StatusBar,
-  
+  TouchableWithoutFeedback,
+  Keyboard,
   Pressable,
   Image,
 } from 'react-native';
@@ -26,6 +27,7 @@ import { useFocusEffect } from '@react-navigation/native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import DateTimePicker from '@react-native-community/datetimepicker';
 import { LinearGradient } from 'expo-linear-gradient';
+import * as ImagePicker from 'expo-image-picker';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { SafeAreaView } from 'react-native-safe-area-context';
 import * as Location from 'expo-location';
@@ -158,7 +160,15 @@ const toDateFromValue = (value) => {
   if (typeof value === 'number') return new Date(value);
   if (typeof value === 'string') {
     const normalized = removeOrdinalSuffix(value.trim());
-    
+
+    // Handle ISO date-only strings like "2026-03-07" as LOCAL dates.
+    // JS parses YYYY-MM-DD as UTC which shifts the displayed day in negative-offset timezones.
+    const isoDateOnly = normalized.match(/^(\d{4})-(\d{1,2})-(\d{1,2})$/);
+    if (isoDateOnly) {
+      const d = new Date(parseInt(isoDateOnly[1], 10), parseInt(isoDateOnly[2], 10) - 1, parseInt(isoDateOnly[3], 10));
+      if (!isNaN(d.getTime())) return d;
+    }
+
     // Handle "Feb 19, 2026" format from BookScreen
     const match = normalized.match(/^([A-Za-z]{3})\s+(\d{1,2}),?\s+(\d{4})$/);
     if (match) {
@@ -366,7 +376,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
   // Match AdminRecurringShiftModal date display formatting
   const formatDateDisplay = (dateValue) => {
     if (!dateValue) return 'Select date';
-    const date = dateValue instanceof Date ? dateValue : new Date(dateValue);
+    const date = toDateFromValue(dateValue);
     if (!(date instanceof Date) || isNaN(date.getTime())) return 'Select date';
     return date.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
   };
@@ -390,7 +400,8 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
       clearCompletedAppointments,
       updateNurseAvailability,
       updateNurseNotes,
-      addCompletedAppointmentFromShift
+      addCompletedAppointmentFromShift,
+      refreshAppointments
     } = useAppointments();
     const { 
       submitShiftRequest: submitShiftToContext, 
@@ -408,17 +419,22 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
     const { services } = useServices();
   
   // Centralized helper to update notes for both appointments and shift requests
-  const updateItemNotes = async (itemId, notes, isShiftLike = false) => {
+  const updateItemNotes = async (itemId, notes, isShiftLike = false, extraUpdates = {}) => {
     const sanitizedNotes = typeof notes === 'string' ? notes : '';
+    const safeExtraUpdates = extraUpdates && typeof extraUpdates === 'object' ? extraUpdates : {};
 
     if (isShiftLike) {
       await updateShiftRequestDetails(itemId, {
         notes: sanitizedNotes,
         nurseNotes: sanitizedNotes,
+        ...safeExtraUpdates,
       });
       await updateShiftNotes(itemId, sanitizedNotes);
     } else {
       await updateNurseNotes(itemId, sanitizedNotes);
+      if (Object.keys(safeExtraUpdates).length > 0) {
+        await ApiService.updateAppointment(itemId, safeExtraUpdates);
+      }
     }
   };
 
@@ -441,6 +457,11 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
   const [selectedItemDetails, setSelectedItemDetails] = useState(null);
   const [selectedItemForNotes, setSelectedItemForNotes] = useState(null);
   const [selectedShiftForClockOut, setSelectedShiftForClockOut] = useState(null);
+  const [notePhotoUris, setNotePhotoUris] = useState([]);
+  const [notePhotoPickerBusy, setNotePhotoPickerBusy] = useState(false);
+  const [isSavingNotes, setIsSavingNotes] = useState(false);
+  const [notePhotoPreviewVisible, setNotePhotoPreviewVisible] = useState(false);
+  const [notePhotoPreviewUri, setNotePhotoPreviewUri] = useState('');
   const [pendingRecurringShifts, setPendingRecurringShifts] = useState([]);
   const [recurringShiftDetailsModalVisible, setRecurringShiftDetailsModalVisible] = useState(false);
   const [selectedRecurringShift, setSelectedRecurringShift] = useState(null);
@@ -669,17 +690,19 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
 
     // For recurring shifts, find the next occurrence
     if (isRecurring && timeCandidate) {
-      const daysRaw =
-        shift.daysOfWeek ||
-        shift.recurringDaysOfWeek ||
-        shift.recurringDaysOfWeekList ||
-        shift.selectedDays ||
-        shift.recurringDays ||
-        shift.recurringSchedule?.daysOfWeek ||
-        shift.recurringSchedule?.selectedDays ||
-        shift.schedule?.daysOfWeek ||
-        shift.schedule?.selectedDays ||
-        null;
+      const daysRaw = [
+        shift.daysOfWeek,
+        shift.recurringDaysOfWeek,
+        shift.recurringDaysOfWeekList,
+        shift.selectedDays,
+        shift.recurringDays,
+        shift.recurringSchedule?.daysOfWeek,
+        shift.recurringSchedule?.selectedDays,
+        shift.schedule?.daysOfWeek,
+        shift.schedule?.selectedDays,
+      ]
+        .filter(Boolean)
+        .flatMap((value) => (Array.isArray(value) ? value : [value]));
 
       const normalizeDaysOfWeekForReminders = (raw) => {
         const list = Array.isArray(raw) ? raw : (raw != null ? [raw] : []);
@@ -2278,6 +2301,12 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
             // For the nurse UI, keep it under Pending until THIS nurse accepts/declines.
             if (statusNormalized === 'approved') {
               if (hasPendingCoverageRequestForMe) return true;
+              
+              // For nurse-created recurring shifts (isRecurring=true, adminRecurring=false),
+              // once admin approves, it should go to Booked (not Pending) since the nurse already "accepted" by creating it
+              const isNurseCreated = isPatientRecurring && !isAdminRecurring;
+              if (isNurseCreated) return false;
+              
               return isStillPendingForMe;
             }
 
@@ -2316,6 +2345,13 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
             // If appointment status is 'assigned', nurse always needs to respond
             // (this is the status set when admin assigns a nurse to patient request)
             if (statusNorm === 'assigned') return true;
+            
+            // For 'approved' status, exclude nurse-created recurring shifts
+            // (they're auto-accepted and should only appear in Booked)
+            if (statusNorm === 'approved') {
+              const isNurseCreated = apt.isRecurring && !apt.adminRecurring;
+              if (isNurseCreated) return false;
+            }
             
             // For 'approved' or 'pending' status, check if nurse still needs to respond
             const myResponseStatus = getMyResponseStatusForShiftRequest(apt);
@@ -2363,6 +2399,13 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
             
             // If appointment status is 'assigned', nurse always needs to respond
             if (statusNorm === 'assigned') return true;
+            
+            // For 'approved' status, exclude nurse-created recurring shifts
+            // (they're auto-accepted and should only appear in Booked)
+            if (statusNorm === 'approved') {
+              const isNurseCreated = apt.isRecurring && !apt.adminRecurring;
+              if (isNurseCreated) return false;
+            }
             
             const myResponseStatus = getMyResponseStatusForShiftRequest(apt);
             return myResponseStatus !== 'accepted' && myResponseStatus !== 'declined';
@@ -2491,10 +2534,20 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
           listIncludesMine(req.backupNurses);
 
         if (!belongsToMe) return false;
-        if (getMyResponseStatusForShiftRequest(req) !== 'accepted') return false;
+        
+        const statusNormalized = String(req.status || '').trim().toLowerCase();
+        
+        // For nurse-created recurring shifts that admin approved, treat as automatically accepted
+        // since the nurse was the one who requested it
+        const isNurseCreated = isPatientRecurring && !isAdminRecurring;
+        const isApproved = statusNormalized === 'approved';
+        const isAutoAccepted = isNurseCreated && isApproved;
+        
+        // Check if nurse explicitly accepted, OR if it's auto-accepted
+        const myResponse = getMyResponseStatusForShiftRequest(req);
+        if (myResponse !== 'accepted' && !isAutoAccepted) return false;
 
         // Exclude completed shifts
-        const statusNormalized = String(req.status || '').trim().toLowerCase();
         if (statusNormalized === 'completed') return false;
 
         // Recurring schedules can have clock-out history per occurrence.
@@ -2643,9 +2696,19 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
           listIncludesMine(req.backupNurses);
 
         if (!belongsToMe) return false;
-        if (getMyResponseStatusForShiftRequest(req) !== 'accepted') return false;
-
+        
         const statusNormalized = String(req.status || '').trim().toLowerCase();
+        
+        // For nurse-created recurring shifts that admin approved, treat as automatically accepted
+        // since the nurse was the one who requested it
+        const isNurseCreated = isPatientRecurring && !isAdminRecurring;
+        const isApproved = statusNormalized === 'approved' || statusNormalized === 'active';
+        const isAutoAccepted = isNurseCreated && isApproved;
+        
+        // Check if nurse explicitly accepted, OR if it's auto-accepted
+        const myResponse = getMyResponseStatusForShiftRequest(req);
+        if (myResponse !== 'accepted' && !isAutoAccepted) return false;
+
         if (statusNormalized === 'completed') return false;
 
         const isSplitSchedule = Boolean(req?.nurseSchedule && typeof req.nurseSchedule === 'object' && Object.keys(req.nurseSchedule).length > 0);
@@ -2817,9 +2880,18 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
           listIncludesMine(req.backupNurses);
 
         if (!belongsToMe) return false;
-        if (getMyResponseStatusForShiftRequest(req) !== 'accepted') return false;
-
+        
         const statusNormalized = String(req.status || '').trim().toLowerCase();
+        
+        // For nurse-created recurring shifts that admin approved, treat as automatically accepted
+        // since the nurse was the one who requested it
+        const isNurseCreated = isPatientRecurring && !isAdminRecurring;
+        const isApproved = statusNormalized === 'approved' || statusNormalized === 'active' || statusNormalized === 'completed';
+        const isAutoAccepted = isNurseCreated && isApproved;
+        
+        // Check if nurse explicitly accepted, OR if it's auto-accepted
+        const myResponse = getMyResponseStatusForShiftRequest(req);
+        if (myResponse !== 'accepted' && !isAutoAccepted) return false;
         
         // A recurring series should only be considered completed when the series is actually finished.
         // (Clock-out can happen on each occurrence and should not move the whole series to Completed.)
@@ -3361,6 +3433,201 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
     }
   };
 
+  const resetNotesModalState = useCallback(() => {
+    const shouldReopenDetails = actionType === 'addnotes' && Boolean(selectedItemDetails);
+    setNotesModalVisible(false);
+    setActionType('');
+    setShiftNotes('');
+    setSelectedItemForNotes(null);
+    setSelectedShiftForClockOut(null);
+    setNotePhotoUris([]);
+    setIsSavingNotes(false);
+    setNotePhotoPickerBusy(false);
+    if (shouldReopenDetails) {
+      setTimeout(() => {
+        setDetailsModalVisible(true);
+      }, 220);
+    }
+  }, [actionType, selectedItemDetails]);
+
+  const openAddNotesModal = useCallback((item) => {
+    const existingPhotos = Array.isArray(item?.nurseNotePhotos)
+      ? item.nurseNotePhotos.filter((uri) => typeof uri === 'string' && uri.trim().length > 0)
+      : [];
+
+    setSelectedItemForNotes(item || null);
+    setSelectedShiftForClockOut(null);
+    setShiftNotes('');
+    setNotePhotoUris(existingPhotos);
+    setActionType('addnotes');
+    setNotesModalVisible(true);
+  }, []);
+
+  const openAddNotesFromDetails = useCallback((item) => {
+    const snapshot = item || selectedItemDetails;
+    if (!snapshot) return;
+    setDetailsModalVisible(false);
+    setTimeout(() => {
+      openAddNotesModal(snapshot);
+    }, 220);
+  }, [openAddNotesModal, selectedItemDetails]);
+
+  const removeNotePhoto = useCallback((indexToRemove) => {
+    setNotePhotoUris((prev) => prev.filter((_, index) => index !== indexToRemove));
+  }, []);
+
+  const openNotePhotoPreview = useCallback((uri) => {
+    const target = typeof uri === 'string' ? uri.trim() : '';
+    if (!target) return;
+    // Defer to next tick to avoid rare Modal/touch timing issues.
+    setTimeout(() => {
+      setNotePhotoPreviewUri(target);
+      setNotePhotoPreviewVisible(true);
+    }, 0);
+  }, []);
+
+  const pickNotePhotos = useCallback(async () => {
+    try {
+      setNotePhotoPickerBusy(true);
+      
+      // Show action sheet to choose camera or gallery
+      Alert.alert(
+        'Add Photo',
+        'Choose a source for your photo',
+        [
+          {
+            text: 'Take Photo',
+            onPress: async () => {
+              try {
+                const cameraPermission = await ImagePicker.requestCameraPermissionsAsync();
+                if (!cameraPermission?.granted) {
+                  Alert.alert('Permission required', 'Please allow camera access to take photos.');
+                  setNotePhotoPickerBusy(false);
+                  return;
+                }
+
+                const result = await ImagePicker.launchCameraAsync({
+                  mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                  allowsEditing: false,
+                  quality: 0.85,
+                });
+
+                if (result?.canceled) {
+                  setNotePhotoPickerBusy(false);
+                  return;
+                }
+
+                const picked = (Array.isArray(result?.assets) ? result.assets : [])
+                  .map((asset) => asset?.uri)
+                  .filter(Boolean);
+
+                if (picked.length > 0) {
+                  setNotePhotoUris((prev) => {
+                    const combined = [...prev, ...picked];
+                    return combined.slice(0, 6);
+                  });
+                }
+              } catch (error) {
+                console.error('Error taking photo:', error);
+                Alert.alert('Error', 'Failed to take photo');
+              } finally {
+                setNotePhotoPickerBusy(false);
+              }
+            },
+          },
+          {
+            text: 'Choose from Gallery',
+            onPress: async () => {
+              try {
+                const permission = await ImagePicker.requestMediaLibraryPermissionsAsync();
+                if (!permission?.granted) {
+                  Alert.alert('Permission required', 'Please allow photo library access to attach images.');
+                  setNotePhotoPickerBusy(false);
+                  return;
+                }
+
+                const result = await ImagePicker.launchImageLibraryAsync({
+                  mediaTypes: ImagePicker.MediaTypeOptions.Images,
+                  allowsEditing: false,
+                  allowsMultipleSelection: true,
+                  quality: 0.85,
+                  selectionLimit: 6,
+                });
+
+                if (result?.canceled) {
+                  setNotePhotoPickerBusy(false);
+                  return;
+                }
+
+                const picked = (Array.isArray(result?.assets) ? result.assets : [])
+                  .map((asset) => asset?.uri)
+                  .filter(Boolean);
+
+                if (picked.length > 0) {
+                  setNotePhotoUris((prev) => {
+                    const combined = [...prev, ...picked];
+                    return combined.slice(0, 6);
+                  });
+                }
+              } catch (error) {
+                console.error('Error picking photos:', error);
+                Alert.alert('Error', 'Failed to select photos');
+              } finally {
+                setNotePhotoPickerBusy(false);
+              }
+            },
+          },
+          {
+            text: 'Cancel',
+            style: 'cancel',
+            onPress: () => setNotePhotoPickerBusy(false),
+          },
+        ],
+        { cancelable: true, onDismiss: () => setNotePhotoPickerBusy(false) }
+      );
+    } catch (error) {
+      console.error('Error showing photo options:', error);
+      Alert.alert('Error', 'Failed to open photo picker');
+      setNotePhotoPickerBusy(false);
+    }
+  }, []);
+
+  const uploadNotePhotos = useCallback(async (itemId, uris) => {
+    const list = Array.isArray(uris) ? uris.filter(Boolean) : [];
+    if (list.length === 0) return [];
+
+    const nurseKey =
+      normalizeId(user?.id || user?.uid || user?.nurseId || user?.staffCode || user?.nurseCode) || 'nurse';
+    const itemKey = normalizeId(itemId) || 'note-item';
+
+    const uploaded = await Promise.all(
+      list.slice(0, 6).map(async (uri, index) => {
+        try {
+          const raw = String(uri || '').trim();
+          if (!raw) return null;
+          if (/^https?:\/\//i.test(raw)) return raw;
+
+          const extFromUri = raw.split('?')[0].split('.').pop()?.toLowerCase();
+          const fileExt = ['jpg', 'jpeg', 'png', 'webp', 'heic'].includes(extFromUri) ? extFromUri : 'jpg';
+          const safeExt = fileExt === 'jpeg' ? 'jpg' : fileExt;
+          const path = `nurse-notes/${nurseKey}/${itemKey}/${Date.now()}-${index}.${safeExt}`;
+
+          const uploadResult = await FirebaseService.uploadImage(raw, path);
+          if (typeof uploadResult === 'string') return uploadResult;
+          if (uploadResult?.success && uploadResult?.url) return uploadResult.url;
+
+          console.warn('Note photo upload failed:', uploadResult?.error || uploadResult);
+          return null;
+        } catch (err) {
+          console.warn('Note photo upload error:', err?.message || err);
+          return null;
+        }
+      })
+    );
+
+    return [...new Set(uploaded.filter((u) => typeof u === 'string' && u.trim().length > 0))];
+  }, [user]);
+
   const confirmClockAction = async () => {
     const now = new Date();
 
@@ -3428,10 +3695,13 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
               const locationLabel = getLocationDisplayText(appointmentData.clockOutLocation) || 'Location unavailable';
               Alert.alert(
                 'Clock Out Successful',
-                `Clocked out at ${new Date(endTime).toLocaleTimeString()}\nLocation: ${locationLabel}`
+                `Clocked out at ${new Date(endTime).toLocaleTimeString()}\nLocation: ${locationLabel}\n\nNote: Please toggle off Active so you don’t show as available on the admin portal for appointments.`
               );
             } else {
-              Alert.alert('Clock Out Successful', 'Appointment marked as completed.');
+              Alert.alert(
+                'Clock Out Successful',
+                'Appointment marked as completed.\n\nNote: Please toggle off Active so you don’t show as available on the admin portal for appointments.'
+              );
             }
 
             setSelectedShiftForClockOut(null);
@@ -3529,8 +3799,8 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
             Alert.alert(
               'Clock Out Successful',
               keptBooked
-                ? `Clocked out at ${new Date(resolvedEndTime).toLocaleTimeString()}\nLocation: ${locationLabel}\nVisit saved. This shift is now back in your Booked tab for the next occurrence.`
-                : `Clocked out at ${new Date(resolvedEndTime).toLocaleTimeString()}\nLocation: ${locationLabel}\nThis was the final scheduled shift. The recurring assignment is now completed.`
+                ? `Clocked out at ${new Date(resolvedEndTime).toLocaleTimeString()}\nLocation: ${locationLabel}\nVisit saved. This shift is now back in your Booked tab for the next occurrence.\n\nNote: Please toggle off Active so you don’t show as available on the admin portal for appointments.`
+                : `Clocked out at ${new Date(resolvedEndTime).toLocaleTimeString()}\nLocation: ${locationLabel}\nThis was the final scheduled shift. The recurring assignment is now completed.\n\nNote: Please toggle off Active so you don’t show as available on the admin portal for appointments.`
             );
             
             // Clear the selected shift
@@ -3612,30 +3882,72 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
       // Handle saving notes for approved shifts (before they start)
       if (selectedItemForNotes) {
         try {
-          const existingNotes = selectedItemForNotes.notes || selectedItemForNotes.nurseNotes || '';
-          const finalNotes = appendTimestampedNotes(existingNotes, shiftNotes);
-
-          // Update the notes in the appointment/shift
+          setIsSavingNotes(true);
           const isShiftItem = Boolean(
             selectedItemForNotes.isShift ||
             selectedItemForNotes.isShiftRequest ||
             selectedItemForNotes.adminRecurring
           );
-          await updateItemNotes(selectedItemForNotes.id, finalNotes, isShiftItem);
+
+          // IMPORTANT: For appointments, do NOT use/overwrite the generic `notes` field here.
+          // Patient-entered notes sometimes live in `notes` as a legacy fallback.
+          const existingNotes = isShiftItem
+            ? (selectedItemForNotes.notes || selectedItemForNotes.nurseNotes || '')
+            : (selectedItemForNotes.nurseNotes || '');
+          const finalNotes = appendTimestampedNotes(existingNotes, shiftNotes);
+          const uploadedPhotoUrls = await uploadNotePhotos(selectedItemForNotes.id, notePhotoUris);
+
+          // Update the notes in the appointment/shift
+          await updateItemNotes(
+            selectedItemForNotes.id,
+            finalNotes,
+            isShiftItem,
+            { nurseNotePhotos: uploadedPhotoUrls }
+          );
           
-          // Update local state to reflect the notes (only nurseNotes to avoid duplication)
-          setSelectedItemDetails(prev => ({
-            ...prev,
-            nurseNotes: finalNotes
-          }));
+          // Update local state to reflect the notes and photos
+          const nowIso = new Date().toISOString();
+          setSelectedItemDetails((prev) => {
+            if (!prev) return prev;
+            const prevId = prev?.id || prev?._id;
+            const targetId = selectedItemForNotes?.id || selectedItemForNotes?._id;
+            if (prevId && targetId && String(prevId) !== String(targetId)) return prev;
+
+            const prevPhotos = Array.isArray(prev?.nurseNotePhotos)
+              ? prev.nurseNotePhotos.filter((u) => typeof u === 'string' && u.trim().length > 0)
+              : [];
+            const combined = [...prevPhotos, ...(Array.isArray(uploadedPhotoUrls) ? uploadedPhotoUrls : [])];
+            const mergedPhotos = [...new Set(combined.filter((u) => typeof u === 'string' && u.trim().length > 0))];
+
+            return {
+              ...prev,
+              nurseNotes: finalNotes,
+              ...(isShiftItem ? { notes: finalNotes } : null),
+              nurseNotePhotos: mergedPhotos,
+              updatedAt: nowIso,
+            };
+          });
           
-          // Trigger refresh to update UI
+          // Refresh appointments from backend to sync photos for future views
+          try {
+            if (isShiftItem) {
+              await refreshShiftRequests();
+            } else {
+              await refreshAppointments();
+            }
+          } catch (err) {
+            console.warn('Failed to refresh items after saving notes:', err?.message || err);
+          }
+          
+          // Trigger UI refresh
           setRefreshKey(prev => prev + 1);
           
           Alert.alert('Success', 'Notes saved successfully!');
         } catch (error) {
           console.error('Failed to save notes:', error);
           Alert.alert('Error', 'Failed to save notes. Please try again.');
+        } finally {
+          setIsSavingNotes(false);
         }
       }
     } else if (actionType === 'complete') {
@@ -3653,9 +3965,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
       }
     }
     
-    setNotesModalVisible(false);
-    setShiftNotes('');
-    setSelectedItemForNotes(null);
+    resetNotesModalState();
   };
 
   // Handle showing appointment/shift details
@@ -3701,7 +4011,20 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
               assignedNurses: Array.isArray(freshData.assignedNurses) ? freshData.assignedNurses : [],
               notesHistory: Array.isArray(freshData.notesHistory) ? freshData.notesHistory : [],
               nurseSchedule: freshData.nurseSchedule && typeof freshData.nurseSchedule === 'object' ? freshData.nurseSchedule : {},
-              daysOfWeek: Array.isArray(freshData.daysOfWeek) ? freshData.daysOfWeek : (Array.isArray(freshData.recurringDaysOfWeek) ? freshData.recurringDaysOfWeek : []),
+              daysOfWeek: Array.from(new Set([
+                ...(Array.isArray(freshData.daysOfWeek) ? freshData.daysOfWeek : []),
+                ...(Array.isArray(freshData.recurringDaysOfWeek) ? freshData.recurringDaysOfWeek : []),
+                ...(Array.isArray(freshData.recurringDaysOfWeekList) ? freshData.recurringDaysOfWeekList : []),
+                ...(Array.isArray(freshData.selectedDays) ? freshData.selectedDays : []),
+                ...(Array.isArray(freshData.recurringPattern?.daysOfWeek) ? freshData.recurringPattern.daysOfWeek : []),
+                ...(Array.isArray(freshData.recurringPattern?.selectedDays) ? freshData.recurringPattern.selectedDays : []),
+                ...(Array.isArray(freshData.schedule?.daysOfWeek) ? freshData.schedule.daysOfWeek : []),
+                ...(Array.isArray(freshData.schedule?.selectedDays) ? freshData.schedule.selectedDays : []),
+                ...(Array.isArray(item.daysOfWeek) ? item.daysOfWeek : []),
+                ...(Array.isArray(item.recurringDaysOfWeek) ? item.recurringDaysOfWeek : []),
+                ...(Array.isArray(item.recurringDaysOfWeekList) ? item.recurringDaysOfWeekList : []),
+                ...(Array.isArray(item.selectedDays) ? item.selectedDays : []),
+              ])),
               nurseResponses: freshData.nurseResponses && typeof freshData.nurseResponses === 'object' ? freshData.nurseResponses : {},
             };
 
@@ -4252,13 +4575,16 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
     const totalHours = calculateHours(shiftDetails.startTime, shiftDetails.endTime);
 
     // Create shift request data
+    const isRecurringShift = Array.isArray(selectedDays) && selectedDays.length > 0;
+    const resolvedStartDate = shiftDetails.startDate || shiftDetails.date;
+    const resolvedEndDate = shiftDetails.endDate || resolvedStartDate;
     const requestData = {
       nurseId: user?.id === 'nurse-001' ? 'NURSE001' : user?.id,
       nurseName: getNurseName(currentNurse || user),
       nurseCode: user?.nurseCode || currentNurse?.code || 'N/A',
-      date: shiftDetails.startDate || shiftDetails.date,
-      startDate: shiftDetails.startDate || shiftDetails.date,
-      endDate: shiftDetails.endDate || shiftDetails.startDate || shiftDetails.date,
+      date: resolvedStartDate,
+      startDate: resolvedStartDate,
+      endDate: resolvedEndDate,
       startTime: shiftDetails.startTime,
       endTime: shiftDetails.endTime,
       totalHours: totalHours,
@@ -4274,8 +4600,17 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
       patientPhone: shiftDetails.clientPhone || 'N/A',
       address: shiftDetails.clientAddress || 'N/A',
       isShift: true, // Mark as shift request
+      isRecurring: isRecurringShift,
       backupNurses: backupNurses, // Include backup nurses
       daysOfWeek: selectedDays, // Include selected days of week
+      ...(isRecurringShift && {
+        recurringPattern: {
+          startDate: resolvedStartDate,
+          endDate: resolvedEndDate,
+          daysOfWeek: selectedDays,
+          frequency: 'weekly',
+        },
+      }),
     };
 
     // Request data prepared
@@ -5035,14 +5370,57 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
   // Handle declining recurring shifts
   const handleDeclineRecurringShift = async (scheduleId, reason = '') => {
     try {
+      // 1. Fetch the shift to determine the correct nurse keys (mirrors accept flow)
+      const shift = await ApiService.getShiftRequestById(scheduleId);
+      if (!shift) throw new Error('Shift not found');
+
+      const roster = Array.isArray(nurses) ? nurses : [];
+      const myUid = String(user?.uid || user?.id || '').trim();
+      const myEmail = String(user?.email || '').trim().toLowerCase();
+
+      const myNurseProfile = roster.find((n) => {
+        if (!n) return false;
+        const nUid = String(n.uid || n.id || n._id || '').trim();
+        const nEmail = String(n.email || '').trim().toLowerCase();
+        return (myUid && nUid === myUid) || (myEmail && nEmail === myEmail);
+      });
+
+      const myMongoId = myNurseProfile?._id || myNurseProfile?.id;
+      const myCode = myNurseProfile?.nurseCode || myNurseProfile?.code || user?.nurseCode || user?.code;
+
+      const myCandidateKeys = Array.from(
+        new Set(
+          [myMongoId, myCode, myUid, user?.nurseCode, user?.code]
+            .filter((v) => v !== null && v !== undefined)
+            .map((v) => String(v).trim())
+            .filter(Boolean)
+        )
+      );
+
+      // 2. Build update payload – mark all candidate keys as declined in nurseResponses
+      const nowIso = new Date().toISOString();
+      const updatePayload = {};
+      for (const key of myCandidateKeys) {
+        updatePayload[`nurseResponses.${key}.status`] = 'declined';
+        updatePayload[`nurseResponses.${key}.declinedAt`] = nowIso;
+        updatePayload[`nurseResponses.${key}.nurseId`] = key;
+        updatePayload[`nurseResponses.${key}.nurseName`] = getNurseName(user) || 'Nurse';
+        updatePayload[`nurseResponses.${key}.uid`] = user?.uid;
+        updatePayload[`nurseResponses.${key}.email`] = user?.email;
+        if (reason) updatePayload[`nurseResponses.${key}.reason`] = reason;
+      }
+      updatePayload.reason = reason || 'Declined';
+
       await ApiService.makeRequest(`/shifts/requests/${scheduleId}/deny`, {
         method: 'PUT',
-        body: JSON.stringify({ reason })
+        body: updatePayload
       });
+
       // Refresh pending recurring shifts
       setRefreshKey(prev => prev + 1);
       Alert.alert('Success', 'Recurring shift declined');
     } catch (error) {
+      console.error('❌ Error declining recurring shift:', error);
       Alert.alert('Error', 'Failed to decline recurring shift');
     }
   };
@@ -5429,13 +5807,21 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
         return completed;
       };
 
-      const daysRaw =
-        shift.daysOfWeek ||
-        shift.recurringDaysOfWeek ||
-        shift.recurringDaysOfWeekList ||
-        shift.selectedDays ||
-        shift.recurringDays ||
-        null;
+      const daysRaw = [
+        shift.daysOfWeek,
+        shift.recurringDaysOfWeek,
+        shift.recurringDaysOfWeekList,
+        shift.selectedDays,
+        shift.recurringDays,
+        shift.recurringPattern?.daysOfWeek,
+        shift.recurringPattern?.selectedDays,
+        shift.schedule?.daysOfWeek,
+        shift.schedule?.selectedDays,
+        shift.recurringSchedule?.daysOfWeek,
+        shift.recurringSchedule?.selectedDays,
+      ]
+        .filter(Boolean)
+        .flatMap((value) => (Array.isArray(value) ? value : [value]));
       let days = normalizeDaysOfWeek(daysRaw);
 
       if (isSplitSchedule) {
@@ -5800,8 +6186,8 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
         Alert.alert(
           'Clock Out Successful',
           keptBooked
-            ? `Clocked out at ${new Date(resolvedEndTime).toLocaleTimeString()}\nLocation: ${locationLabel}\nVisit saved. This shift is now back in your Booked tab for the next occurrence.`
-            : `Clocked out at ${new Date(resolvedEndTime).toLocaleTimeString()}\nLocation: ${locationLabel}\nThis was the final scheduled shift. The recurring assignment is now completed.`
+            ? `Clocked out at ${new Date(resolvedEndTime).toLocaleTimeString()}\nLocation: ${locationLabel}\nVisit saved. This shift is now back in your Booked tab for the next occurrence.\n\nNote: Please toggle off Active so you don’t show as available on the admin portal for appointments.`
+            : `Clocked out at ${new Date(resolvedEndTime).toLocaleTimeString()}\nLocation: ${locationLabel}\nThis was the final scheduled shift. The recurring assignment is now completed.\n\nNote: Please toggle off Active so you don’t show as available on the admin portal for appointments.`
         );
       } catch (error) {
         console.error('Error completing clock out:', error);
@@ -5931,7 +6317,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
         const locationLabel = getLocationDisplayText(locationData) || 'Location unavailable';
         Alert.alert(
           'Clock Out Successful',
-          `Clocked out at ${new Date(endTime).toLocaleTimeString()}\nLocation: ${locationLabel}`
+          `Clocked out at ${new Date(endTime).toLocaleTimeString()}\nLocation: ${locationLabel}\n\nNote: Please toggle off Active so you don’t show as available on the admin portal for appointments.`
         );
       } catch (error) {
         console.error('Error completing appointment clock out:', error);
@@ -6381,13 +6767,55 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
       const latestItem = latestAppointment || latestShift;
       
       if (latestItem) {
-        // Always update with latest data from context to ensure notes persist
-        setSelectedItemDetails(prev => ({
-          ...prev,
-          notes: latestItem.notes || prev.notes,
-          nurseNotes: latestItem.nurseNotes || prev.nurseNotes,
-          completionNotes: latestItem.completionNotes || prev.completionNotes,
-        }));
+        // Merge carefully: avoid overwriting a freshly-saved local note/photos
+        // with stale context data (which can happen before refresh finishes).
+        const toMillis = (value) => {
+          if (!value) return null;
+          const dt = value instanceof Date ? value : new Date(value);
+          const ms = dt instanceof Date && !Number.isNaN(dt.getTime()) ? dt.getTime() : null;
+          return ms;
+        };
+
+        setSelectedItemDetails((prev) => {
+          if (!prev) return prev;
+
+          const prevUpdatedMs = toMillis(prev.updatedAt || prev.assignedAt || prev.createdAt);
+          const latestUpdatedMs = toMillis(latestItem.updatedAt || latestItem.assignedAt || latestItem.createdAt);
+          const isLatestNewer =
+            typeof latestUpdatedMs === 'number' &&
+            (typeof prevUpdatedMs !== 'number' || latestUpdatedMs > prevUpdatedMs);
+
+          const pickText = (field) => {
+            const prevValue = typeof prev?.[field] === 'string' ? prev[field] : '';
+            const latestValue = typeof latestItem?.[field] === 'string' ? latestItem[field] : '';
+
+            if (isLatestNewer) {
+              return latestValue || prevValue;
+            }
+
+            // Prefer local value unless it's empty.
+            return prevValue || latestValue;
+          };
+
+          const sanitizeUrls = (value) =>
+            (Array.isArray(value) ? value : [])
+              .filter((u) => typeof u === 'string' && u.trim().length > 0);
+
+          const prevPhotos = sanitizeUrls(prev?.nurseNotePhotos);
+          const latestPhotos = sanitizeUrls(latestItem?.nurseNotePhotos);
+          const mergedPhotos = isLatestNewer
+            ? (latestPhotos.length ? latestPhotos : prevPhotos)
+            : (prevPhotos.length ? prevPhotos : latestPhotos);
+
+          return {
+            ...prev,
+            notes: pickText('notes'),
+            nurseNotes: pickText('nurseNotes'),
+            completionNotes: pickText('completionNotes'),
+            nurseNotePhotos: mergedPhotos,
+            updatedAt: isLatestNewer ? (latestItem.updatedAt || prev.updatedAt) : prev.updatedAt,
+          };
+        });
       }
     }
   }, [appointments, shiftRequests, selectedItemDetails?.id, detailsModalVisible]);
@@ -7093,6 +7521,78 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                     showsVerticalScrollIndicator={false}
                     contentContainerStyle={{paddingBottom: 100}}
                   >
+                    {/* Patient Alerts Banner */}
+                    {(() => {
+                      const status = selectedItemDetails?.status;
+                      // For nurses, show alerts for all appointments except completed/cancelled
+                      const shouldShowAlerts = status && !['completed', 'cancelled', 'canceled', 'declined', 'rejected'].includes(status.toLowerCase());
+                      if (!shouldShowAlerts) return null;
+
+                      let patientAlerts = selectedItemDetails?.patientAlerts ||
+                        selectedItemDetails?.clinicalInfo ||
+                        selectedItemDetails?.appointmentDetails?.patientAlerts;
+
+                      if (typeof patientAlerts === 'string') {
+                        try {
+                          patientAlerts = JSON.parse(patientAlerts);
+                        } catch {
+                          patientAlerts = null;
+                        }
+                      }
+
+                      if (!patientAlerts || typeof patientAlerts !== 'object') return null;
+
+                      const allergies = Array.isArray(patientAlerts.allergies) ? patientAlerts.allergies : [];
+                      const allergyOther = String(patientAlerts.allergyOther || '').trim();
+                      const vitals = patientAlerts.vitals || {};
+
+                      const bpSys = String(vitals?.bloodPressureSystolic || '').trim();
+                      const bpDia = String(vitals?.bloodPressureDiastolic || '').trim();
+                      const hr = String(vitals?.heartRate || '').trim();
+                      const temp = String(vitals?.temperature || '').trim();
+                      const spo2 = String(vitals?.oxygenSaturation || '').trim();
+
+                      const allergiesFiltered = allergies
+                        .map((a) => String(a).trim())
+                        .filter((a) => a && a.toLowerCase() !== 'none')
+                        .filter((a) => !(a === 'Other' && allergyOther));
+
+                      const hasAllergies = allergiesFiltered.length > 0 || Boolean(allergyOther);
+                      const hasVitals = Boolean(bpSys || bpDia || hr || temp || spo2);
+                      
+                      if (!hasAllergies && !hasVitals) return null;
+
+                      const allergyTextParts = [...allergiesFiltered];
+                      if (allergyOther && !allergyTextParts.includes(allergyOther)) allergyTextParts.push(allergyOther);
+                      const allergyText = allergyTextParts.length ? allergyTextParts.join(', ') : '';
+
+                      const vitalsParts = [];
+                      if (bpSys || bpDia) vitalsParts.push(`BP ${bpSys || '?'} / ${bpDia || '?'}`);
+                      if (hr) vitalsParts.push(`HR ${hr}`);
+                      if (temp) vitalsParts.push(`Temp ${temp}`);
+                      if (spo2) vitalsParts.push(`SpO₂ ${spo2}%`);
+                      const vitalsText = vitalsParts.join(' • ');
+
+                      return (
+                        <View style={styles.patientAlertsBanner}>
+                          <MaterialCommunityIcons name="alert-circle" size={18} color={COLORS.error} />
+                          <View style={{ flex: 1 }}>
+                            <Text style={styles.patientAlertsTitle}>Patient Alerts</Text>
+                            {hasAllergies ? (
+                              <Text style={styles.patientAlertsText} numberOfLines={3}>
+                                Patient is allergic to: {allergyText || '—'}
+                              </Text>
+                            ) : null}
+                            {hasVitals ? (
+                              <Text style={styles.patientAlertsText} numberOfLines={3}>
+                                Vitals are: {vitalsText}
+                              </Text>
+                            ) : null}
+                          </View>
+                        </View>
+                      );
+                    })()}
+
                     {/* Backup coverage banner for targeted backup nurse */}
                     {(() => {
                       // Show banner for shift requests
@@ -7820,11 +8320,10 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                                 <View style={styles.splitNurseTimeContent}>
                                   <Text style={styles.splitNurseTimeLabel}>Start Date</Text>
                                   <Text style={styles.splitNurseTimeValue}>
-                                    {new Date(selectedItemDetails.recurringPattern.startDate).toLocaleDateString('en-US', { 
-                                      month: 'short', 
-                                      day: 'numeric', 
-                                      year: 'numeric' 
-                                    })}
+                                    {(() => {
+                                      const d = toDateFromValue(selectedItemDetails.recurringPattern.startDate);
+                                      return d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A';
+                                    })()}
                                   </Text>
                                 </View>
                               </View>
@@ -7834,14 +8333,11 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                                 <View style={styles.splitNurseTimeContent}>
                                   <Text style={styles.splitNurseTimeLabel}>End Date</Text>
                                   <Text style={styles.splitNurseTimeValue}>
-                                    {selectedItemDetails.recurringPattern.endDate
-                                      ? new Date(selectedItemDetails.recurringPattern.endDate).toLocaleDateString('en-US', { 
-                                          month: 'short', 
-                                          day: 'numeric', 
-                                          year: 'numeric' 
-                                        })
-                                      : 'Ongoing'
-                                    }
+                                    {(() => {
+                                      if (!selectedItemDetails.recurringPattern.endDate) return 'Ongoing';
+                                      const d = toDateFromValue(selectedItemDetails.recurringPattern.endDate);
+                                      return d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A';
+                                    })()}
                                   </Text>
                                 </View>
                               </View>
@@ -7942,18 +8438,14 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                             <View style={styles.detailContent}>
                               <Text style={styles.detailLabel}>Schedule Period</Text>
                               <Text style={styles.detailValue}>
-                                {new Date(selectedItemDetails.recurringPattern.startDate).toLocaleDateString('en-US', { 
-                                  month: 'short', 
-                                  day: 'numeric', 
-                                  year: 'numeric' 
-                                })}
-                                {selectedItemDetails.recurringPattern.endDate && (
-                                  ` - ${new Date(selectedItemDetails.recurringPattern.endDate).toLocaleDateString('en-US', { 
-                                    month: 'short', 
-                                    day: 'numeric', 
-                                    year: 'numeric' 
-                                  })}`
-                                )}
+                                {(() => {
+                                  const d = toDateFromValue(selectedItemDetails.recurringPattern.startDate);
+                                  return d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A';
+                                })()}
+                                {selectedItemDetails.recurringPattern.endDate && (() => {
+                                  const d = toDateFromValue(selectedItemDetails.recurringPattern.endDate);
+                                  return d ? ` - ${d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}` : '';
+                                })()}
                                 {!selectedItemDetails.recurringPattern.endDate && ' (ongoing)'}
                               </Text>
                             </View>
@@ -8146,9 +8638,13 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                                   const startDate = selectedItemDetails.recurringPattern.startDate;
                                   const endDate = selectedItemDetails.recurringPattern.endDate;
                                   if (startDate) {
-                                    const start = new Date(startDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+                                    const startParsed = toDateFromValue(startDate);
+                                    const endParsed = endDate ? toDateFromValue(endDate) : null;
+                                    const start = startParsed
+                                      ? startParsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                                      : 'N/A';
                                     const end = endDate
-                                      ? new Date(endDate).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+                                      ? (endParsed ? endParsed.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : 'N/A')
                                       : 'Ongoing';
                                     return `${start} - ${end}`;
                                   }
@@ -8627,6 +9123,10 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                         return null;
                       })();
 
+                      const nurseNotePhotos = Array.isArray(selectedItemDetails?.nurseNotePhotos)
+                        ? selectedItemDetails.nurseNotePhotos.filter((uri) => typeof uri === 'string' && uri.trim().length > 0)
+                        : [];
+
                       if (nurseNotesBody) {
                         const nurseSubtitle =
                           selectedItemDetails?.nurseCode ||
@@ -8644,6 +9144,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                           title: selectedItemDisplayNurseName || 'Nurse Note',
                           subtitle: nurseSubtitle,
                           body: nurseNotesBody,
+                          photoUrls: nurseNotePhotos,
                         });
                       }
 
@@ -8674,26 +9175,24 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
 
                       return (
                         <>
-                          {nurseItems.length > 0 && (
-                            <View style={styles.detailsSection}>
-                              <Text style={styles.sectionTitle}>Nurses Notes</Text>
-                              <NotesAccordionList
-                                items={nurseItems}
-                                emptyText="No notes yet"
-                                showTime
-                              />
-                            </View>
-                          )}
-                          {patientItems.length > 0 && (
-                            <View style={styles.detailsSection}>
-                              <Text style={styles.sectionTitle}>Patient Notes</Text>
-                              <NotesAccordionList
-                                items={patientItems}
-                                emptyText="No patient notes provided."
-                                showTime
-                              />
-                            </View>
-                          )}
+                          <View style={styles.detailsSection}>
+                            <Text style={styles.sectionTitle}>Nurses Notes</Text>
+                            <NotesAccordionList
+                              items={nurseItems}
+                              emptyText="No notes yet"
+                              showTime
+                              onPhotoPress={openNotePhotoPreview}
+                            />
+                          </View>
+                          <View style={styles.detailsSection}>
+                            <Text style={styles.sectionTitle}>Patient Notes</Text>
+                            <NotesAccordionList
+                              items={patientItems}
+                              emptyText="No patient notes provided."
+                              showTime
+                              onPhotoPress={openNotePhotoPreview}
+                            />
+                          </View>
                         </>
                       );
                     })()}
@@ -9222,55 +9721,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                           <View style={{ flexDirection: 'row', gap: 8, width: '100%' }}>
                             <TouchableOpacity
                               style={[styles.modalActionButton, { flex: 1 }]}
-                              onPress={() => {
-                                Alert.prompt(
-                                  'Add Notes',
-                                  'Add notes about this appointment:',
-                                  [
-                                    { text: 'Cancel', style: 'cancel' },
-                                    {
-                                      text: 'Save',
-                                      onPress: async (text) => {
-                                        if (text !== undefined && String(text).trim().length) {
-                                          try {
-                                            const existingNotes = selectedItemDetails.notes || selectedItemDetails.nurseNotes || '';
-                                            const finalNotes = existingNotes && existingNotes.trim().length
-                                              ? `${existingNotes}\n\n--- ${new Date().toLocaleString()} ---\n${String(text).trim()}`
-                                              : String(text).trim();
-
-                                            await updateItemNotes(selectedItemDetails.id, finalNotes, false);
-
-                                            // Update local modal state
-                                            setSelectedItemDetails(prev => ({
-                                              ...prev,
-                                              nurseNotes: finalNotes,
-                                            }));
-                                            
-                                            // Update appointments context to persist notes
-                                            const isAppointment = appointments.some(apt => apt.id === selectedItemDetails.id);
-                                            if (isAppointment) {
-                                              const updatedAppointments = appointments.map(apt => 
-                                                apt.id === selectedItemDetails.id 
-                                                  ? { ...apt, nurseNotes: finalNotes }
-                                                  : apt
-                                              );
-                                              // Update context here if you have a setter
-                                            }
-                                            
-                                            setRefreshKey(prev => prev + 1);
-                                            Alert.alert('Success', 'Notes saved successfully!');
-                                          } catch (error) {
-                                            console.error('Failed to save appointment notes:', error);
-                                            Alert.alert('Error', 'Failed to save notes. Please try again.');
-                                          }
-                                        }
-                                      }
-                                    }
-                                  ],
-                                  'plain-text',
-                                  ''
-                                );
-                              }}
+                              onPress={() => openAddNotesFromDetails(selectedItemDetails)}
                             >
                               <Text style={styles.modalActionButtonText}>Add Notes</Text>
                             </TouchableOpacity>
@@ -9321,49 +9772,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                       <View style={[styles.modalFooter, { gap: 8 }]}>
                         <TouchableOpacity
                           style={[styles.modalActionButton, { flex: 1 }]}
-                          onPress={() => {
-                            Alert.prompt(
-                              'Add Notes',
-                              'Add notes about this appointment:',
-                              [
-                                { text: 'Cancel', style: 'cancel' },
-                                {
-                                  text: 'Save',
-                                  onPress: async (text) => {
-                                    if (text !== undefined && String(text).trim().length) {
-                                      try {
-                                        const existingNotes = selectedItemDetails.notes || selectedItemDetails.nurseNotes || '';
-                                        const finalNotes = existingNotes && existingNotes.trim().length
-                                          ? `${existingNotes}\n\n--- ${new Date().toLocaleString()} ---\n${String(text).trim()}`
-                                          : String(text).trim();
-
-                                        const isShiftItem = Boolean(
-                                          selectedItemDetails.isShift ||
-                                          selectedItemDetails.isShiftRequest ||
-                                          selectedItemDetails.adminRecurring
-                                        );
-
-                                        await updateItemNotes(selectedItemDetails.id, finalNotes, isShiftItem);
-
-                                        setSelectedItemDetails(prev => ({
-                                          ...prev,
-                                          nurseNotes: finalNotes,
-                                        }));
-
-                                        setRefreshKey(prev => prev + 1);
-                                        Alert.alert('Success', 'Notes saved successfully!');
-                                      } catch (error) {
-                                        console.error('Failed to save appointment notes:', error);
-                                        Alert.alert('Error', 'Failed to save notes. Please try again.');
-                                      }
-                                    }
-                                  }
-                                }
-                              ],
-                              'plain-text',
-                              ''
-                            );
-                          }}
+                          onPress={() => openAddNotesFromDetails(selectedItemDetails)}
                         >
                           <Text style={styles.modalActionButtonText}>Add Notes</Text>
                         </TouchableOpacity>
@@ -9449,46 +9858,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                           <View style={{ flexDirection: 'row', gap: 8, width: '100%' }}>
                             <TouchableOpacity
                               style={[styles.modalActionButton, { flex: 1 }]}
-                              onPress={() => {
-                                Alert.prompt(
-                                  'Add Notes',
-                                  'Add notes about this shift:',
-                                  [
-                                    { text: 'Cancel', style: 'cancel' },
-                                    {
-                                      text: 'Save',
-                                      onPress: async (text) => {
-                                        if (text !== undefined && String(text).trim().length) {
-                                          try {
-                                            const existingNotes = selectedItemDetails.notes || selectedItemDetails.nurseNotes || '';
-                                            const finalNotes = existingNotes && existingNotes.trim().length
-                                              ? `${existingNotes}\n\n--- ${new Date().toLocaleString()} ---\n${String(text).trim()}`
-                                              : String(text).trim();
-
-                                            const isShiftItem = Boolean(
-                                              selectedItemDetails?.isShift ||
-                                              selectedItemDetails?.isShiftRequest ||
-                                              selectedItemDetails?.adminRecurring
-                                            );
-
-                                            await updateItemNotes(selectedItemDetails.id, finalNotes, isShiftItem);
-                                            setSelectedItemDetails(prev => ({
-                                              ...prev,
-                                              nurseNotes: finalNotes
-                                            }));
-                                            setRefreshKey(prev => prev + 1);
-                                            Alert.alert('Success', 'Notes saved successfully!');
-                                          } catch (error) {
-                                            Alert.alert('Error', 'Failed to save notes. Please try again.');
-                                          }
-                                        }
-                                      }
-                                    }
-                                  ],
-                                  'plain-text',
-                                  ''
-                                );
-                              }}
+                              onPress={() => openAddNotesFromDetails(selectedItemDetails)}
                             >
                               <Text style={styles.modalActionButtonText}>Add Notes</Text>
                             </TouchableOpacity>
@@ -9525,47 +9895,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                         <View style={{ flexDirection: 'row', gap: 8, width: '100%' }}>
                           <TouchableOpacity
                             style={[styles.modalActionButton, { flex: 1 }]}
-                            onPress={() => {
-                              Alert.prompt(
-                                'Add Notes',
-                                'Add notes about this shift:',
-                                [
-                                  { text: 'Cancel', style: 'cancel' },
-                                  {
-                                    text: 'Save',
-                                    onPress: async (text) => {
-                                      if (text !== undefined && String(text).trim().length) {
-                                        try {
-                                          const existingNotes = selectedItemDetails.notes || selectedItemDetails.nurseNotes || '';
-                                          const finalNotes = existingNotes && existingNotes.trim().length
-                                            ? `${existingNotes}\n\n--- ${new Date().toLocaleString()} ---\n${String(text).trim()}`
-                                            : String(text).trim();
-
-                                          const isShiftItem = Boolean(
-                                            selectedItemDetails?.isShift ||
-                                            selectedItemDetails?.isShiftRequest ||
-                                            selectedItemDetails?.adminRecurring
-                                          );
-
-                                          await updateItemNotes(selectedItemDetails.id, finalNotes, isShiftItem);
-                                          setSelectedItemDetails(prev => ({
-                                            ...prev,
-                                            nurseNotes: finalNotes
-                                          }));
-                                          setRefreshKey(prev => prev + 1);
-                                          Alert.alert('Success', 'Notes saved successfully!');
-                                        } catch (error) {
-                                          console.error('Failed to save notes:', error);
-                                          Alert.alert('Error', 'Failed to save notes. Please try again.');
-                                        }
-                                      }
-                                    }
-                                  }
-                                ],
-                                'plain-text',
-                                ''
-                              );
-                            }}
+                            onPress={() => openAddNotesFromDetails(selectedItemDetails)}
                           >
                             <Text style={styles.modalActionButtonText}>Add Notes</Text>
                           </TouchableOpacity>
@@ -9611,6 +9941,28 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                   })()}
                 </>
               )}
+
+              {/* Photo preview shown inside the Appointment Details modal */}
+              {notePhotoPreviewVisible && notePhotoPreviewUri ? (
+                <View style={styles.photoPreviewOverlayInModal}>
+                  <TouchableOpacity
+                    style={styles.photoPreviewOverlayTapArea}
+                    activeOpacity={1}
+                    onPress={() => {
+                      setNotePhotoPreviewVisible(false);
+                      setNotePhotoPreviewUri('');
+                    }}
+                  >
+                    <View style={styles.photoPreviewImageFrame}>
+                      <Image
+                        source={{ uri: notePhotoPreviewUri }}
+                        style={styles.photoPreviewImage}
+                        resizeMode="contain"
+                      />
+                    </View>
+                  </TouchableOpacity>
+                </View>
+              ) : null}
             </View>
           </View>
         </Modal>
@@ -9621,23 +9973,29 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
           animationType="fade"
           transparent={true}
           visible={notesModalVisible}
-          onRequestClose={() => {
-            setNotesModalVisible(false);
-            setActionType('');
-            setShiftNotes('');
-            setSelectedItemForNotes(null);
-            setSelectedShiftForClockOut(null);
-          }}
+          onRequestClose={resetNotesModalState}
         >
+          <KeyboardAvoidingView
+            behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+            style={{ flex: 1 }}
+          >
+          <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
           <View style={styles.notesModalOverlay}>
+            <TouchableWithoutFeedback onPress={(e) => e.stopPropagation()}>
             <View style={styles.notesModalContainer}>
-              {/* Content */}
-              <View style={styles.notesModalContent}>
-                <Text style={styles.notesModalTitle}>
-                  {actionType === 'clockin' ? 'Starting Shift' : 
-                   actionType === 'clockout' ? 'Ending Shift' : 
-                   actionType === 'complete' ? 'Complete Appointment' : 'Add Notes'}
-                </Text>
+              {/* Header */}
+              <Text style={styles.notesModalTitle}>
+                {actionType === 'clockin' ? 'Starting Shift' : 
+                 actionType === 'clockout' ? 'Ending Shift' : 
+                 actionType === 'complete' ? 'Complete Appointment' : 'Add Notes'}
+              </Text>
+              
+              {/* Scrollable Content */}
+              <ScrollView 
+                style={styles.notesModalContent}
+                showsVerticalScrollIndicator={false}
+                keyboardShouldPersistTaps="handled"
+              >
                 {/* Service Information Section */}
                 {selectedItemForNotes && (
                   <View style={styles.serviceInfoSection}>
@@ -9710,25 +10068,31 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                   );
                 })()}
 
-                <Text style={styles.notesModalSubtitle}>
-                  {actionType === 'clockin' 
-                    ? 'Add any notes for the start of your shift:' 
-                    : actionType === 'clockout'
-                    ? selectedShiftForClockOut ? 'Add notes for shift completion:' : 'Add any notes for the end of your shift:'
-                    : actionType === 'complete'
-                    ? 'Add completion notes for this appointment:'
-                    : actionType === 'addnotes'
-                    ? (selectedItemForNotes && !(selectedItemForNotes.isShift || selectedItemForNotes.isShiftRequest || selectedItemForNotes.adminRecurring)
-                        ? 'Add notes about this appointment:'
-                        : 'Add notes about this shift:')
-                    : 'Add notes:'
-                  }
-                </Text>
-
                 <TextInput
-                  style={styles.notesModalInput}
-                  placeholder=""
-                  placeholderTextColor={COLORS.textLight}
+                  style={[
+                    styles.notesModalInput,
+                    shiftNotes ? { 
+                      textAlign: 'left', 
+                      textAlignVertical: 'top',
+                      fontSize: 16 
+                    } : { 
+                      fontSize: 14 
+                    }
+                  ]}
+                  placeholder={
+                    actionType === 'clockin' 
+                      ? 'Add any notes for the start of your shift...'
+                      : actionType === 'clockout'
+                      ? selectedShiftForClockOut ? 'Add notes for shift completion...' : 'Add any notes for the end of your shift...'
+                      : actionType === 'complete'
+                      ? 'Add completion notes for this appointment...'
+                      : actionType === 'addnotes'
+                      ? (selectedItemForNotes && !(selectedItemForNotes.isShift || selectedItemForNotes.isShiftRequest || selectedItemForNotes.adminRecurring)
+                          ? 'Add notes about this appointment...'
+                          : 'Add notes about this shift...')
+                      : 'Add notes...'
+                  }
+                  placeholderTextColor="#D1D5DB"
                   value={shiftNotes}
                   onChangeText={setShiftNotes}
                   multiline
@@ -9737,36 +10101,102 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                   autoFocus={true}
                 />
 
-                <View style={styles.notesModalButtonRow}>
+                {actionType === 'addnotes' && (
+                  <View style={styles.notePhotosSection}>
+                    <TouchableOpacity
+                      style={styles.notePhotosAddButton}
+                      onPress={pickNotePhotos}
+                      disabled={notePhotoPickerBusy || isSavingNotes}
+                    >
+                      <MaterialCommunityIcons name="camera-plus" size={18} color={COLORS.primary} />
+                      <Text style={styles.notePhotosAddButtonText}>
+                        {notePhotoPickerBusy ? 'Opening...' : 'Add Photo'}
+                      </Text>
+                    </TouchableOpacity>
+
+                    {notePhotoUris.length > 0 && (
+                      <ScrollView
+                        horizontal
+                        showsHorizontalScrollIndicator={false}
+                        contentContainerStyle={styles.notePhotosList}
+                      >
+                        {notePhotoUris.map((uri, index) => (
+                          <View key={`${uri}-${index}`} style={styles.notePhotoThumbWrap}>
+                            <TouchableOpacity onPress={() => openNotePhotoPreview(uri)}>
+                              <Image source={{ uri }} style={styles.notePhotoThumb} />
+                            </TouchableOpacity>
+                            <TouchableOpacity
+                              style={styles.notePhotoRemoveButton}
+                              onPress={() => removeNotePhoto(index)}
+                              hitSlop={{ top: 8, right: 8, bottom: 8, left: 8 }}
+                            >
+                              <MaterialCommunityIcons name="close-circle" size={20} color={COLORS.error} />
+                            </TouchableOpacity>
+                          </View>
+                        ))}
+                      </ScrollView>
+                    )}
+                  </View>
+                )}
+              </ScrollView>
+
+              {/* Fixed button row */}
+              <View style={styles.notesModalButtonRow}>
                   <TouchableOpacity
                     style={styles.notesModalCancelButton}
-                    onPress={() => {
-                      setNotesModalVisible(false);
-                      setActionType('');
-                      setShiftNotes('');
-                      setSelectedItemForNotes(null);
-                      setSelectedShiftForClockOut(null);
-                    }}
+                    onPress={resetNotesModalState}
                   >
                     <Text style={styles.notesModalCancelButtonText}>Cancel</Text>
                   </TouchableOpacity>
 
-                  <View style={styles.notesButtonDivider} />
-
                   <TouchableOpacity
-                    style={styles.notesModalSaveButton}
+                    style={[styles.notesModalSaveButton, isSavingNotes ? { opacity: 0.6 } : null]}
+                    disabled={isSavingNotes}
                     onPress={confirmClockAction}
                   >
-                    <Text style={styles.notesModalSaveButtonText}>
-                      {actionType === 'clockin' ? 'Clock In' : 
-                       actionType === 'clockout' ? 'Clock Out' : 
-                       actionType === 'complete' ? 'Complete' : 'Save'}
-                    </Text>
+                    <LinearGradient
+                      colors={['#10b981', '#059669']}
+                      start={{ x: 0, y: 0 }}
+                      end={{ x: 0, y: 1 }}
+                      style={styles.notesModalSaveButtonGradient}
+                    >
+                      <Text style={styles.notesModalSaveButtonText}>
+                        {isSavingNotes
+                          ? 'Saving...'
+                          : actionType === 'clockin' ? 'Clock In' : 
+                         actionType === 'clockout' ? 'Clock Out' : 
+                         actionType === 'complete' ? 'Complete' : 'Save'}
+                      </Text>
+                    </LinearGradient>
                   </TouchableOpacity>
                 </View>
-              </View>
+
+                {/* Photo preview shown inside the Add Notes modal */}
+                {notePhotoPreviewVisible && notePhotoPreviewUri ? (
+                  <View style={styles.photoPreviewOverlayInModal}>
+                    <TouchableOpacity
+                      style={styles.photoPreviewOverlayTapArea}
+                      activeOpacity={1}
+                      onPress={() => {
+                        setNotePhotoPreviewVisible(false);
+                        setNotePhotoPreviewUri('');
+                      }}
+                    >
+                      <View style={styles.photoPreviewImageFrame}>
+                        <Image
+                          source={{ uri: notePhotoPreviewUri }}
+                          style={styles.photoPreviewImage}
+                          resizeMode="contain"
+                        />
+                      </View>
+                    </TouchableOpacity>
+                  </View>
+                ) : null}
             </View>
+            </TouchableWithoutFeedback>
           </View>
+          </TouchableWithoutFeedback>
+          </KeyboardAvoidingView>
         </Modal>
 
         {/* Shift Booking Modal */}
@@ -10071,7 +10501,11 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                                      const name = ((n.firstName || '') + ' ' + (n.lastName || '')).toLowerCase();
                                      const code = (n.code || n.nurseCode || n.staffCode || '').toLowerCase();
                                      const q = text.toLowerCase();
-                                     return (name.includes(q) || code.includes(q)) && !backupNurses.some(b => (b.nurseId === n.id || b.id === n.id || b.id === n._id));
+                                     // Filter out: current user, inactive nurses, already selected backup nurses
+                                     const isCurrentUser = n.id === user?.id || n._id === user?.id;
+                                     const isInactive = n.isActive === false || n.active === false;
+                                     const isAlreadySelected = backupNurses.some(b => (b.nurseId === n.id || b.id === n.id || b.id === n._id));
+                                     return (name.includes(q) || code.includes(q)) && !isCurrentUser && !isInactive && !isAlreadySelected;
                                    });
                                    setFilteredBackupNurses(relevant);
                                  }}
@@ -10079,7 +10513,13 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                                />
                              </View>
                              <ScrollView nestedScrollEnabled keyboardShouldPersistTaps="handled">
-                               {(filteredBackupNurses.length ? filteredBackupNurses : nurses).map((nurse, index) => {
+                               {(filteredBackupNurses.length ? filteredBackupNurses : nurses.filter(n => {
+                                 // Filter out: current user, inactive nurses, already selected backup nurses
+                                 const isCurrentUser = n.id === user?.id || n._id === user?.id;
+                                 const isInactive = n.isActive === false || n.active === false;
+                                 const isAlreadySelected = backupNurses.some(b => (b.nurseId === n.id || b.id === n.id || b.id === n._id));
+                                 return !isCurrentUser && !isInactive && !isAlreadySelected;
+                               })).map((nurse, index) => {
                                  const displayName = `${nurse.firstName || ''} ${nurse.lastName || ''}`.trim() || nurse.fullName || nurse.name || 'Backup Nurse';
                                  const displayCode = nurse.code || nurse.nurseCode || nurse.staffCode || '—';
                                  const photoUri = nurse.profilePhoto || nurse.profileImage || nurse.photoUrl || null;
@@ -10477,6 +10917,7 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
                 setTimeout(() => setShiftBookingModal(true), 200);
               }
             }}
+            showQualificationsRequest={false}
             nurse={{
               name: selectedBackupCandidate.displayName,
               fullName: selectedBackupCandidate.displayName,
@@ -10562,159 +11003,13 @@ export default function NurseAppointmentsScreen({ navigation, route }) {
           currentNurseCode={user?.staffCode || user?.nurseCode || user?.code || user?.username || nurseId}
           onAddNote={(shiftPayload) => {
             const target = shiftPayload || selectedRecurringShift;
-            const shiftId = target?.id || target?._id;
-            if (!shiftId) return;
-
-            const isSplitScheduleShift = (() => {
-              if (!target) return false;
-              if (String(target?.assignmentType || '').toLowerCase() === 'split-schedule') return true;
-              const serviceText = String(target?.service || '').toLowerCase();
-              if (serviceText.includes('split schedule')) return true;
-              const schedule = target?.nurseSchedule;
-              if (schedule && typeof schedule === 'object' && Object.keys(schedule).length > 0) return true;
-              const assigned = Array.isArray(target?.assignedNurses) ? target.assignedNurses : [];
-              if (assigned.length > 1) return true;
-              return false;
-            })();
-
-            const clockContainerKeys = ['clockDetails', 'activeShift', 'shiftDetails', 'shift'];
-
-            const collectClockByNurseBuckets = () => {
-              const buckets = [];
-
-              if (target?.clockByNurse && typeof target.clockByNurse === 'object') {
-                buckets.push({ key: null, map: target.clockByNurse });
-              }
-
-              clockContainerKeys.forEach((containerKey) => {
-                const container = target?.[containerKey];
-                if (!container || typeof container !== 'object') return;
-                const map = container?.clockByNurse;
-                if (!map || typeof map !== 'object') return;
-                buckets.push({ key: containerKey, map });
-              });
-
-              return buckets;
-            };
-
-            const clockBuckets = collectClockByNurseBuckets();
-
-            const mergedClockByNurseForTarget = (() => {
-              const merged = {};
-              clockBuckets.forEach((b) => {
-                if (!b?.map || typeof b.map !== 'object') return;
-                Object.assign(merged, b.map);
-              });
-              return Object.keys(merged).length > 0 ? merged : null;
-            })();
-
-            const containerKeysToUpdate = (() => {
-              const keys = clockBuckets
-                .map((b) => b?.key)
-                .filter((k) => typeof k === 'string' && k.length > 0);
-              return Array.from(new Set(keys));
-            })();
-
-            const resolveMyClockByNurseKey = (() => {
-              const clockByNurseForResolve = mergedClockByNurseForTarget;
-              if (!clockByNurseForResolve) return null;
-
-              const rawKeys = [
-                nurseId,
-                user?.staffCode,
-                user?.nurseCode,
-                user?.code,
-                user?.username,
-              ]
-                .filter(Boolean)
-                .map((v) => String(v).trim())
-                .filter(Boolean);
-
-              for (const rawKey of rawKeys) {
-                if (clockByNurseForResolve[rawKey]) return rawKey;
-                const upper = rawKey.toUpperCase();
-                if (clockByNurseForResolve[upper]) return upper;
-                const lower = rawKey.toLowerCase();
-                if (clockByNurseForResolve[lower]) return lower;
-              }
-
-              return null;
-            })();
-
-            const resolvedClockKeyForNotes = resolveMyClockByNurseKey || String(nurseId);
-
-            const nurseCodeForNotes = user?.staffCode || user?.nurseCode || user?.code || user?.username || null;
-
-            const initialText = (() => {
-              const clockByNurse = mergedClockByNurseForTarget;
-              if (clockByNurse && typeof clockByNurse === 'object') {
-                const entry = clockByNurse?.[resolvedClockKeyForNotes] || null;
-                const fromClock = entry?.nurseNotes || entry?.lastCompletionNotes || '';
-                if (fromClock) return fromClock;
-              }
-
-              return target?.notes || target?.nurseNotes || '';
-            })();
-
-            Alert.prompt(
-              'Add Notes',
-              'Add notes about this shift:',
-              [
-                { text: 'Cancel', style: 'cancel' },
-                {
-                  text: 'Save',
-                  onPress: async (text) => {
-                    if (text === undefined || !text.trim()) return;
-                    try {
-                      const nowIso = new Date().toISOString();
-                      const keyToUse = resolvedClockKeyForNotes;
-
-                      // Append new notes to existing notes with timestamp
-                      const finalNotes = initialText.trim()
-                        ? `${initialText}\n\n--- ${new Date().toLocaleString()} ---\n${text.trim()}`
-                        : text.trim();
-
-                      const payload = (() => {
-                        const updates = {
-                          notes: finalNotes,
-                          nurseNotes: finalNotes,
-                          [`clockByNurse.${keyToUse}.nurseNotes`]: finalNotes,
-                          [`clockByNurse.${keyToUse}.nurseId`]: nurseId,
-                          ...(nurseCodeForNotes ? { [`clockByNurse.${keyToUse}.nurseCode`]: nurseCodeForNotes } : null),
-                          [`clockByNurse.${keyToUse}.nurseNotesUpdatedAt`]: nowIso,
-                        };
-
-                        // Also write into any wrapper containers that already hold clockByNurse
-                        containerKeysToUpdate.forEach((containerKey) => {
-                          updates[`${containerKey}.clockByNurse.${keyToUse}.nurseNotes`] = finalNotes;
-                          updates[`${containerKey}.clockByNurse.${keyToUse}.nurseId`] = nurseId;
-                          if (nurseCodeForNotes) updates[`${containerKey}.clockByNurse.${keyToUse}.nurseCode`] = nurseCodeForNotes;
-                          updates[`${containerKey}.clockByNurse.${keyToUse}.nurseNotesUpdatedAt`] = nowIso;
-                        });
-
-                        return updates;
-                      })();
-
-                      await updateShiftRequestDetails(shiftId, payload);
-                      handleRecurringShiftNotesUpdate(finalNotes, {
-                        clockKey: keyToUse,
-                        nurseId,
-                        nurseCode: nurseCodeForNotes,
-                        containerKeys: containerKeysToUpdate,
-                        updatedAt: nowIso,
-                        forceClockByNurse: true,
-                      });
-                      Alert.alert('Success', 'Notes saved successfully!');
-                    } catch (error) {
-                      console.error('Failed to save recurring notes:', error);
-                      Alert.alert('Error', 'Failed to save notes. Please try again.');
-                    }
-                  },
-                },
-              ],
-              'plain-text',
-              '' // Empty text field - previous notes will be appended automatically
-            );
+            if (!target) return;
+            setRecurringShiftDetailsModalVisible(false);
+            setSelectedRecurringShift(null);
+            setHideRecurringShiftDetailsFooter(false);
+            setTimeout(() => {
+              openAddNotesModal(target);
+            }, 220);
           }}
           onRequestBackup={(shiftPayload) => {
             const target = shiftPayload || selectedRecurringShift;
@@ -12021,6 +12316,28 @@ const styles = StyleSheet.create({
     padding: SPACING.lg,
     paddingBottom: SPACING.sm,
   },
+  patientAlertsBanner: {
+    flexDirection: 'row',
+    gap: 10,
+    paddingHorizontal: 14,
+    paddingVertical: 12,
+    borderRadius: 12,
+    backgroundColor: COLORS.errorLight,
+    borderWidth: 1,
+    borderColor: COLORS.error,
+    marginBottom: 14,
+  },
+  patientAlertsTitle: {
+    fontSize: 13,
+    fontFamily: 'Poppins_700Bold',
+    color: COLORS.error,
+    marginBottom: 2,
+  },
+  patientAlertsText: {
+    fontSize: 12,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.error,
+  },
   detailsSection: {
     marginBottom: 20,
   },
@@ -12188,7 +12505,9 @@ const styles = StyleSheet.create({
     borderRadius: 20,
     width: '90%',
     maxWidth: 400,
+    maxHeight: '85%',
     padding: 24,
+    position: 'relative',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.25,
@@ -12328,43 +12647,127 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: 'Poppins_400Regular',
     color: COLORS.text,
-    textAlignVertical: 'top',
+    textAlign: 'center',
+    textAlignVertical: 'center',
     minHeight: 120,
     marginBottom: 20,
     backgroundColor: COLORS.white,
   },
-  notesModalButtonRow: {
+  notePhotosSection: {
+    marginBottom: 16,
+  },
+  notePhotosAddButton: {
     flexDirection: 'row',
     alignItems: 'center',
-    borderTopWidth: 1,
-    borderTopColor: COLORS.border,
+    justifyContent: 'center',
+    gap: 8,
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 10,
+    paddingVertical: 10,
+    backgroundColor: COLORS.backgroundLight,
+  },
+  notePhotosAddButtonText: {
+    fontSize: 14,
+    fontFamily: 'Poppins_500Medium',
+    color: COLORS.primary,
+  },
+  notePhotosList: {
+    paddingTop: 10,
+    gap: 10,
+  },
+  notePhotoThumbWrap: {
+    width: 84,
+    height: 84,
+    borderRadius: 10,
+    overflow: 'hidden',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    backgroundColor: COLORS.white,
+  },
+  notePhotoThumb: {
+    width: '100%',
+    height: '100%',
+  },
+  notePhotoRemoveButton: {
+    position: 'absolute',
+    top: 2,
+    right: 2,
+    backgroundColor: COLORS.white,
+    borderRadius: 10,
+  },
+  photoPreviewOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+  },
+  photoPreviewOverlayInModal: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    backgroundColor: 'rgba(0,0,0,0.9)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 16,
+    zIndex: 50,
+    elevation: 50,
+  },
+  photoPreviewOverlayTapArea: {
+    flex: 1,
+    width: '100%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  photoPreviewImageFrame: {
+    width: '100%',
+    height: '85%',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  photoPreviewImage: {
+    width: '100%',
+    height: '100%',
+  },
+  notesModalButtonRow: {
+    flexDirection: 'row',
+    gap: 12,
     paddingTop: 16,
   },
   notesModalCancelButton: {
     flex: 1,
-    paddingVertical: 12,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    backgroundColor: COLORS.white,
+    borderWidth: 1,
+    borderColor: COLORS.primary,
+    borderRadius: 12,
+    paddingVertical: 14,
   },
   notesModalCancelButtonText: {
-    color: COLORS.primary,
-    fontSize: 17,
+    fontSize: 16,
     fontFamily: 'Poppins_600SemiBold',
-  },
-  notesButtonDivider: {
-    width: 1,
-    height: 40,
-    backgroundColor: COLORS.border,
+    color: COLORS.primary,
   },
   notesModalSaveButton: {
     flex: 1,
-    paddingVertical: 12,
+    borderRadius: 12,
+    overflow: 'hidden',
+  },
+  notesModalSaveButtonGradient: {
+    flex: 1,
+    flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'center',
+    paddingVertical: 14,
   },
   notesModalSaveButtonText: {
-    color: COLORS.primary,
-    fontSize: 17,
+    color: COLORS.white,
+    fontSize: 16,
     fontFamily: 'Poppins_600SemiBold',
   },
   notesModalConfirmButton: {
@@ -12740,6 +13143,7 @@ const styles = StyleSheet.create({
     width: '100%',
     maxWidth: 380,
     maxHeight: Platform.OS === 'android' ? '93%' : '85%',
+    position: 'relative',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 10 },
     shadowOpacity: 0.25,

@@ -11,6 +11,7 @@ import {
 } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import * as Sharing from 'expo-sharing';
+import * as Location from 'expo-location';
 import { SafeAreaView, useSafeAreaInsets } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MaterialCommunityIcons } from '@expo/vector-icons';
@@ -29,7 +30,6 @@ export default function PrivacySecurityScreen({ navigation }) {
   const { user, logout } = useAuth();
   const [settings, setSettings] = useState({
     dataCollection: true,
-    shareWithPartners: false,
     locationTracking: false,
     twoFactorAuth: false,
   });
@@ -47,7 +47,6 @@ export default function PrivacySecurityScreen({ navigation }) {
         if (backendSettings) {
           setSettings({
             dataCollection: backendSettings.dataCollection ?? true,
-            shareWithPartners: backendSettings.shareWithPartners ?? false,
             locationTracking: backendSettings.locationTracking ?? false,
             twoFactorAuth: backendSettings.twoFactorAuth ?? false,
           });
@@ -67,6 +66,34 @@ export default function PrivacySecurityScreen({ navigation }) {
   };
 
   const handleToggle = async (key, value) => {
+    if (key === 'locationTracking' && value === true) {
+      try {
+        const servicesEnabled = await Location.hasServicesEnabledAsync();
+        if (!servicesEnabled) {
+          Alert.alert(
+            'Location Services Off',
+            'Please enable Location Services on your device to turn on Location Tracking.'
+          );
+          return;
+        }
+
+        const permission = await Location.requestForegroundPermissionsAsync();
+        if (permission.status !== 'granted') {
+          Alert.alert(
+            'Permission Required',
+            'Location permission is required to enable Location Tracking.'
+          );
+          return;
+        }
+
+        // Trigger a one-time read so the toggle is genuinely functional.
+        await Location.getCurrentPositionAsync({ accuracy: Location.Accuracy.Balanced });
+      } catch (error) {
+        Alert.alert('Error', 'Unable to enable Location Tracking on this device.');
+        return;
+      }
+    }
+
     const newSettings = { ...settings, [key]: value };
     setSettings(newSettings);
 
@@ -81,7 +108,6 @@ export default function PrivacySecurityScreen({ navigation }) {
 
       const messages = {
         dataCollection: value ? 'Data collection enabled for better service' : 'Data collection disabled',
-        shareWithPartners: value ? 'Data sharing with partners enabled' : 'Data sharing disabled',
         locationTracking: value ? 'Location services enabled' : 'Location services disabled',
         twoFactorAuth: value ? 'Two-factor authentication enabled' : 'Two-factor authentication disabled',
       };
@@ -194,16 +220,16 @@ export default function PrivacySecurityScreen({ navigation }) {
       <Switch
         value={value}
         onValueChange={onToggle}
-        trackColor={{ false: COLORS.border, true: COLORS.accent }}
+        trackColor={{ false: COLORS.border, true: COLORS.primary }}
         thumbColor={COLORS.white}
       />
     </View>
   );
 
-  const InfoCard = ({ icon, title, description, iconColor = COLORS.info }) => (
-    <View style={styles.infoCard}>
-      <View style={styles.infoContent}>
-        <Text style={styles.infoTitle}>{title}</Text>
+  const InfoCard = ({ title, description }) => (
+    <View style={[styles.settingItem, { alignItems: 'flex-start' }]}>
+      <View style={styles.settingContent}>
+        <Text style={styles.settingTitle}>{title}</Text>
         <Text style={styles.infoDescription}>{description}</Text>
       </View>
     </View>
@@ -255,14 +281,6 @@ export default function PrivacySecurityScreen({ navigation }) {
             />
             <View style={styles.divider} />
             <SettingItem
-              icon="share-variant"
-              title="Share with Partners"
-              subtitle="Share data with trusted healthcare partners"
-              value={settings.shareWithPartners}
-              onToggle={(value) => handleToggle('shareWithPartners', value)}
-            />
-            <View style={styles.divider} />
-            <SettingItem
               icon="map-marker"
               title="Location Tracking"
               subtitle="Allow location access for nearby services"
@@ -275,31 +293,22 @@ export default function PrivacySecurityScreen({ navigation }) {
         {/* Security Section */}
         <View style={styles.section}>
           <Text style={styles.sectionTitle}>Security Settings</Text>
-          <View style={styles.settingsCard} />
-        </View>
-
-        {/* Info Cards */}
-        <View style={styles.section}>
-          <InfoCard
-            icon="lock-check"
-            title="Your Data is Encrypted"
-            description="All your personal and medical information is encrypted using industry-standard security protocols."
-            iconColor={COLORS.success}
-          />
-          
-          <InfoCard
-            icon="account-lock"
-            title="Account Security"
-            description="We use advanced security measures to protect your account from unauthorized access."
-            iconColor={COLORS.info}
-          />
-          
-          <InfoCard
-            icon="file-document-outline"
-            title="Data Protection"
-            description="Your data is stored securely and never sold to third parties. View our privacy policy for details."
-            iconColor={COLORS.primary}
-          />
+          <View style={styles.settingsCard}>
+            <InfoCard
+              title="Your Data is Encrypted"
+              description="All your personal and medical information is encrypted using industry-standard security protocols."
+            />
+            <View style={styles.divider} />
+            <InfoCard
+              title="Account Security"
+              description="We use advanced security measures to protect your account from unauthorized access."
+            />
+            <View style={styles.divider} />
+            <InfoCard
+              title="Data Protection"
+              description="Your data is stored securely and never sold to third parties. View our privacy policy for details."
+            />
+          </View>
         </View>
 
         {/* Action Buttons */}
@@ -310,15 +319,6 @@ export default function PrivacySecurityScreen({ navigation }) {
           >
             <MaterialCommunityIcons name="file-document" size={20} color={COLORS.primary} />
             <Text style={styles.actionButtonText}>View Privacy Policy</Text>
-            <MaterialCommunityIcons name="chevron-right" size={20} color={COLORS.textLight} />
-          </TouchableWeb>
-
-          <TouchableWeb
-            style={styles.actionButton}
-            onPress={handleDownloadData}
-          >
-            <MaterialCommunityIcons name="download" size={20} color={COLORS.primary} />
-            <Text style={styles.actionButtonText}>Download My Data</Text>
             <MaterialCommunityIcons name="chevron-right" size={20} color={COLORS.textLight} />
           </TouchableWeb>
 

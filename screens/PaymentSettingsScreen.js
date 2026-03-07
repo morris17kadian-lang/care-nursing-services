@@ -17,17 +17,36 @@ import { MaterialCommunityIcons } from '@expo/vector-icons';
 import { LinearGradient } from 'expo-linear-gradient';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { COLORS, GRADIENTS } from '../constants';
+import InvoiceService from '../services/InvoiceService';
 
 const PaymentSettingsScreen = ({ navigation }) => {
   const insets = useSafeAreaInsets();
   const [viewMode, setViewMode] = useState('general'); // 'general', 'payroll', 'company'
+
+  const GENERAL_SETTINGS_STORAGE_KEY = 'adminPaymentGeneralSettings';
   
   // State for settings
   const [paymentRemindersEnabled, setPaymentRemindersEnabled] = useState(true);
-  const [receiptsEnabled, setReceiptsEnabled] = useState(true);
+
+  // General invoice/payment defaults
+  const [defaultPaymentTermsDays, setDefaultPaymentTermsDays] = useState(7);
+  const [defaultInvoiceCurrency, setDefaultInvoiceCurrency] = useState('JMD');
+  const [reminderDaysBeforeDue, setReminderDaysBeforeDue] = useState(3);
+  const [reminderDaysAfterDue, setReminderDaysAfterDue] = useState(1);
+  const [depositRequired, setDepositRequired] = useState(true);
+  const [depositPercent, setDepositPercent] = useState(20);
+
+  // Invoice counter/status
+  const [invoiceCounterStatus, setInvoiceCounterStatus] = useState(null);
+  const [invoiceCounterModalVisible, setInvoiceCounterModalVisible] = useState(false);
+  const [nextInvoiceNumberInput, setNextInvoiceNumberInput] = useState('');
   
-  // Picker modal states
-  const [currencyModalVisible, setCurrencyModalVisible] = useState(false);
+  // Inline pickers
+  const [termsPickerOpen, setTermsPickerOpen] = useState(false);
+  const [reminderPickerTarget, setReminderPickerTarget] = useState(null); // 'before' | 'after'
+
+  // Inline currency picker
+  const [currencyPickerTarget, setCurrencyPickerTarget] = useState(null);
   
   // Payroll settings (used to calculate payslip amounts)
   const [payrollSettings, setPayrollSettings] = useState({
@@ -82,7 +101,86 @@ const PaymentSettingsScreen = ({ navigation }) => {
     loadCompanyDetails();
     loadPaymentInfo();
     loadPayrollSettings();
+    loadGeneralSettings();
+    refreshInvoiceCounterStatus();
   }, []);
+
+  const loadGeneralSettings = async () => {
+    try {
+      const stored = await AsyncStorage.getItem(GENERAL_SETTINGS_STORAGE_KEY);
+      if (!stored) return;
+      const parsed = JSON.parse(stored);
+
+      if (typeof parsed?.paymentRemindersEnabled === 'boolean') {
+        setPaymentRemindersEnabled(parsed.paymentRemindersEnabled);
+      }
+      if (Number.isFinite(parsed?.defaultPaymentTermsDays)) {
+        setDefaultPaymentTermsDays(Number(parsed.defaultPaymentTermsDays));
+      }
+      if (typeof parsed?.defaultInvoiceCurrency === 'string' && parsed.defaultInvoiceCurrency.trim()) {
+        setDefaultInvoiceCurrency(parsed.defaultInvoiceCurrency.trim());
+      }
+      if (Number.isFinite(parsed?.reminderDaysBeforeDue)) {
+        setReminderDaysBeforeDue(Number(parsed.reminderDaysBeforeDue));
+      }
+      if (Number.isFinite(parsed?.reminderDaysAfterDue)) {
+        setReminderDaysAfterDue(Number(parsed.reminderDaysAfterDue));
+      }
+      if (typeof parsed?.depositRequired === 'boolean') {
+        setDepositRequired(parsed.depositRequired);
+      }
+      if (Number.isFinite(parsed?.depositPercent)) {
+        setDepositPercent(Number(parsed.depositPercent));
+      }
+    } catch (error) {
+      console.error('Error loading general payment settings:', error);
+    }
+  };
+
+  const saveGeneralSettings = async () => {
+    try {
+      const payload = {
+        paymentRemindersEnabled,
+        defaultPaymentTermsDays,
+        defaultInvoiceCurrency,
+        reminderDaysBeforeDue,
+        reminderDaysAfterDue,
+        depositRequired,
+        depositPercent,
+        updatedAt: new Date().toISOString(),
+      };
+      await AsyncStorage.setItem(GENERAL_SETTINGS_STORAGE_KEY, JSON.stringify(payload));
+      Alert.alert('Success', 'General payment settings saved successfully');
+    } catch (error) {
+      console.error('Error saving general payment settings:', error);
+      Alert.alert('Error', 'Failed to save general payment settings');
+    }
+  };
+
+  const refreshInvoiceCounterStatus = async () => {
+    try {
+      const status = await InvoiceService.getInvoiceCounterStatus();
+      setInvoiceCounterStatus(status);
+    } catch (error) {
+      console.error('Error loading invoice counter status:', error);
+    }
+  };
+
+  const formatTermsLabel = (days) => {
+    const n = Number(days);
+    if (!Number.isFinite(n) || n <= 0) return 'Custom';
+    return `Net ${n}`;
+  };
+
+  const formatDaysLabel = (days) => {
+    const n = Number(days);
+    if (!Number.isFinite(n) || n < 0) return '0 days';
+    return `${n} day${n === 1 ? '' : 's'}`;
+  };
+
+  const reminderDayOptions = Array.from({ length: 15 }, (_, i) => i);
+  const currencyOptions = ['JMD', 'USD', 'CAD', 'GBP', 'EUR'];
+  const termsOptions = [1, 3, 7, 14, 30];
 
   const loadPaymentInfo = async () => {
     try {
@@ -129,7 +227,7 @@ const PaymentSettingsScreen = ({ navigation }) => {
   };
 
   const saveSettings = () => {
-    Alert.alert('Success', 'Payment settings have been saved successfully');
+    saveGeneralSettings();
   };
 
   const loadPayrollSettings = async () => {
@@ -161,7 +259,7 @@ const PaymentSettingsScreen = ({ navigation }) => {
     }
   };
 
-  const renderSettingRow = (title, subtitle, value, onValueChange, type = 'switch') => (
+  const renderSettingRow = (title, subtitle, value, onValueChange, type = 'switch', linkIconName = 'chevron-right') => (
     <View style={styles.settingRow}>
       <View style={styles.settingInfo}>
         <Text style={styles.settingTitle}>{title}</Text>
@@ -175,11 +273,27 @@ const PaymentSettingsScreen = ({ navigation }) => {
           thumbColor={value ? COLORS.white : COLORS.textMuted}
         />
       ) : (
-        <TouchableOpacity onPress={onValueChange}>
-          <Text style={styles.settingValue}>{value}</Text>
-          <MaterialCommunityIcons name="chevron-right" size={20} color={COLORS.textMuted} />
+        <TouchableOpacity onPress={onValueChange} style={styles.settingLink}>
+          <Text style={styles.settingValue} numberOfLines={1}>{value}</Text>
+          <MaterialCommunityIcons name={linkIconName} size={20} color={COLORS.textMuted} />
         </TouchableOpacity>
       )}
+    </View>
+  );
+
+  const renderSettingInputRow = (title, subtitle, value, onChangeText) => (
+    <View style={styles.settingRow}>
+      <View style={styles.settingInfo}>
+        <Text style={styles.settingTitle}>{title}</Text>
+        {subtitle && <Text style={styles.settingSubtitle}>{subtitle}</Text>}
+      </View>
+      <TextInput
+        style={styles.settingRightInput}
+        value={String(value)}
+        onChangeText={onChangeText}
+        placeholderTextColor={COLORS.textMuted}
+        keyboardType="numeric"
+      />
     </View>
   );
 
@@ -313,11 +427,220 @@ const PaymentSettingsScreen = ({ navigation }) => {
                 paymentRemindersEnabled,
                 setPaymentRemindersEnabled
               )}
+
+              {paymentRemindersEnabled && (
+                <>
+                  {renderSettingRow(
+                    'Reminder Before Due',
+                    'How many days before the due date',
+                    formatDaysLabel(reminderDaysBeforeDue),
+                    () => {
+                      setCurrencyPickerTarget(null);
+                      setTermsPickerOpen(false);
+                      setReminderPickerTarget((prev) => (prev === 'before' ? null : 'before'));
+                    },
+                    'link',
+                    'chevron-down'
+                  )}
+                  {reminderPickerTarget === 'before' && (
+                    <View style={styles.inlineDropdownContainer}>
+                      <ScrollView style={styles.inlineDropdownScroll} showsVerticalScrollIndicator={false}>
+                        {reminderDayOptions.map((days) => {
+                          const selected = reminderDaysBeforeDue === days;
+                          return (
+                            <TouchableOpacity
+                              key={`before-${days}`}
+                              style={styles.inlineDropdownOption}
+                              onPress={() => {
+                                setReminderDaysBeforeDue(days);
+                                setReminderPickerTarget(null);
+                              }}
+                            >
+                              <Text
+                                style={[
+                                  styles.inlineDropdownText,
+                                  selected ? styles.inlineDropdownTextSelected : null,
+                                ]}
+                              >
+                                {formatDaysLabel(days)}
+                              </Text>
+                              {selected && (
+                                <MaterialCommunityIcons name="check" size={18} color={COLORS.primary} />
+                              )}
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </ScrollView>
+                    </View>
+                  )}
+
+                  {renderSettingRow(
+                    'Reminder After Due',
+                    'How many days after the due date',
+                    formatDaysLabel(reminderDaysAfterDue),
+                    () => {
+                      setCurrencyPickerTarget(null);
+                      setTermsPickerOpen(false);
+                      setReminderPickerTarget((prev) => (prev === 'after' ? null : 'after'));
+                    },
+                    'link',
+                    'chevron-down'
+                  )}
+                  {reminderPickerTarget === 'after' && (
+                    <View style={styles.inlineDropdownContainer}>
+                      <ScrollView style={styles.inlineDropdownScroll} showsVerticalScrollIndicator={false}>
+                        {reminderDayOptions.map((days) => {
+                          const selected = reminderDaysAfterDue === days;
+                          return (
+                            <TouchableOpacity
+                              key={`after-${days}`}
+                              style={styles.inlineDropdownOption}
+                              onPress={() => {
+                                setReminderDaysAfterDue(days);
+                                setReminderPickerTarget(null);
+                              }}
+                            >
+                              <Text
+                                style={[
+                                  styles.inlineDropdownText,
+                                  selected ? styles.inlineDropdownTextSelected : null,
+                                ]}
+                              >
+                                {formatDaysLabel(days)}
+                              </Text>
+                              {selected && (
+                                <MaterialCommunityIcons name="check" size={18} color={COLORS.primary} />
+                              )}
+                            </TouchableOpacity>
+                          );
+                        })}
+                      </ScrollView>
+                    </View>
+                  )}
+                </>
+              )}
+
               {renderSettingRow(
-                'Email Receipts',
-                'Send receipt confirmation emails',
-                receiptsEnabled,
-                setReceiptsEnabled
+                'Default Payment Terms',
+                'Used when due date is not provided',
+                formatTermsLabel(defaultPaymentTermsDays),
+                () => {
+                  setReminderPickerTarget(null);
+                  setCurrencyPickerTarget(null);
+                  setTermsPickerOpen((prev) => !prev);
+                },
+                'link',
+                'chevron-down'
+              )}
+
+              {termsPickerOpen && (
+                <View style={styles.inlineDropdownContainer}>
+                  <ScrollView style={styles.inlineDropdownScroll} showsVerticalScrollIndicator={false}>
+                    {termsOptions.map((days) => {
+                      const selected = defaultPaymentTermsDays === days;
+                      return (
+                        <TouchableOpacity
+                          key={`terms-${days}`}
+                          style={styles.inlineDropdownOption}
+                          onPress={() => {
+                            setDefaultPaymentTermsDays(days);
+                            setTermsPickerOpen(false);
+                          }}
+                        >
+                          <Text
+                            style={[
+                              styles.inlineDropdownText,
+                              selected ? styles.inlineDropdownTextSelected : null,
+                            ]}
+                          >
+                            {formatTermsLabel(days)}
+                          </Text>
+                          {selected && (
+                            <MaterialCommunityIcons name="check" size={18} color={COLORS.primary} />
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
+              )}
+
+              {renderSettingRow(
+                'Default Currency',
+                'Used as the default for new invoices',
+                defaultInvoiceCurrency,
+                () => {
+                  setReminderPickerTarget(null);
+                  setTermsPickerOpen(false);
+                  setCurrencyPickerTarget((prev) => (prev === 'default' ? null : 'default'));
+                },
+                'link',
+                'chevron-down'
+              )}
+
+              {currencyPickerTarget === 'default' && (
+                <View style={styles.inlineDropdownContainer}>
+                  <ScrollView style={styles.inlineDropdownScroll} showsVerticalScrollIndicator={false}>
+                    {currencyOptions.map((currency) => {
+                      const selected = defaultInvoiceCurrency === currency;
+                      return (
+                        <TouchableOpacity
+                          key={`default-currency-${currency}`}
+                          style={styles.inlineDropdownOption}
+                          onPress={() => {
+                            setDefaultInvoiceCurrency(currency);
+                            setCurrencyPickerTarget(null);
+                          }}
+                        >
+                          <Text
+                            style={[
+                              styles.inlineDropdownText,
+                              selected ? styles.inlineDropdownTextSelected : null,
+                            ]}
+                          >
+                            {currency}
+                          </Text>
+                          {selected && (
+                            <MaterialCommunityIcons name="check" size={18} color={COLORS.primary} />
+                          )}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </ScrollView>
+                </View>
+              )}
+
+              {renderSettingRow(
+                'Require Deposit',
+                'Apply a deposit requirement at booking',
+                depositRequired,
+                setDepositRequired
+              )}
+
+              {depositRequired && (
+                renderSettingInputRow(
+                  'Default Deposit (%)',
+                  'Used to calculate the booking deposit',
+                  depositPercent,
+                  (text) => {
+                    const n = Number(text);
+                    if (!Number.isFinite(n)) {
+                      setDepositPercent(0);
+                      return;
+                    }
+                    setDepositPercent(Math.max(0, Math.min(100, n)));
+                  }
+                )
+              )}
+
+              <View style={styles.sectionDivider} />
+
+              {renderSettingRow(
+                'Next Invoice ID',
+                invoiceCounterStatus?.lastInvoiceId ? `Last: ${invoiceCounterStatus.lastInvoiceId}` : ' ',
+                invoiceCounterStatus?.nextInvoiceId || 'Loading…',
+                () => setInvoiceCounterModalVisible(true),
+                'link'
               )}
             </View>
           </>
@@ -498,12 +821,25 @@ const PaymentSettingsScreen = ({ navigation }) => {
                           <TouchableOpacity 
                             style={[styles.textInput, styles.textInputDropdown]}
                             onPress={() => {
+                              setReminderPickerTarget(null);
                               setPaymentInfo({ 
                                 ...paymentInfo, 
                                 selectedAccountIndex: index,
                                 selectedAccountNumberIndex: accIndex 
                               });
-                              setCurrencyModalVisible(true);
+                              setCurrencyPickerTarget((prev) => {
+                                const next = { type: 'bankAccount', accountIndex: index, accountNumberIndex: accIndex };
+                                if (
+                                  prev &&
+                                  typeof prev === 'object' &&
+                                  prev.type === next.type &&
+                                  prev.accountIndex === next.accountIndex &&
+                                  prev.accountNumberIndex === next.accountNumberIndex
+                                ) {
+                                  return null;
+                                }
+                                return next;
+                              });
                             }}
                           >
                             <Text style={styles.inputText}>{accNum.currency}</Text>
@@ -519,6 +855,46 @@ const PaymentSettingsScreen = ({ navigation }) => {
                               setPaymentInfo({ ...paymentInfo, bankAccounts: updated });
                             }}
                           >
+
+                          {currencyPickerTarget && typeof currencyPickerTarget === 'object' &&
+                            currencyPickerTarget.type === 'bankAccount' &&
+                            currencyPickerTarget.accountIndex === index &&
+                            currencyPickerTarget.accountNumberIndex === accIndex && (
+                              <View style={styles.inlineDropdownContainerCompact}>
+                                <ScrollView style={styles.inlineDropdownScroll} showsVerticalScrollIndicator={false}>
+                                  {currencyOptions.map((currency) => {
+                                    const selected = accNum.currency === currency;
+                                    return (
+                                      <TouchableOpacity
+                                        key={`bank-${index}-${accIndex}-${currency}`}
+                                        style={styles.inlineDropdownOption}
+                                        onPress={() => {
+                                          const updated = [...paymentInfo.bankAccounts];
+                                          updated[index].accountNumbers[accIndex].currency = currency;
+                                          setPaymentInfo({
+                                            ...paymentInfo,
+                                            bankAccounts: updated,
+                                          });
+                                          setCurrencyPickerTarget(null);
+                                        }}
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.inlineDropdownText,
+                                            selected ? styles.inlineDropdownTextSelected : null,
+                                          ]}
+                                        >
+                                          {currency}
+                                        </Text>
+                                        {selected && (
+                                          <MaterialCommunityIcons name="check" size={18} color={COLORS.primary} />
+                                        )}
+                                      </TouchableOpacity>
+                                    );
+                                  })}
+                                </ScrollView>
+                              </View>
+                            )}
                             <MaterialCommunityIcons name="close-circle" size={20} color={COLORS.error} />
                           </TouchableOpacity>
                         )}
@@ -534,7 +910,7 @@ const PaymentSettingsScreen = ({ navigation }) => {
                         updated[index].accountNumbers.push({ 
                           id: newAccNumId, 
                           number: '', 
-                          currency: 'JMD' 
+                          currency: defaultInvoiceCurrency 
                         });
                         setPaymentInfo({ ...paymentInfo, bankAccounts: updated });
                       }}
@@ -632,58 +1008,77 @@ const PaymentSettingsScreen = ({ navigation }) => {
         <View style={styles.bottomPadding} />
       </ScrollView>
 
-      {/* Currency Picker Modal */}
+      {/* Invoice Counter Modal */}
       <Modal
-        visible={currencyModalVisible}
+        visible={invoiceCounterModalVisible}
         transparent={true}
-        animationType="slide"
-        onRequestClose={() => setCurrencyModalVisible(false)}
+        animationType="fade"
+        onRequestClose={() => setInvoiceCounterModalVisible(false)}
       >
-        <TouchableOpacity 
-          style={styles.modalOverlay}
+        <TouchableOpacity
+          style={styles.centeredOverlay}
           activeOpacity={1}
-          onPress={() => setCurrencyModalVisible(false)}
+          onPress={() => setInvoiceCounterModalVisible(false)}
         >
-          <View style={styles.modalContent}>
-            <Text style={styles.modalTitle}>Select Currency</Text>
-            {['JMD', 'USD', 'CAD', 'GBP', 'EUR'].map((currency) => (
+          <TouchableOpacity
+            activeOpacity={1}
+            onPress={() => {}}
+            style={styles.smallModalCard}
+          >
+            <View style={styles.modalHeaderRow}>
+              <Text style={[styles.modalTitle, styles.modalTitleNoMargin]}>Set Next Invoice Number</Text>
               <TouchableOpacity
-                key={currency}
-                style={styles.modalOption}
-                onPress={() => {
-                  // Only update bank account currency (payroll doesn't use currency modal)
-                  if (viewMode === 'company' && paymentInfo.selectedAccountIndex !== undefined) {
-                    const updated = [...paymentInfo.bankAccounts];
-                    if (paymentInfo.selectedAccountNumberIndex !== undefined) {
-                      // Update specific account number currency
-                      updated[paymentInfo.selectedAccountIndex].accountNumbers[paymentInfo.selectedAccountNumberIndex].currency = currency;
-                    }
-                    setPaymentInfo({ 
-                      ...paymentInfo, 
-                      bankAccounts: updated, 
-                      selectedAccountIndex: undefined,
-                      selectedAccountNumberIndex: undefined 
-                    });
-                  }
-                  setCurrencyModalVisible(false);
-                }}
+                onPress={() => setInvoiceCounterModalVisible(false)}
+                style={styles.modalCloseButton}
+                hitSlop={{ top: 10, bottom: 10, left: 10, right: 10 }}
               >
-                <Text style={[
-                  styles.modalOptionText,
-                  (viewMode === 'company' && paymentInfo.selectedAccountIndex !== undefined && 
-                   paymentInfo.selectedAccountNumberIndex !== undefined &&
-                   paymentInfo.bankAccounts[paymentInfo.selectedAccountIndex]?.accountNumbers[paymentInfo.selectedAccountNumberIndex]?.currency === currency) ? styles.modalOptionTextSelected : null
-                ]}>
-                  {currency}
-                </Text>
-                {(viewMode === 'company' && paymentInfo.selectedAccountIndex !== undefined && 
-                   paymentInfo.selectedAccountNumberIndex !== undefined &&
-                   paymentInfo.bankAccounts[paymentInfo.selectedAccountIndex]?.accountNumbers[paymentInfo.selectedAccountNumberIndex]?.currency === currency) && (
-                  <MaterialCommunityIcons name="check" size={20} color={COLORS.primary} />
-                )}
+                <MaterialCommunityIcons name="close" size={22} color={COLORS.textMuted} />
               </TouchableOpacity>
-            ))}
-          </View>
+            </View>
+            <Text style={styles.modalHelperText}>
+              Current next: {invoiceCounterStatus?.nextInvoiceId || 'Loading…'}
+            </Text>
+            <View style={styles.inputGroup}>
+              <Text style={styles.inputLabel}>Next Invoice Number (digits only)</Text>
+              <TextInput
+                style={styles.textInput}
+                value={nextInvoiceNumberInput}
+                onChangeText={setNextInvoiceNumberInput}
+                placeholder="e.g., 123"
+                placeholderTextColor={COLORS.textMuted}
+                keyboardType="numeric"
+              />
+            </View>
+            <TouchableOpacity
+              style={styles.primaryActionButton}
+              onPress={async () => {
+                const nextNum = Number(nextInvoiceNumberInput);
+                if (!Number.isFinite(nextNum) || nextNum <= 0) {
+                  Alert.alert('Invalid Number', 'Please enter a valid next invoice number.');
+                  return;
+                }
+                const lastUsed = Math.max(0, Math.floor(nextNum) - 1);
+                const result = await InvoiceService.initializeInvoiceCounter(`NUR-INV-${String(lastUsed).padStart(4, '0')}`);
+                if (!result?.success) {
+                  Alert.alert('Error', result?.error || 'Failed to update invoice counter');
+                  return;
+                }
+                setInvoiceCounterModalVisible(false);
+                setNextInvoiceNumberInput('');
+                await refreshInvoiceCounterStatus();
+                Alert.alert('Success', result.message);
+              }}
+            >
+              <LinearGradient
+                colors={GRADIENTS.header}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 0, y: 1 }}
+                style={styles.primaryActionGradient}
+              >
+                <Text style={styles.primaryActionText}>Update</Text>
+              </LinearGradient>
+            </TouchableOpacity>
+          </TouchableOpacity>
         </TouchableOpacity>
       </Modal>
 
@@ -833,6 +1228,107 @@ const styles = StyleSheet.create({
     fontSize: 14,
     color: COLORS.primary,
     fontWeight: '600',
+  },
+  settingRightInput: {
+    width: 84,
+    textAlign: 'right',
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 10,
+    paddingVertical: 8,
+    paddingHorizontal: 10,
+    fontSize: 14,
+    color: COLORS.text,
+    backgroundColor: COLORS.white,
+  },
+  settingLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  sectionDivider: {
+    height: 1,
+    backgroundColor: COLORS.border,
+    marginTop: 8,
+    marginBottom: 8,
+  },
+  modalHelperText: {
+    fontSize: 13,
+    color: COLORS.textMuted,
+    marginTop: 6,
+    marginBottom: 14,
+  },
+  smallModalCard: {
+    width: '90%',
+    maxWidth: 420,
+    backgroundColor: COLORS.white,
+    borderRadius: 16,
+    padding: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 6 },
+    shadowOpacity: 0.12,
+    shadowRadius: 14,
+    elevation: 8,
+  },
+  primaryActionButton: {
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginTop: 6,
+  },
+  primaryActionGradient: {
+    paddingVertical: 12,
+    alignItems: 'center',
+    justifyContent: 'center',
+    borderRadius: 12,
+  },
+  primaryActionText: {
+    color: COLORS.white,
+    fontWeight: '700',
+    fontSize: 15,
+  },
+  centeredOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0, 0, 0, 0.5)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 20,
+  },
+  inlineDropdownContainer: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 10,
+    backgroundColor: COLORS.white,
+    marginTop: 10,
+    marginBottom: 10,
+    overflow: 'hidden',
+  },
+  inlineDropdownContainerCompact: {
+    borderWidth: 1,
+    borderColor: COLORS.border,
+    borderRadius: 10,
+    backgroundColor: COLORS.white,
+    marginTop: 10,
+    marginBottom: 10,
+    overflow: 'hidden',
+  },
+  inlineDropdownScroll: {
+    maxHeight: 210,
+  },
+  inlineDropdownOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 14,
+    paddingVertical: 10,
+    borderBottomWidth: 1,
+    borderBottomColor: COLORS.border,
+  },
+  inlineDropdownText: {
+    fontSize: 14,
+    color: COLORS.text,
+    fontWeight: '600',
+  },
+  inlineDropdownTextSelected: {
+    color: COLORS.primary,
   },
   inputGroup: {
     marginBottom: 16,
@@ -985,6 +1481,22 @@ const styles = StyleSheet.create({
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.text,
     marginBottom: 20,
+  },
+  modalTitleNoMargin: {
+    marginBottom: 0,
+  },
+  modalHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  modalCloseButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: COLORS.background,
   },
   modalOption: {
     flexDirection: 'row',

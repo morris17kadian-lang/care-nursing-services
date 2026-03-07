@@ -1,4 +1,4 @@
-import React, { useMemo } from 'react';
+import React, { useEffect, useMemo, useState } from 'react';
 import {
   View,
   Text,
@@ -21,7 +21,14 @@ export default function NurseDetailsModal({
   nursesRoster = null,
   footer = null,
   title = null,
+  showQualificationsRequest = true,
 }) {
+  const [showQualifications, setShowQualifications] = useState(false);
+
+  useEffect(() => {
+    if (!visible) setShowQualifications(false);
+  }, [visible, nurse]);
+
   const resolvedNurse = useMemo(
     () => resolveNurseDetails(nurse, nursesRoster),
     [nurse, nursesRoster]
@@ -49,6 +56,58 @@ export default function NurseDetailsModal({
   const phoneValue = resolvedNurse.phone;
   const email = emailValue || 'Not provided';
   const phone = phoneValue || 'Not provided';
+
+  const qualificationsRaw =
+    resolvedNurse.qualifications ||
+    resolvedNurse.certifications ||
+    resolvedNurse.qualification ||
+    resolvedNurse.certification ||
+    resolvedNurse.licenses ||
+    resolvedNurse.license ||
+    null;
+
+  const qualificationsList = useMemo(() => {
+    const toText = (value) => {
+      if (value === null || value === undefined) return null;
+      if (typeof value === 'string' || typeof value === 'number') {
+        const text = String(value).trim();
+        return text ? text : null;
+      }
+      if (typeof value === 'object') {
+        const label = value?.title || value?.name || value?.label || null;
+        if (label) return String(label).trim();
+        try {
+          const text = JSON.stringify(value);
+          return text && text !== '{}' ? text : null;
+        } catch (e) {
+          return null;
+        }
+      }
+      return null;
+    };
+
+    if (Array.isArray(qualificationsRaw)) {
+      return qualificationsRaw
+        .map(toText)
+        .filter(Boolean);
+    }
+
+    const rawText = toText(qualificationsRaw);
+    if (!rawText) return [];
+
+    const parts = rawText
+      .split(/\r?\n|;|\|/)
+      .flatMap((chunk) => chunk.split(','))
+      .map((p) => p.trim())
+      .filter(Boolean);
+
+    return parts.length > 0 ? parts : [rawText];
+  }, [qualificationsRaw]);
+
+  const qualificationsText =
+    qualificationsList.length > 0
+      ? qualificationsList.join('\n')
+      : 'No qualifications on file.';
 
   const canEmail = Boolean(emailValue && String(emailValue).trim());
   const canCall = Boolean(phoneValue && String(phoneValue).trim());
@@ -159,6 +218,38 @@ export default function NurseDetailsModal({
                 </TouchableOpacity>
               </View>
             </View>
+
+            {showQualificationsRequest && (
+              <View style={styles.qualificationsSection}>
+                <TouchableOpacity
+                  style={styles.qualificationsButton}
+                  onPress={() => setShowQualifications((prev) => !prev)}
+                  activeOpacity={0.8}
+                >
+                  <LinearGradient
+                    colors={GRADIENTS.header}
+                    start={{ x: 0, y: 0 }}
+                    end={{ x: 0, y: 1 }}
+                    style={styles.qualificationsButtonGradient}
+                  >
+                    <MaterialCommunityIcons name="certificate-outline" size={18} color={COLORS.white} />
+                    <Text style={styles.qualificationsButtonText}>
+                      {showQualifications ? 'Hide qualifications' : 'Request qualifications'}
+                    </Text>
+                  </LinearGradient>
+                </TouchableOpacity>
+
+                {showQualifications && (
+                  <View style={styles.qualificationsCard}>
+                    <View style={styles.qualificationsHeaderRow}>
+                      <MaterialCommunityIcons name="file-document-outline" size={18} color={COLORS.primary} />
+                      <Text style={styles.qualificationsLabel}>Qualifications</Text>
+                    </View>
+                    <Text style={styles.qualificationsValue}>{qualificationsText}</Text>
+                  </View>
+                )}
+              </View>
+            )}
 
             {!!footer && <View style={styles.footerContainer}>{footer}</View>}
           </ScrollView>
@@ -273,5 +364,49 @@ const styles = StyleSheet.create({
     paddingHorizontal: SPACING.lg,
     paddingTop: SPACING.md,
     paddingBottom: SPACING.lg,
+  },
+  qualificationsSection: {
+    paddingHorizontal: SPACING.lg,
+    paddingTop: SPACING.sm,
+  },
+  qualificationsButton: {
+    borderRadius: 12,
+    overflow: 'hidden',
+    marginBottom: SPACING.sm,
+  },
+  qualificationsButtonGradient: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 12,
+    paddingHorizontal: 14,
+    gap: 8,
+  },
+  qualificationsButtonText: {
+    fontSize: 13,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.white,
+  },
+  qualificationsCard: {
+    backgroundColor: COLORS.background,
+    borderRadius: 12,
+    padding: SPACING.md,
+  },
+  qualificationsHeaderRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 6,
+  },
+  qualificationsLabel: {
+    fontSize: 12,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.text,
+  },
+  qualificationsValue: {
+    fontSize: 13,
+    fontFamily: 'Poppins_400Regular',
+    color: COLORS.text,
+    lineHeight: 18,
   },
 });

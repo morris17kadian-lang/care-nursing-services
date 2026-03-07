@@ -92,9 +92,11 @@ const PayslipComponent = ({ payslip, onClose, onShare, hideHeader = false }) => 
           <MaterialCommunityIcons name="close" size={18} color={COLORS.white} />
         </TouchableOpacity>
         <Text style={styles.previewTitle}>Payslip Preview - {payslipNumber}</Text>
-        <TouchableOpacity style={styles.shareIconButton} onPress={handleSharePress} disabled={isSharing} activeOpacity={0.7}>
+        {/* PDF Share button disabled as per requirement */}
+        {/* <TouchableOpacity style={styles.shareIconButton} onPress={handleSharePress} disabled={isSharing} activeOpacity={0.7}>
           <MaterialCommunityIcons name="file-pdf-box" size={18} color={COLORS.white} />
-        </TouchableOpacity>
+        </TouchableOpacity> */}
+        <View style={styles.shareIconButton} />
       </View>
 
       <ScrollView style={styles.scrollContent} showsVerticalScrollIndicator={false}>

@@ -5,6 +5,7 @@ import {
   Text,
   StyleSheet,
   ScrollView,
+  Image,
 } from 'react-native';
 import { useSafeAreaInsets, SafeAreaView } from 'react-native-safe-area-context';
 import { LinearGradient } from 'expo-linear-gradient';
@@ -18,9 +19,7 @@ export default function UserManualScreen({ navigation }) {
   const manualSections = [
     {
       id: 1,
-      icon: 'account-circle',
       title: 'Getting Started',
-      subtitle: 'Account setup and first steps',
       content: [
         {
           step: 'Creating an Account',
@@ -34,9 +33,7 @@ export default function UserManualScreen({ navigation }) {
     },
     {
       id: 2,
-      icon: 'calendar-check',
       title: 'Booking Appointments',
-      subtitle: 'How to schedule nursing services',
       content: [
         {
           step: 'Choose Service',
@@ -58,9 +55,7 @@ export default function UserManualScreen({ navigation }) {
     },
     {
       id: 3,
-      icon: 'file-document-edit',
       title: 'Managing Appointments',
-      subtitle: 'View, reschedule, or cancel',
       content: [
         {
           step: 'View Appointments',
@@ -82,9 +77,7 @@ export default function UserManualScreen({ navigation }) {
     },
     {
       id: 4,
-      icon: 'bell',
       title: 'Notifications',
-      subtitle: 'Stay updated with alerts',
       content: [
         {
           step: 'Notifications',
@@ -98,9 +91,7 @@ export default function UserManualScreen({ navigation }) {
     },
     {
       id: 5,
-      icon: 'credit-card',
       title: 'Payments & Billing',
-      subtitle: 'Payment methods and invoices',
       content: [
         {
           step: 'Payment Methods',
@@ -118,9 +109,7 @@ export default function UserManualScreen({ navigation }) {
     },
     {
       id: 6,
-      icon: 'account-cog',
       title: 'Account Settings',
-      subtitle: 'Manage your profile and preferences',
       content: [
         {
           step: 'Edit Profile',
@@ -153,18 +142,10 @@ export default function UserManualScreen({ navigation }) {
           onPress={() => setExpandedSection(isExpanded ? null : section.id)}
           activeOpacity={0.7}
         >
-          <View style={[styles.sectionIcon, isExpanded && styles.sectionIconActive]}>
-            <MaterialCommunityIcons 
-              name={section.icon} 
-              size={24} 
-              color={isExpanded ? COLORS.white : COLORS.primary} 
-            />
-          </View>
           <View style={styles.sectionHeaderContent}>
             <Text style={[styles.sectionTitle, isExpanded && styles.sectionTitleActive]}>
               {section.title}
             </Text>
-            <Text style={styles.sectionSubtitle}>{section.subtitle}</Text>
           </View>
           <MaterialCommunityIcons
             name={isExpanded ? 'chevron-up' : 'chevron-down'}
@@ -205,34 +186,27 @@ export default function UserManualScreen({ navigation }) {
             <MaterialCommunityIcons name="arrow-left" size={24} color={COLORS.white} />
           </TouchableWeb>
           <Text style={styles.headerTitle}>User Manual</Text>
+          <View style={{ width: 40 }} />
         </View>
       </LinearGradient>
+
+      {/* Watermark Logo */}
+      <Image
+        source={require('../assets/Images/Nurses-logo.png')}
+        style={styles.watermarkLogo}
+        resizeMode="contain"
+        pointerEvents="none"
+      />
 
       <ScrollView 
         style={styles.scrollView} 
         contentContainerStyle={[styles.scrollContent, { paddingBottom: insets.bottom + 20 }]}
         showsVerticalScrollIndicator={false}
       >
-        <View style={styles.introSection}>
-          <MaterialCommunityIcons name="information" size={32} color={COLORS.primary} />
-          <Text style={styles.introTitle}>Welcome to 876Nurses</Text>
-          <Text style={styles.introText}>
-            Your complete guide to using the 876Nurses app. 
-            Tap on any section below to learn more.
-          </Text>
-        </View>
-
         <View style={styles.sectionsContainer}>
           {manualSections.map(section => (
             <ManualSection key={section.id} section={section} />
           ))}
-        </View>
-
-        <View style={styles.footerSection}>
-          <MaterialCommunityIcons name="help-circle" size={24} color={COLORS.accent} />
-          <Text style={styles.footerText}>
-            Still need help? Contact our support team through the Help & FAQ section.
-          </Text>
         </View>
       </ScrollView>
     </SafeAreaView>
@@ -244,16 +218,35 @@ const styles = StyleSheet.create({
     flex: 1,
     backgroundColor: COLORS.background,
   },
+  watermarkLogo: {
+    position: 'absolute',
+    width: 250,
+    height: 250,
+    alignSelf: 'center',
+    top: '42%',
+    opacity: 0.05,
+    zIndex: 0,
+  },
   header: {
     paddingHorizontal: SPACING.lg,
     paddingBottom: SPACING.lg,
     borderBottomLeftRadius: 24,
     borderBottomRightRadius: 24,
+    zIndex: 1,
   },
   headerRow: {
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
+  },
+
+  headerTitle: {
+    fontSize: 20,
+    fontFamily: 'Poppins_600SemiBold',
+    color: COLORS.white,
+    flex: 1,
+    textAlign: 'center',
+    marginHorizontal: 12,
   },
   backButton: {
     width: 40,
@@ -263,49 +256,15 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     justifyContent: 'center',
   },
-  headerTitle: {
-    fontSize: 20,
-    fontFamily: 'Poppins_600SemiBold',
-    color: COLORS.white,
-    flex: 1,
-    textAlign: 'center',
-    marginRight: 40,
-  },
   scrollView: {
     flex: 1,
   },
   scrollContent: {
     flexGrow: 1,
   },
-  introSection: {
-    alignItems: 'center',
-    padding: SPACING.xl,
-    backgroundColor: COLORS.white,
-    marginHorizontal: SPACING.lg,
-    marginTop: SPACING.lg,
-    borderRadius: 16,
-    shadowColor: COLORS.shadow,
-    shadowOffset: { width: 0, height: 2 },
-    shadowOpacity: 0.1,
-    shadowRadius: 8,
-    elevation: 3,
-  },
-  introTitle: {
-    fontSize: 20,
-    fontFamily: 'Poppins_700Bold',
-    color: COLORS.text,
-    marginTop: SPACING.sm,
-    marginBottom: SPACING.xs,
-  },
-  introText: {
-    fontSize: 14,
-    fontFamily: 'Poppins_400Regular',
-    color: COLORS.textLight,
-    textAlign: 'center',
-    lineHeight: 20,
-  },
   sectionsContainer: {
-    padding: SPACING.lg,
+    paddingHorizontal: SPACING.md,
+    paddingVertical: SPACING.lg,
     gap: SPACING.md,
   },
   sectionCard: {
@@ -324,17 +283,6 @@ const styles = StyleSheet.create({
     padding: SPACING.md,
     gap: SPACING.sm,
   },
-  sectionIcon: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    backgroundColor: COLORS.primary + '15',
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-  sectionIconActive: {
-    backgroundColor: COLORS.primary,
-  },
   sectionHeaderContent: {
     flex: 1,
   },
@@ -342,15 +290,9 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontFamily: 'Poppins_600SemiBold',
     color: COLORS.text,
-    marginBottom: 2,
   },
   sectionTitleActive: {
     color: COLORS.primary,
-  },
-  sectionSubtitle: {
-    fontSize: 12,
-    fontFamily: 'Poppins_400Regular',
-    color: COLORS.textLight,
   },
   sectionContent: {
     padding: SPACING.md,
@@ -362,17 +304,13 @@ const styles = StyleSheet.create({
     gap: SPACING.sm,
   },
   stepNumber: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
-    backgroundColor: COLORS.accent,
-    alignItems: 'center',
-    justifyContent: 'center',
+    width: 22,
+    alignItems: 'flex-end',
   },
   stepNumberText: {
-    fontSize: 13,
+    fontSize: 12,
     fontFamily: 'Poppins_600SemiBold',
-    color: COLORS.white,
+    color: COLORS.textLight,
   },
   stepContent: {
     flex: 1,
@@ -387,23 +325,6 @@ const styles = StyleSheet.create({
     fontSize: 13,
     fontFamily: 'Poppins_400Regular',
     color: COLORS.textLight,
-    lineHeight: 19,
-  },
-  footerSection: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: COLORS.accent + '15',
-    marginHorizontal: SPACING.lg,
-    marginBottom: SPACING.lg,
-    padding: SPACING.md,
-    borderRadius: 12,
-    gap: SPACING.sm,
-  },
-  footerText: {
-    flex: 1,
-    fontSize: 13,
-    fontFamily: 'Poppins_400Regular',
-    color: COLORS.accent,
     lineHeight: 19,
   },
 });
